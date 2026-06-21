@@ -142,7 +142,10 @@ class ExecutionResponse(BaseModel):
     status: str
     final_reason: str | None
     side: str
+    raw_required_quantity: str
     required_quantity: str
+    target_dust_quantity: str
+    unfilled_quantity: str
     initial_position: str
     confirmed_filled_quantity: str
     live_open_quantity: str
@@ -167,7 +170,10 @@ def execution_response(record: ExecutionRecord) -> ExecutionResponse:
         status=record.status.value,
         final_reason=record.final_reason,
         side=record.side.value,
+        raw_required_quantity=decimal_to_string(record.raw_required_quantity),
         required_quantity=decimal_to_string(record.required_quantity),
+        target_dust_quantity=decimal_to_string(record.target_dust_quantity),
+        unfilled_quantity=decimal_to_string(unfilled_quantity(record)),
         initial_position=decimal_to_string(record.initial_position.position),
         confirmed_filled_quantity=decimal_to_string(exposure.confirmed_filled_quantity),
         live_open_quantity=decimal_to_string(exposure.live_open_quantity),
@@ -202,6 +208,11 @@ def execution_response(record: ExecutionRecord) -> ExecutionResponse:
     )
 
 
+def unfilled_quantity(record: ExecutionRecord) -> Decimal:
+    remaining = record.required_quantity - record.exposure.confirmed_filled_quantity
+    return remaining if remaining > Decimal("0") else Decimal("0")
+
+
 def request_response(record: ExecutionRecord) -> ExecutionRequestResponse:
     request = record.request
     parameters = request.parameters
@@ -225,7 +236,7 @@ def request_response(record: ExecutionRecord) -> ExecutionRequestResponse:
 
 
 def started_monotonic(record: ExecutionRecord) -> str | None:
-    if record.exposure_tracker is None and not record.child_orders:
+    if record.exposure_tracker is None:
         return None
     return decimal_to_string(record.started_monotonic)
 

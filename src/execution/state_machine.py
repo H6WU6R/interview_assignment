@@ -18,6 +18,7 @@ EXECUTION_TRANSITIONS: dict[ExecutionStatus, set[ExecutionStatus]] = {
         ExecutionStatus.FAILED,
     },
     ExecutionStatus.CANCELLING: {
+        ExecutionStatus.COMPLETED,
         ExecutionStatus.CANCELLED,
         ExecutionStatus.PARTIALLY_COMPLETED,
         ExecutionStatus.FAILED,

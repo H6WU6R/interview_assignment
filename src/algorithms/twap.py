@@ -19,6 +19,25 @@ def scheduled_cumulative_quantity(
     return total_trade_quantity * clamped_elapsed_time / total_duration
 
 
+def effective_slice_elapsed(
+    elapsed_time: Decimal,
+    total_duration: Decimal,
+    number_of_slices: int,
+) -> Decimal:
+    if total_duration <= Decimal("0"):
+        raise ValueError("total_duration must be positive")
+    if number_of_slices <= 0:
+        raise ValueError("number_of_slices must be positive")
+    if elapsed_time <= Decimal("0"):
+        return Decimal("0")
+    if elapsed_time >= total_duration:
+        return total_duration
+
+    slice_length = total_duration / Decimal(number_of_slices)
+    completed_slices = int(elapsed_time / slice_length)
+    return slice_length * Decimal(completed_slices)
+
+
 def scheduled_deficit(
     scheduled_cumulative: Decimal,
     confirmed_cumulative_filled: Decimal,

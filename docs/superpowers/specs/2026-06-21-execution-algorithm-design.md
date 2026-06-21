@@ -44,6 +44,8 @@ The `ExecutionService` handles API-facing operations: create execution, query ex
 
 The `ExecutionEngine` owns trading correctness: parent execution state, child order state transitions, confirmed cumulative fills, open-order exposure including live open quantity, pending submit, pending cancel, and unknown order exposure, cancellation flow, timeout handling, reconciliation, and final summary. Trading-safety validation lives here and in `risk/`: price bounds, tick size, quantity step, minimum quantity, minimum notional, post-only safety, one-way mode, stale market data, and mainnet protection.
 
+All state-changing events for one execution are serialized through a per-execution event queue or async lock. REST responses, user-data stream events, timers, cancellation requests, graceful shutdown, and reconciliation results cannot mutate the same execution state concurrently. Every mutation must pass through `ExecutionEngine` and `state_machine.py` before logs and summaries are updated.
+
 `Chase` decides desired child-order price, repricing timing, passive/aggressive behavior, and deadline policy behavior. `TWAP` owns absolute schedule timing, scheduled cumulative quantity, schedule deficit, and tail quantity handling, but still submits through the same safe engine path.
 
 Both algorithms talk only to an `ExchangeAdapter` interface. The interface explicitly includes position query, symbol rules, market data, order submission, cancellation, order lookup by `clientOrderId`, user execution events, and reconciliation. The simulator and Binance adapter implement the same contract, so deterministic tests exercise the same execution logic used for Binance Testnet.
@@ -59,6 +61,8 @@ Execution input is a final `target_position`, not an order quantity. At start, t
 ```text
 required_trade_quantity = target_position - current_position
 ```
+
+If `required_trade_quantity` is exactly zero after reading the current position, the engine submits no child orders and returns terminal `COMPLETED` with `final_reason = NO_ACTION_TARGET_ALREADY_REACHED`.
 
 The sign determines side. The absolute quantity is normalized down to Binance step size. If the normalized target trade quantity is below minimum quantity or minimum notional, the engine rejects the execution. If only the rounding remainder is too small to execute, the engine records it as dust in the final summary. It never silently rounds up into over-trading.
 
@@ -129,6 +133,8 @@ Each slice submits only positive, normalized `safe_child_quantity`. Unfilled ear
 Before submitting any new child order, the engine checks that confirmed fills plus all reserved or unknown exposure plus the new child quantity cannot exceed the normalized target trade quantity.
 
 The initial implementation uses a single active child order per execution. If TWAP is later extended to allow multiple active child orders, each active order must reserve open exposure through the same invariant before any additional child order can be submitted.
+
+`child_order_timeout_seconds` controls how long an individual child order may remain open without sufficient progress. When the timeout is reached, the engine requests cancellation, keeps the order quantity reserved as `pending_cancel_quantity` until terminal confirmation or reconciliation, and lets Chase/TWAP recompute safe remaining quantity from parent-level confirmed fills and reserved exposure. For TWAP, unfilled timed-out quantity naturally carries forward into later `scheduled_deficit`.
 
 Fill deduplication uses the exchange trade ID when available. If trade IDs are unavailable in a simulator or reconciliation result, the engine falls back to monotonic cumulative executed quantity per order. It never counts fills by raw message arrival count.
 
@@ -206,6 +212,8 @@ detect stale market data and private stream health
 record Binance transaction time T and event time E when available
 ```
 
+The Binance adapter normalizes venue-specific order statuses into the internal child-order state model while preserving the raw Binance status in logs. For example, `FILLED` maps to `FILLED`, `CANCELED` maps to `CANCELLED`, `REJECTED` maps to `REJECTED`, and `EXPIRED` or `EXPIRED_IN_MATCH` releases live open exposure and maps to a terminal child state with `raw_status` and `terminal_reason` retained for audit.
+
 Signed Binance requests use an adjusted timestamp based on the latest server-time offset and include a configured `recvWindow`, defaulting to 5000 ms or less. If server-time drift or timestamp rejection is detected, the adapter refreshes the offset before retrying eligible non-mutating reads.
 
 REST requests use bounded timeouts. Non-order-mutating reads may use bounded retry and backoff. Order-mutating create requests are never blindly retried without idempotency reconciliation by `clientOrderId`.
@@ -277,6 +285,8 @@ Market-data freshness is a hard safety gate. Each market-data snapshot records `
 Position mode is explicit. The default implementation supports Binance One-way Mode only. If Hedge Mode is detected, the Binance adapter returns a clear unsupported-mode error instead of guessing `positionSide`.
 
 Mainnet is protected in two stages: environment config must select mainnet, and a separate explicit `ALLOW_MAINNET_TRADING=true` guard must be present. Without both, any real mainnet order submission is rejected before reaching the adapter. Mainnet is configuration-compatible only; assignment demo and validation are performed on the simulator and Binance Testnet.
+
+The compact implementation assumes no external manual or automated BTCUSDT trading occurs during one execution. The engine reconciles final account position against `initial_position + signed execution-scoped confirmed fills`. If unexpected position drift is detected, the execution summary records an `external_position_drift` warning and the engine may pause or fail safely rather than claiming exact position control.
 
 ## API, CLI Scripts, Outputs, And Observability
 
@@ -378,7 +388,7 @@ integration tests:
   raw execution log, order IDs, parameter snapshot, and result summary
 ```
 
-Required simulator scenarios map directly to the assignment:
+Required simulator and unit scenarios map directly to the assignment:
 
 ```text
 T1 Normal Chase:
@@ -410,11 +420,15 @@ T9 Duplicate Event:
 
 T10 Cross-zero Position:
   negative starting position to positive target computes correct required quantity
+
+E1 No Action:
+  current position equals target position; execution creates no child orders and returns COMPLETED with NO_ACTION reason
 ```
 
 Additional tests will cover:
 
 ```text
+per-execution event serialization for concurrent REST, stream, timer, cancel, and reconciliation events
 post-only rejection retry limit
 unsupported GTX/post-only rejection path in simulator
 stale market data safety gate
@@ -428,6 +442,9 @@ signed request timestamp/recvWindow construction
 rate-limit 429 backoff and 418 hard-stop classification
 exchange error classification for terminal, retryable, unknown, and stream-health failures
 graceful shutdown cancels/reconciles active execution-scoped orders when possible
+child_order_timeout_seconds moves stale child orders into pending cancel and recomputes safe remaining quantity
+venue-status normalization preserves raw Binance status and terminal reason
+external_position_drift warning when account position does not match execution-scoped fills
 terminal state cannot return to RUNNING
 AGGRESSIVE_WITHIN_RANGE bounded by price range
 CANCEL_REMAINDER cancels and reports remaining quantity
@@ -440,6 +457,7 @@ Acceptance criteria:
 all simulator and unit tests pass locally
 no Python float in order construction path
 all prices/quantities normalized using symbol rules
+state mutations for one execution are serialized through the engine/state machine path
 no test allows confirmed fills + reserved exposure to exceed target quantity
 duplicate events are counted once
 create timeout never generates a second clientOrderId before reconciliation
@@ -493,7 +511,7 @@ known limitations
 
 The report will be a compact Markdown draft under `reports/`, intended for later LaTeX/PDF conversion. If time allows, it can be converted into a compact PDF report summarizing design decisions, invariants, simulator results, Testnet evidence, failure cases, and known limitations.
 
-The report should include one real development failure case, such as an overfill-risk bug, stale-market-data bug, Decimal rounding bug, duplicate-fill bug, or timeout-reconciliation bug. It should explain the failing behavior, the test or log that exposed it, and the fix that resolved it.
+The report and live demo should include one real development failure case, such as an overfill-risk bug, stale-market-data bug, Decimal rounding bug, duplicate-fill bug, or timeout-reconciliation bug. It should explain the failing behavior, root cause, the test or log that exposed it, and the fix that resolved it.
 
 Explicitly out of scope for this compact production-quality version:
 
@@ -518,6 +536,7 @@ Only One-way Mode is supported initially.
 Market data uses best bid/ask, not full order book queue modeling.
 Simulator proves execution invariants but does not model every Binance matching-engine behavior.
 Mainnet is configuration-supported but disabled by default.
+The compact implementation assumes no external BTCUSDT trading during an execution and detects unexpected position drift as a warning or safe-fail condition.
 ```
 
 This scope keeps the project aligned with "small and correct" while still showing professional execution thinking.
@@ -534,4 +553,5 @@ Route every state transition through state_machine.py rather than ad hoc assignm
 Ensure reconciliation cannot absorb unrelated manual or external orders.
 Label Testnet scripts clearly so they cannot be confused with simulator demos.
 Record at least one real development failure case and the test/log evidence that exposed it.
+Keep event ingestion serialized per execution so async handlers cannot race state mutations.
 ```

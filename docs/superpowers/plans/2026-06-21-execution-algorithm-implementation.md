@@ -659,6 +659,11 @@ def test_child_unknown_can_be_reconciled_to_exchange_truth() -> None:
     assert transition_child(ChildOrderStatus.UNKNOWN, ChildOrderStatus.FILLED) is ChildOrderStatus.FILLED
     assert transition_child(ChildOrderStatus.UNKNOWN, ChildOrderStatus.CANCELLED) is ChildOrderStatus.CANCELLED
     assert transition_child(ChildOrderStatus.UNKNOWN, ChildOrderStatus.REJECTED) is ChildOrderStatus.REJECTED
+
+
+def test_pending_cancel_does_not_turn_into_create_rejected_state() -> None:
+    with pytest.raises(InvalidStateTransition):
+        transition_child(ChildOrderStatus.PENDING_CANCEL, ChildOrderStatus.REJECTED)
 ```
 
 - [ ] **Step 2: Write failing client order ID tests**
@@ -787,7 +792,6 @@ CHILD_TRANSITIONS: dict[ChildOrderStatus, set[ChildOrderStatus]] = {
         ChildOrderStatus.PARTIALLY_FILLED,
         ChildOrderStatus.CANCELLED,
         ChildOrderStatus.FILLED,
-        ChildOrderStatus.REJECTED,
     },
     ChildOrderStatus.CANCELLED: set(),
     ChildOrderStatus.FILLED: set(),
@@ -813,6 +817,8 @@ def transition_child(current: ChildOrderStatus, target: ChildOrderStatus) -> Chi
         raise InvalidStateTransition(f"child order transition {current} -> {target} is not allowed")
     return target
 ```
+
+Keep `REJECTED` for create-time validation or exchange rejection before an order is live. A known live order in `PENDING_CANCEL` should reconcile to `OPEN`, `PARTIALLY_FILLED`, `FILLED`, or `CANCELLED`; exchange raw statuses such as `EXPIRED` are preserved on the child as `raw_status`/`terminal_reason` and mapped into the closest internal terminal state.
 
 - [ ] **Step 6: Implement clock and IDs**
 
@@ -1881,6 +1887,7 @@ Add these fields to `DeterministicSimulator`:
     _fill_during_cancel: dict[str, Decimal] = field(default_factory=dict)
     _create_timeout_prefixes: set[str] = field(default_factory=set)
     _cancel_reconcile_open_prefixes: set[str] = field(default_factory=set)
+    _stream_healthy: bool = True
 ```
 
 Replace the order methods with:
@@ -1894,6 +1901,9 @@ Replace the order methods with:
 
     def script_cancel_reconcile_open(self, client_order_prefix: str) -> None:
         self._cancel_reconcile_open_prefixes.add(client_order_prefix)
+
+    def set_stream_health(self, healthy: bool) -> None:
+        self._stream_healthy = healthy
 
     def _matching_prefix(self, client_order_id: str, prefixes: set[str] | dict[str, Decimal]) -> str | None:
         return next((prefix for prefix in prefixes if client_order_id.startswith(prefix)), None)
@@ -2025,6 +2035,9 @@ Replace the order methods with:
             ):
                 order.status = ChildOrderStatus.OPEN
         return orders
+
+    async def health_check_streams(self) -> bool:
+        return self._stream_healthy
 ```
 
 - [ ] **Step 4: Run simulator order tests**
@@ -2668,7 +2681,7 @@ Create `tests/unit/test_engine_lifecycle.py`:
 from decimal import Decimal
 
 from execution.clock import ManualClock
-from execution.models import Algorithm, DeadlinePolicy, Environment, ExecutionRequest, ExecutionStatus
+from execution.models import Algorithm, ChildOrderStatus, DeadlinePolicy, Environment, ExecutionRequest, ExecutionStatus
 from execution.service import ExecutionService
 from exchanges.simulator import DeterministicSimulator
 
@@ -2698,6 +2711,45 @@ async def test_chase_run_once_submits_one_safe_child_order() -> None:
     assert execution.status is ExecutionStatus.RUNNING
     assert len(execution.child_orders) == 1
     assert execution.exposure.live_open_quantity <= execution.required_quantity
+
+
+async def test_chase_reprice_waits_for_threshold_and_minimum_interval() -> None:
+    clock = ManualClock()
+    simulator = DeterministicSimulator(clock=clock, position=Decimal("0"))
+    await simulator.push_market_data("BTCUSDT", Decimal("100"), Decimal("101"))
+    service = ExecutionService(adapter=simulator, clock=clock)
+    execution = await service.create_execution(request(Algorithm.CHASE))
+    execution = await service.run_once(execution.execution_id)
+    original_client_order_id = execution.child_orders[0].client_order_id
+
+    await simulator.push_market_data("BTCUSDT", Decimal("101"), Decimal("102"))
+    clock.advance(0.4)
+    too_early = await service.run_once(execution.execution_id)
+
+    assert len(too_early.child_orders) == 1
+    assert too_early.child_orders[0].client_order_id == original_client_order_id
+
+    clock.advance(0.2)
+    repriced = await service.run_once(execution.execution_id)
+
+    assert len(repriced.child_orders) == 2
+    assert repriced.child_orders[0].status in {ChildOrderStatus.CANCELLED, ChildOrderStatus.FILLED}
+    assert repriced.child_orders[1].client_order_id != original_client_order_id
+    assert repriced.child_orders[1].price == Decimal("101")
+
+
+async def test_stream_health_failure_pauses_new_submit_and_reconciles() -> None:
+    clock = ManualClock()
+    simulator = DeterministicSimulator(clock=clock, position=Decimal("0"))
+    simulator.set_stream_health(False)
+    await simulator.push_market_data("BTCUSDT", Decimal("100"), Decimal("101"))
+    service = ExecutionService(adapter=simulator, clock=clock)
+    execution = await service.create_execution(request(Algorithm.CHASE))
+
+    execution = await service.run_once(execution.execution_id)
+
+    assert execution.child_orders == []
+    assert execution.final_reason == "STREAM_HEALTH_DEGRADED_RECONCILED"
 
 
 async def test_create_timeout_keeps_unknown_exposure_until_reconciled() -> None:
@@ -2828,7 +2880,7 @@ Add this outline to `ExecutionEngine`. Keep all state mutation inside the per-ex
 Update imports in `src/execution/engine.py`:
 
 ```python
-from algorithms.chase import chase_desired_price
+from algorithms.chase import ChaseDecision, chase_desired_price, should_reprice
 from algorithms.twap import safe_child_quantity, scheduled_cumulative_quantity, scheduled_deficit
 from execution.ids import make_client_order_id, make_client_order_prefix
 from risk.decimal_math import floor_to_step, round_price
@@ -2844,10 +2896,16 @@ from risk.validation import validate_order_shape, validate_price_bounds
             if record.status.is_terminal or record.status is ExecutionStatus.CANCELLING:
                 return record
             await self._reconcile_locked(record)
+            if not await self.adapter.health_check_streams():
+                record.final_reason = "STREAM_HEALTH_DEGRADED_RECONCILED"
+                await self._reconcile_locked(record)
+                return record
             if record.exposure_tracker is None:
                 return record
             if record.exposure.confirmed_filled_quantity >= record.required_quantity:
                 return self._complete_locked(record, "TARGET_QUANTITY_FILLED")
+            if record.exposure.reserved_exposure > Decimal("0"):
+                await self._maybe_reprice_chase_locked(record)
             if record.exposure.reserved_exposure > Decimal("0"):
                 return record
 
@@ -2906,10 +2964,50 @@ Important behavior:
 ```text
 Initial implementation uses a single active child order per execution.
 TWAP can still reserve open exposure, so safe_child_quantity subtracts live, pending, and unknown exposure.
+Chase repricing is the only path that cancels a live child order to free exposure for a replacement.
 Trading validation runs again before every child order because market data, rules, and exposure can change.
 ```
 
 - [ ] **Step 6: Implement submit, cancel, and reconciliation transitions**
+
+Add `_maybe_reprice_chase_locked` before submit logic. This helper must never submit a replacement directly; it only decides whether to request cancellation of the current live order. Replacement sizing still happens through `_build_child_demand_locked` after cancellation and reconciliation update exposure.
+
+```python
+    async def _maybe_reprice_chase_locked(self, record: ExecutionRecord) -> None:
+        if record.request.algorithm is not Algorithm.CHASE:
+            return
+        active = next(
+            (
+                child
+                for child in record.child_orders
+                if child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}
+            ),
+            None,
+        )
+        if active is None:
+            return
+
+        market = await self.adapter.get_best_bid_ask(record.request.symbol)
+        desired_price = chase_desired_price(record.side, market.bid, market.ask, passive=True)
+        now = Decimal(str(self.clock.monotonic()))
+        last_reprice = record.last_reprice_monotonic or record.started_monotonic
+        elapsed_ms = int((now - last_reprice) * Decimal("1000"))
+        decision = should_reprice(
+            side=record.side,
+            active_order_price=active.price,
+            desired_price=desired_price,
+            threshold_bps=record.request.parameters.reprice_threshold_bps,
+            min_interval_ms=record.request.parameters.minimum_reprice_interval_ms,
+            elapsed_since_last_reprice_ms=elapsed_ms,
+            repricing_mode=record.request.parameters.repricing_mode,
+        )
+        if decision is ChaseDecision.WAIT:
+            return
+
+        await self._cancel_active_children_locked(record)
+        record.last_reprice_monotonic = now
+        await self._reconcile_locked(record)
+```
 
 Add `_submit_child_locked`:
 
@@ -2950,6 +3048,10 @@ Add `_submit_child_locked`:
         submitted = await self.adapter.submit_limit_order(order_request)
         record.exposure.pending_submit_quantity -= quantity
         child.status = submitted.status
+        child.exchange_order_id = submitted.exchange_order_id
+        child.raw_status = submitted.raw_status
+        child.terminal_reason = submitted.terminal_reason
+        record.last_reprice_monotonic = Decimal(str(self.clock.monotonic()))
         if submitted.status is ChildOrderStatus.UNKNOWN:
             record.exposure_tracker.reserve_unknown_create(quantity)
         elif submitted.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
@@ -3461,6 +3563,8 @@ uv run pytest tests/simulation/test_required_scenarios.py -v
 
 Expected: PASS for the three smoke scenarios.
 
+These three tests are only bootstrap checks while the engine is still being assembled. They are not enough for final submission. Continue to Step 7 and turn T1-T10 into concrete invariant tests before committing this task.
+
 - [ ] **Step 5: Add clearly labeled simulator scripts**
 
 Create `scripts/run_sim_chase.py`:
@@ -3684,51 +3788,70 @@ run_sim_cancel_race.py stdout begins with SIMULATOR DEMO: Cancel/fill race.
 outputs/<execution_id>/ contains request_snapshot.json, execution_log.jsonl, execution_summary.json, child_orders.csv, fills.csv, and timeline.csv.
 ```
 
-- [ ] **Step 7: Confirm final required scenario assertions before commit**
+- [ ] **Step 7: Add final required scenario invariant tests before commit**
 
-Before committing Task 14, ensure `tests/simulation/test_required_scenarios.py` or follow-up simulation tests cover these final assertions:
+Before committing Task 14, replace or extend the bootstrap smoke tests with concrete Python tests using the names and assertions below. Do not accept tests that only prove the engine did not crash or that a status is merely non-failed.
 
 ```text
-T1 Normal Chase:
+test_t1_normal_chase_submits_passive_price_and_preserves_exposure_invariant
   child order is submitted at best bid for buy or best ask for sell;
   no price-bound violation is recorded;
   reserved exposure never exceeds required quantity.
 
-T2 Chase Reprice:
+test_t2_chase_reprice_requires_threshold_and_minimum_interval
+  first run submits one child order at the initial passive price;
+  adverse market move before minimum_reprice_interval_ms does not create a new child order;
   exactly one cancel-and-replace occurs when threshold and minimum interval are both satisfied;
-  no replacement occurs before minimum_reprice_interval_ms.
+  replacement uses a new clientOrderId only after the prior live order has moved through cancel/reconciliation.
 
-T3 Partial Fill + Cancel Race:
+test_t3_cancel_fill_race_updates_confirmed_fills_before_replacement_sizing
   fill during pending cancel increases parent confirmed fills;
-  replacement quantity is no larger than safe remaining quantity;
-  no overfill occurs.
+  replacement quantity is no larger than required_quantity - confirmed_filled_quantity - reserved_exposure;
+  confirmed fills plus all reserved exposure never exceeds required quantity.
 
-T4 Create Timeout:
+test_t4_create_timeout_unknown_exposure_blocks_duplicate_client_order_id
   timed-out create becomes UNKNOWN exposure;
-  no second clientOrderId is created before reconciliation.
+  no second clientOrderId is created before reconciliation;
+  after reconciliation resolves the original clientOrderId, new demand uses the reconciled exposure state.
 
-T5 TWAP Carry-forward:
+test_t5_twap_carry_forward_deficit_includes_previous_unfilled_quantity
   later scheduled deficit includes prior unfilled quantity;
-  safe_child_quantity subtracts live, pending-cancel, and unknown exposure.
+  safe_child_quantity subtracts live, pending-cancel, and unknown exposure;
+  TWAP does not behave as fixed equal slices plus sleep.
 
-T6 TWAP Tail Quantity:
+test_t6_twap_tail_quantity_handles_legal_remainder_without_rounding_up
   final small executable remainder is attempted if it passes min quantity and min notional;
   non-executable dust is reported rather than rounded upward.
 
-T7 Price Outside Range:
+test_t7_price_outside_range_submits_no_invalid_order_and_reports_reason
   no child order is submitted outside bounds;
   final status is EXPIRED, PARTIALLY_COMPLETED, or unfilled with PRICE_OUTSIDE_RANGE, never fake COMPLETED.
 
-T8 Stream Disconnect:
+test_t8_stream_disconnect_pauses_submit_reconciles_then_resumes
   new submits pause while stream health is failed;
   execution-scoped reconciliation runs before resuming.
 
-T9 Duplicate Fill Event:
+test_t9_duplicate_fill_event_does_not_double_count_cumulative_fill
   duplicate trade ID or non-increasing cumulative fill does not increase parent cumulative fills twice.
 
-T10 Cross-zero Position:
+test_t10_cross_zero_position_uses_target_minus_current_absolute_quantity
   required_trade_quantity = target_position - current_position using absolute quantity and side separately.
 ```
+
+For T8, use the simulator stream-health hook from Task 7:
+
+```python
+simulator.set_stream_health(False)
+execution = await service.run_once(execution.execution_id)
+assert len(execution.child_orders) == 0
+assert execution.final_reason == "STREAM_HEALTH_DEGRADED_RECONCILED"
+
+simulator.set_stream_health(True)
+execution = await service.run_once(execution.execution_id)
+assert execution.child_orders
+```
+
+For T4 and T9, assert exact quantities and exact client order IDs. The important property is not the final status; it is that the engine refuses to manufacture extra exposure when exchange truth is ambiguous or duplicated.
 
 - [ ] **Step 8: Commit**
 

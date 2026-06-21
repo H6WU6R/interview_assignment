@@ -40,7 +40,7 @@ The API factory wires a deterministic simulator by default. It does not send Bin
 Algorithms are deliberately small:
 
 - Chase computes the passive desired price from best bid/ask and decides whether to reprice an active order after the configured bps threshold and minimum interval.
-- TWAP computes scheduled cumulative quantity from elapsed monotonic time and submits only the current schedule deficit after confirmed and reserved exposure. `number_of_slices` is plumbed into `ExecutionParameters` and Testnet scripts, but the current TWAP behavior is schedule-deficit based, not fixed equal-slice sleep.
+- TWAP uses absolute slice boundaries from `number_of_slices`; it never sleeps and does not accumulate scheduler drift. At each observed boundary, it computes scheduled cumulative quantity from elapsed monotonic time, subtracts confirmed fills and reserved exposure, then submits only the safe deficit.
 
 The `ExchangeAdapter` interface is narrow enough for deterministic tests. The simulator supports market data, order creation, fills, cancel/fill races, create-timeout scenarios, reconciliation, and stream health scripting. The Binance adapter maps the same contract onto USD-M REST and WebSocket hooks.
 
@@ -59,6 +59,9 @@ Other guardrails:
 - Quantities and prices are `Decimal`, not floats. API decimal fields must be JSON strings.
 - Prices and quantities are rounded to exchange tick/step rules before order submission.
 - Post-only orders are validated against current bid/ask and supported time-in-force.
+- When the current quote is outside `target_price_range`, the engine submits no child order
+  and keeps the execution running until the deadline. If the quote never becomes executable,
+  the terminal summary reports `PRICE_OUTSIDE_RANGE` with filled and unfilled quantities.
 - State changes go through `execution/state_machine.py` via engine helpers, not ad hoc status assignments.
 - Reconciliation is scoped by the exact execution client-order prefix `ce_<short_exec>_`, never broad `ce_`.
 - Monotonic time drives scheduling, repricing intervals, and simulator market-data freshness.
@@ -173,11 +176,11 @@ uv run python scripts/run_sim_create_timeout.py
 
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
 
-## Limitations
+## Known Limitations
 
-- This is a take-home execution service, not a production trading system.
+- FastAPI execution is manual-step based through `/run-once`; simulator scripts are the primary deterministic demo path.
+- Binance Testnet scripts are credential-gated and require explicit send confirmation.
+- Mainnet is configuration-compatible but hard-disabled by default.
+- The implementation targets BTCUSDT and One-way Mode.
+- Deterministic simulator tests prove race conditions that Testnet may not reproduce reliably.
 - Persistence is in-memory; process restart loses execution state.
-- The API factory is simulator-only.
-- Testnet scripts do not implement robust reconnect, listen-key renewal scheduling, backoff orchestration, or operational alerting.
-- Mainnet mutation is disabled by default and is not part of the demo contract.
-- TWAP currently uses elapsed-time schedule deficit; it does not run an autonomous background scheduler.

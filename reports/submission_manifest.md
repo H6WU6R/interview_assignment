@@ -30,4 +30,9 @@ Before final submission, include deterministic simulator artifact directories fr
 - `uv run python scripts/run_sim_cancel_race.py`
 - `uv run python scripts/run_sim_create_timeout.py`
 
-After Binance Testnet credentials are available, include Testnet artifacts from the API-key follow-up plan.
+When Binance Testnet credentials and account margin are available, include Testnet artifacts from:
+
+- `uv run python scripts/run_testnet_chase.py --confirm-send-orders ...`
+- `uv run python scripts/run_testnet_twap.py --confirm-send-orders ...`
+
+If Binance rejects before order acceptance, include the raw error artifact as connectivity evidence and clearly label accepted-order evidence as pending account funding/risk configuration. Do not substitute simulator output for Testnet evidence.

@@ -19,11 +19,11 @@ To run the simulation API locally:
 uv run uvicorn api.app:create_app --factory --reload
 ```
 
-The API factory wires a deterministic simulator by default. It does not send Binance orders.
+The API factory wires a deterministic simulator by default. It does not send Binance orders. When run through FastAPI lifespan, the runtime starts background execution loops automatically; `/run-once` remains available for deterministic demos and debugging.
 
 ## Project Layout
 
-- `src/api/`: FastAPI app and Pydantic request/response schemas.
+- `src/api/`: FastAPI app, runtime supervisor, and Pydantic request/response schemas.
 - `src/execution/`: service facade, execution engine, state machine, IDs, events, and domain models.
 - `src/algorithms/`: narrow Chase and TWAP decision helpers.
 - `src/exchanges/`: exchange contract, deterministic simulator, and Binance USD-M adapter.
@@ -34,6 +34,8 @@ The API factory wires a deterministic simulator by default. It does not send Bin
 - `reports/`: report draft and failure-case log.
 
 ## Architecture
+
+`ExecutionRuntime` is the API-facing process supervisor. It constructs the correct environment adapter, rejects a second active execution for the same environment and symbol, advances nonterminal executions in the background, starts Binance market/user stream supervisors, renews listen keys, retries controlled runtime failures, and cancels/reconciles active executions during graceful shutdown.
 
 `ExecutionService` is the public application facade. It delegates to `ExecutionEngine`, which owns execution records, child orders, exposure accounting, reconciliation, and lifecycle transitions. Each execution is serialized through its own event actor so `create`, `run_once`, `cancel`, and `reconcile` calls cannot race each other inside one execution.
 
@@ -65,6 +67,8 @@ Other guardrails:
 - State changes go through `execution/state_machine.py` via engine helpers, not ad hoc status assignments.
 - Reconciliation is scoped by the exact execution client-order prefix `ce_<short_exec>_`, never broad `ce_`.
 - Monotonic time drives scheduling, repricing intervals, and simulator market-data freshness.
+- Stale market data is handled as a controlled pause/final reason instead of an uncaught runtime exception.
+- Per-child cumulative fills are monotonic; duplicate or lower cumulative snapshots cannot reduce or double-count parent fills.
 
 ## API Usage
 
@@ -133,10 +137,11 @@ The Binance adapter uses:
 - Signed REST requests with `timestamp`, `recvWindow`, and sanitized logging behavior.
 - `POST /fapi/v1/order`, `DELETE /fapi/v1/order`, and `GET /fapi/v1/order` with `newClientOrderId` or `origClientOrderId`.
 - Reconciliation via `GET /fapi/v1/openOrders`, `GET /fapi/v1/allOrders`, `GET /fapi/v1/userTrades`, and exact order lookup by client order ID.
+- Runtime stream supervisors keep public market and private user streams alive, renew listen keys, mark stream health degraded on disconnect, and trigger conservative reconciliation before safe continuation.
 
 HTTP 408 and transport timeouts on create/cancel are ambiguous mutation outcomes, not terminal rejects. Unknown create-timeout children are resolved with exact `GET /fapi/v1/order` lookup before the engine clears `unknown_order_quantity`.
 
-The Testnet scripts are compact validation hooks, not production-grade WebSocket recovery loops. They require credentials and explicit consent:
+The Testnet scripts are compact validation hooks. They require credentials and explicit consent:
 
 ```bash
 export BINANCE_USDM_API_KEY=...
@@ -158,7 +163,7 @@ uv run python scripts/run_testnet_twap.py \
   --number-of-slices 5
 ```
 
-They never fall back to the simulator. If credentials are absent, or `--confirm-send-orders` is missing, they exit before sending orders. Testnet artifacts are written under `/tmp/calais-binance-testnet` unless `--output-dir` is provided.
+They never fall back to the simulator. If credentials are absent, or `--confirm-send-orders` is missing, they exit before sending orders. Testnet artifacts are written under `/tmp/calais-binance-testnet` unless `--output-dir` is provided. If the Testnet account is not funded or Binance rejects the order before acceptance, keep the raw artifact as connectivity/error evidence and rerun the same script once the account can accept a small BTCUSDT order.
 
 Mainnet is config-compatible only. Mutating mainnet requests are hard-disabled by default through `allow_mainnet_trading=False` and should not be used for demos.
 
@@ -176,11 +181,14 @@ uv run python scripts/run_sim_create_timeout.py
 
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
 
+Current local verification result: `311 passed`.
+
 ## Known Limitations
 
-- FastAPI execution is manual-step based through `/run-once`; simulator scripts are the primary deterministic demo path.
+- Persistence is in-memory; process restart loses execution state.
+- Runtime stream supervision is compact and Testnet-focused; it is not a production operations system with durable recovery, alerting, or multi-process coordination.
 - Binance Testnet scripts are credential-gated and require explicit send confirmation.
+- Accepted Testnet order evidence requires a Testnet account that can pass Binance margin/risk checks.
 - Mainnet is configuration-compatible but hard-disabled by default.
 - The implementation targets BTCUSDT and One-way Mode.
 - Deterministic simulator tests prove race conditions that Testnet may not reproduce reliably.
-- Persistence is in-memory; process restart loses execution state.

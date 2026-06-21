@@ -1,0 +1,11 @@
+environment: simulation
+symbol: BTCUSDT
+allow_mainnet_trading: false
+stale_market_data_ms: 1500
+recv_window_ms: 5000
+default_parameters:
+  repricing_mode: ADVERSE_ONLY
+  reprice_threshold_bps: "2.0"
+  minimum_reprice_interval_ms: 500
+  number_of_slices: 10
+  child_order_timeout_seconds: 20

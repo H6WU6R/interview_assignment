@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import suppress
 import os
 from dataclasses import asdict, is_dataclass
 from decimal import Decimal, InvalidOperation
@@ -72,69 +73,98 @@ async def run(algorithm: Algorithm) -> Path:
     service = ExecutionService(adapter, clock=adapter.clock)
     events: list[dict[str, Any]] = []
 
-    snapshot = await _wait_for_market_snapshot(adapter, timeout_seconds=args.market_timeout_seconds)
-    events.append({"event": "market_snapshot", "snapshot": _jsonable(snapshot)})
-
-    request = ExecutionRequest(
-        environment=adapter.settings.environment,
-        symbol=symbol,
-        algorithm=algorithm,
-        target_position=target_position,
-        target_price_lower=lower,
-        target_price_upper=upper,
-        target_duration_seconds=args.duration_seconds,
-        deadline_policy=DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE,
-        parameters=ExecutionParameters(number_of_slices=args.number_of_slices),
-    )
-    execution = await service.create_execution(request)
-    events.append({"event": "execution_created", "execution": _record_summary(execution)})
-
-    deadline = adapter.clock.monotonic() + args.max_runtime_seconds
-    latest = execution
-    while adapter.clock.monotonic() < deadline and latest.status not in {
-        ExecutionStatus.COMPLETED,
-        ExecutionStatus.PARTIALLY_COMPLETED,
-        ExecutionStatus.EXPIRED,
-        ExecutionStatus.CANCELLED,
-        ExecutionStatus.FAILED,
-    }:
-        latest = await service.run_once(execution.execution_id)
-        events.append({"event": "run_once", "execution": _record_summary(latest)})
-        if latest.status.is_terminal:
-            break
-        await asyncio.sleep(args.poll_interval_seconds)
-
-    if not latest.status.is_terminal:
-        latest = await service.cancel_execution(execution.execution_id)
-        events.append({"event": "cancel_requested", "execution": _record_summary(latest)})
-        latest = await service.reconcile_execution(execution.execution_id)
-        events.append({"event": "final_reconcile", "execution": _record_summary(latest)})
-
-    prefix = make_client_order_prefix(execution.execution_id)
-    reconciliation = await adapter.reconcile_orders_and_fills(symbol, client_order_prefix=prefix)
-
-    artifact_dir = write_execution_artifacts(
-        root=args.output_dir,
-        execution_id=latest.execution_id,
-        request_snapshot=_jsonable(request),
-        log_events=events,
-        summary=_record_summary(latest),
-        child_orders=[_jsonable(child) for child in latest.child_orders],
-        fills=[_jsonable(fill) for fill in reconciliation.fills],
-        timeline=events,
-    )
-    print(f"execution_id={latest.execution_id}")
-    print(f"status={latest.status.value}")
-    print(f"artifact_dir={artifact_dir}")
-    return artifact_dir
-
-
-async def _wait_for_market_snapshot(adapter: BinanceUsdmAdapter, *, timeout_seconds: float) -> Any:
-    stream = adapter.stream_market_data()
+    market_task: asyncio.Task[Any] | None = None
     try:
-        return await asyncio.wait_for(anext(stream), timeout=timeout_seconds)
+        snapshot, market_task = await _start_market_stream(adapter, timeout_seconds=args.market_timeout_seconds)
+        events.append({"event": "market_snapshot", "snapshot": _jsonable(snapshot)})
+
+        request = ExecutionRequest(
+            environment=adapter.settings.environment,
+            symbol=symbol,
+            algorithm=algorithm,
+            target_position=target_position,
+            target_price_lower=lower,
+            target_price_upper=upper,
+            target_duration_seconds=args.duration_seconds,
+            deadline_policy=DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE,
+            parameters=ExecutionParameters(number_of_slices=args.number_of_slices),
+        )
+        execution = await service.create_execution(request)
+        events.append({"event": "execution_created", "execution": _record_summary(execution)})
+
+        deadline = adapter.clock.monotonic() + args.max_runtime_seconds
+        latest = execution
+        while adapter.clock.monotonic() < deadline and latest.status not in {
+            ExecutionStatus.COMPLETED,
+            ExecutionStatus.PARTIALLY_COMPLETED,
+            ExecutionStatus.EXPIRED,
+            ExecutionStatus.CANCELLED,
+            ExecutionStatus.FAILED,
+        }:
+            latest = await service.run_once(execution.execution_id)
+            events.append({"event": "run_once", "execution": _record_summary(latest)})
+            if latest.status.is_terminal:
+                break
+            await asyncio.sleep(args.poll_interval_seconds)
+
+        if not latest.status.is_terminal:
+            latest = await service.cancel_execution(execution.execution_id)
+            events.append({"event": "cancel_requested", "execution": _record_summary(latest)})
+            latest = await service.reconcile_execution(execution.execution_id)
+            events.append({"event": "final_reconcile", "execution": _record_summary(latest)})
+
+        prefix = make_client_order_prefix(execution.execution_id)
+        reconciliation = await adapter.reconcile_orders_and_fills(symbol, client_order_prefix=prefix)
+
+        artifact_dir = write_execution_artifacts(
+            root=args.output_dir,
+            execution_id=latest.execution_id,
+            request_snapshot=_jsonable(request),
+            log_events=events,
+            summary=_record_summary(latest),
+            child_orders=[_jsonable(child) for child in latest.child_orders],
+            fills=[_jsonable(fill) for fill in reconciliation.fills],
+            timeline=events,
+        )
+        print(f"execution_id={latest.execution_id}")
+        print(f"status={latest.status.value}")
+        print(f"artifact_dir={artifact_dir}")
+        return artifact_dir
     finally:
-        await stream.aclose()
+        if market_task is not None:
+            await _stop_market_stream(market_task)
+
+
+async def _start_market_stream(
+    adapter: BinanceUsdmAdapter,
+    *,
+    timeout_seconds: float,
+) -> tuple[Any, asyncio.Task[Any]]:
+    loop = asyncio.get_running_loop()
+    first_snapshot: asyncio.Future[Any] = loop.create_future()
+
+    async def pump() -> None:
+        try:
+            async for snapshot in adapter.stream_market_data():
+                if not first_snapshot.done():
+                    first_snapshot.set_result(snapshot)
+        except Exception as exc:
+            if not first_snapshot.done():
+                first_snapshot.set_exception(exc)
+            raise
+
+    task = asyncio.create_task(pump())
+    try:
+        return await asyncio.wait_for(first_snapshot, timeout=timeout_seconds), task
+    except BaseException:
+        await _stop_market_stream(task)
+        raise
+
+
+async def _stop_market_stream(task: asyncio.Task[Any]) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
 
 
 def normalize_symbol(symbol: str) -> str:

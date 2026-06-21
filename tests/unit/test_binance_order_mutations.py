@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 import os
 from pathlib import Path
@@ -29,6 +30,7 @@ from execution.clock import ManualClock
 from execution.models import (
     ChildOrderStatus,
     Environment,
+    MarketSnapshot,
     OrderRequest,
     Side,
     SymbolRules,
@@ -398,6 +400,53 @@ def test_testnet_runner_normalizes_symbol_for_rest_and_stream_usage() -> None:
     spec.loader.exec_module(module)
 
     assert module.normalize_symbol("ethusdt") == "ETHUSDT"
+
+
+async def test_testnet_runner_keeps_market_stream_running_until_stopped() -> None:
+    import importlib.util
+
+    class FakeMarketAdapter:
+        def __init__(self) -> None:
+            self.closed = asyncio.Event()
+            self.allow_second_snapshot = asyncio.Event()
+
+        def stream_market_data(self):
+            async def events():
+                try:
+                    yield MarketSnapshot(
+                        symbol="BTCUSDT",
+                        bid=Decimal("100.00"),
+                        ask=Decimal("100.10"),
+                        last_market_event_time_exchange=1,
+                        last_market_event_time_local_monotonic=1.0,
+                    )
+                    await self.allow_second_snapshot.wait()
+                    yield MarketSnapshot(
+                        symbol="BTCUSDT",
+                        bid=Decimal("100.10"),
+                        ask=Decimal("100.20"),
+                        last_market_event_time_exchange=2,
+                        last_market_event_time_local_monotonic=2.0,
+                    )
+                finally:
+                    self.closed.set()
+
+            return events()
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter = FakeMarketAdapter()
+    snapshot, task = await module._start_market_stream(adapter, timeout_seconds=0.1)
+
+    assert snapshot.symbol == "BTCUSDT"
+    assert not task.done()
+
+    await module._stop_market_stream(task)
+    assert adapter.closed.is_set()
 
 
 def test_testnet_scripts_refuse_without_credentials_and_never_fallback_to_simulator() -> None:

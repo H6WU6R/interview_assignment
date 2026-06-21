@@ -143,3 +143,20 @@ def test_write_execution_artifacts_tolerates_heterogeneous_timeline_rows(tmp_pat
     timeline = (output_dir / "timeline.csv").read_text(encoding="utf-8")
     assert "client_order_id" in timeline
     assert "warning" in timeline
+
+
+def test_write_execution_artifacts_creates_empty_execution_log(tmp_path) -> None:
+    output_dir = write_execution_artifacts(
+        root=tmp_path,
+        execution_id="exec_empty_log",
+        request_snapshot={"symbol": "BTCUSDT"},
+        log_events=[],
+        summary={"execution_id": "exec_empty_log"},
+        child_orders=[],
+        fills=[],
+        timeline=[],
+    )
+
+    execution_log = output_dir / "execution_log.jsonl"
+    assert execution_log.exists()
+    assert execution_log.read_text(encoding="utf-8") == ""

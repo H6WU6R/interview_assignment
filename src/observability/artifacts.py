@@ -41,6 +41,7 @@ def write_execution_artifacts(
     output_dir = root / execution_id
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(output_dir / "request_snapshot.json", request_snapshot)
+    (output_dir / "execution_log.jsonl").write_text("", encoding="utf-8")
     for event in log_events:
         append_jsonl(output_dir / "execution_log.jsonl", event)
     _write_json(output_dir / "execution_summary.json", summary)

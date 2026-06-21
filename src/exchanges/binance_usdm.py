@@ -8,6 +8,8 @@ from hashlib import sha256
 from typing import Any
 from urllib.parse import urlencode
 
+import httpx
+
 from config import Settings
 from exchanges.base import ExchangeAdapter, NoFreshMarketData
 from execution.clock import Clock, SystemClock
@@ -95,9 +97,10 @@ def parse_exchange_info_rate_limits(payload: Mapping[str, Any]) -> dict[str, int
 @dataclass
 class BinanceUsdmAdapter(ExchangeAdapter):
     settings: Settings = field(default_factory=Settings)
-    client: object | None = None
+    client: Any | None = None
     clock: Clock = field(default_factory=SystemClock)
     server_time_offset_ms: int = 0
+    rate_limits: dict[str, int] = field(default_factory=dict)
     _latest_market: dict[str, MarketSnapshot] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -152,7 +155,20 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         raise NotImplementedError("Binance USD-M REST position lookup is scheduled for Task 17")
 
     async def get_symbol_rules(self, symbol: str) -> SymbolRules:
-        raise NotImplementedError("Binance USD-M exchangeInfo fetching is scheduled for Task 16")
+        url = f"{self.base_url}/fapi/v1/exchangeInfo"
+        timeout = httpx.Timeout(5.0)
+        params = {"symbol": symbol}
+
+        if self.client is None:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(url, params=params)
+        else:
+            response = await self.client.get(url, params=params, timeout=timeout)
+
+        response.raise_for_status()
+        data = response.json()
+        self.rate_limits = parse_exchange_info_rate_limits(data)
+        return parse_symbol_rules_from_exchange_info(data, symbol)
 
     def stream_user_events(self) -> AsyncIterator[object]:
         async def events() -> AsyncIterator[object]:

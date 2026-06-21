@@ -489,3 +489,16 @@ Mainnet is configuration-supported but disabled by default.
 ```
 
 This scope keeps the project aligned with "small and correct" while still showing professional execution thinking.
+
+## Implementation Checklist
+
+These are implementation hygiene requirements rather than separate design goals:
+
+```text
+Serialize Decimal values to strings before Binance REST calls.
+Keep clientOrderId short enough after execution ID shortening.
+Make the stale quote threshold configurable and covered by tests.
+Route every state transition through state_machine.py rather than ad hoc assignments.
+Ensure reconciliation cannot absorb unrelated manual or external orders.
+Label Testnet scripts clearly so they cannot be confused with simulator demos.
+```

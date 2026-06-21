@@ -13,15 +13,112 @@ from execution.models import (
     ExecutionRequest,
     ExecutionStatus,
     ExecutionSummary,
+    Exposure,
     PositionSnapshot,
     Side,
     required_trade,
 )
 from execution.state_machine import transition_execution
+from risk.validation import ValidationError, check_exposure_invariant
 
 
 NO_ACTION_TARGET_ALREADY_REACHED = "NO_ACTION_TARGET_ALREADY_REACHED"
 CANCEL_REQUESTED = "CANCEL_REQUESTED"
+
+
+@dataclass
+class ExposureTracker:
+    target_quantity: Decimal
+    exposure: Exposure = field(default_factory=Exposure)
+    seen_trade_ids: set[str] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        self._require_non_negative(self.target_quantity)
+
+    def available_to_submit(self) -> Decimal:
+        available = (
+            self.target_quantity
+            - self.exposure.confirmed_filled_quantity
+            - self.exposure.reserved_exposure
+        )
+        return available if available > Decimal("0") else Decimal("0")
+
+    def check_can_submit(self, new_child_quantity: Decimal) -> None:
+        self._require_non_negative(new_child_quantity)
+        check_exposure_invariant(
+            self.exposure,
+            new_child_quantity,
+            self.target_quantity,
+        )
+
+    def reserve_live_open(self, quantity: Decimal) -> None:
+        self.check_can_submit(quantity)
+        self.exposure.live_open_quantity += quantity
+
+    def reserve_pending_submit(self, quantity: Decimal) -> None:
+        self.check_can_submit(quantity)
+        self.exposure.pending_submit_quantity += quantity
+
+    def release_pending_submit(self, quantity: Decimal) -> None:
+        self._require_non_negative(quantity)
+        self.exposure.pending_submit_quantity = self._subtract_floor_zero(
+            self.exposure.pending_submit_quantity,
+            quantity,
+        )
+
+    def reserve_unknown_create(self, quantity: Decimal) -> None:
+        self.check_can_submit(quantity)
+        self.exposure.unknown_order_quantity += quantity
+
+    def clear_unknown_create(self, quantity: Decimal | None = None) -> None:
+        if quantity is None:
+            self.exposure.unknown_order_quantity = Decimal("0")
+            return
+
+        self._require_non_negative(quantity)
+        self.exposure.unknown_order_quantity = self._subtract_floor_zero(
+            self.exposure.unknown_order_quantity,
+            quantity,
+        )
+
+    def mark_pending_cancel(self, quantity: Decimal) -> None:
+        self._require_non_negative(quantity)
+        moved_quantity = min(quantity, self.exposure.live_open_quantity)
+        self.exposure.live_open_quantity -= moved_quantity
+        self.exposure.pending_cancel_quantity += moved_quantity
+
+    def release_pending_cancel(self, quantity: Decimal) -> None:
+        self._require_non_negative(quantity)
+        self.exposure.pending_cancel_quantity = self._subtract_floor_zero(
+            self.exposure.pending_cancel_quantity,
+            quantity,
+        )
+
+    def set_live_open(self, quantity: Decimal) -> None:
+        self._require_non_negative(quantity)
+        self.exposure.live_open_quantity = quantity
+
+    def apply_fill(self, trade_id: str | None, cumulative: Decimal) -> None:
+        self._require_non_negative(cumulative)
+        if trade_id is not None:
+            if trade_id in self.seen_trade_ids:
+                return
+            self.seen_trade_ids.add(trade_id)
+
+        if cumulative <= self.exposure.confirmed_filled_quantity:
+            return
+
+        self.exposure.confirmed_filled_quantity = cumulative
+
+    @staticmethod
+    def _require_non_negative(quantity: Decimal) -> None:
+        if quantity < Decimal("0"):
+            raise ValidationError(f"quantity {quantity} cannot be negative")
+
+    @staticmethod
+    def _subtract_floor_zero(current: Decimal, quantity: Decimal) -> Decimal:
+        remaining = current - quantity
+        return remaining if remaining > Decimal("0") else Decimal("0")
 
 
 @dataclass

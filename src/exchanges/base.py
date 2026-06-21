@@ -30,7 +30,7 @@ class ExchangeAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def stream_market_data(self) -> AsyncIterator[MarketSnapshot]:
+    def stream_market_data(self) -> AsyncIterator[MarketSnapshot]:
         raise NotImplementedError
 
     @abstractmethod
@@ -46,7 +46,7 @@ class ExchangeAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def stream_user_events(self) -> AsyncIterator[object]:
+    def stream_user_events(self) -> AsyncIterator[object]:
         raise NotImplementedError
 
     @abstractmethod

@@ -223,6 +223,7 @@ retryable read failure:
 
 unknown order-mutating failure:
   create/cancel/order mutation with unknown exchange outcome; exposure remains reserved until reconciliation
+  ambiguous create outcome maps to unknown_order_quantity; ambiguous cancel outcome keeps the known order in pending_cancel_quantity until reconciliation
 
 stream health failure:
   market-data or user stream disconnect/staleness requiring pause and reconciliation

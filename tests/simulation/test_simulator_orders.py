@@ -143,13 +143,34 @@ async def test_create_timeout_not_found_warning_is_execution_specific() -> None:
 
     same_result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
     other_result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=other_prefix)
-    manual_result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix="manual_order_")
 
     assert same_result.orders == []
     assert same_result.fills == []
     assert same_result.warnings == ["CREATE_TIMEOUT_ORDER_NOT_FOUND"]
     assert other_result.warnings == []
-    assert manual_result.warnings == []
+
+
+async def test_reconciliation_rejects_non_execution_scoped_prefixes() -> None:
+    simulator = await fresh_simulator()
+    await simulator.submit_limit_order(order_request())
+
+    for invalid_prefix in ("ce_012345", "ce_0123456789ab", "manual_order_"):
+        with pytest.raises(ValueError, match="execution-scoped"):
+            await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=invalid_prefix)
+
+
+async def test_scripts_reject_non_execution_scoped_prefixes() -> None:
+    simulator = await fresh_simulator()
+
+    for invalid_prefix in ("ce_012345", "ce_0123456789ab"):
+        with pytest.raises(ValueError, match="execution-scoped"):
+            simulator.script_create_timeout(invalid_prefix)
+        with pytest.raises(ValueError, match="execution-scoped"):
+            simulator.script_create_timeout_not_found(invalid_prefix)
+        with pytest.raises(ValueError, match="execution-scoped"):
+            simulator.script_fill_during_cancel(invalid_prefix, Decimal("0.001"))
+        with pytest.raises(ValueError, match="execution-scoped"):
+            simulator.script_cancel_reconcile_open(invalid_prefix)
 
 
 async def test_reconcile_filters_orders_and_fills_by_exact_execution_prefix() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -20,6 +21,9 @@ from execution.models import (
     SymbolRules,
 )
 from execution.state_machine import transition_child
+
+
+EXECUTION_CLIENT_ORDER_PREFIX_RE = re.compile(r"^ce_[0-9a-f]{12}_$")
 
 
 class SimulatorOrderRejected(RuntimeError):
@@ -350,5 +354,9 @@ class DeterministicSimulator(ExchangeAdapter):
         return int(self.clock.utc_now().timestamp() * 1000)
 
     def _reject_broad_client_order_prefix(self, client_order_prefix: str | None) -> None:
-        if client_order_prefix in {"", "ce", "ce_"}:
-            raise ValueError("client_order_prefix must be execution-scoped, not a broad ce_ prefix")
+        if client_order_prefix is not None and not EXECUTION_CLIENT_ORDER_PREFIX_RE.fullmatch(
+            client_order_prefix
+        ):
+            raise ValueError(
+                "client_order_prefix must be execution-scoped: ce_<12 lowercase hex chars>_"
+            )

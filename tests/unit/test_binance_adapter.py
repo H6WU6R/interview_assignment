@@ -11,6 +11,8 @@ import pytest
 from config import Settings, load_settings
 from exchanges.base import NoFreshMarketData
 from exchanges.binance_usdm import (
+    BINANCE_USDM_MAINNET_BASE_URL,
+    BINANCE_USDM_TESTNET_BASE_URL,
     BinanceUsdmAdapter,
     classify_http_status,
     normalize_order_status,
@@ -26,10 +28,31 @@ def test_mainnet_requires_explicit_allow_flag() -> None:
     blocked = Settings(environment=Environment.MAINNET, allow_mainnet_trading=False)
     allowed = Settings(environment=Environment.MAINNET, allow_mainnet_trading=True)
     testnet = Settings(environment=Environment.TESTNET, allow_mainnet_trading=False)
+    blocked_string = Settings(environment="mainnet", allow_mainnet_trading="false")
+    allowed_string = Settings(environment="mainnet", allow_mainnet_trading="true")
 
     assert blocked.can_trade_mainnet is False
     assert allowed.can_trade_mainnet is True
     assert testnet.can_trade_mainnet is False
+    assert blocked_string.can_trade_mainnet is False
+    assert allowed_string.can_trade_mainnet is True
+
+
+def test_invalid_mainnet_allow_flag_is_rejected() -> None:
+    with pytest.raises(ValueError, match="allow_mainnet_trading"):
+        Settings(environment="mainnet", allow_mainnet_trading="definitely")
+
+
+def test_adapter_base_url_uses_mainnet_only_after_explicit_boolean_allow() -> None:
+    blocked = BinanceUsdmAdapter(
+        settings=Settings(environment="mainnet", allow_mainnet_trading="false")
+    )
+    allowed = BinanceUsdmAdapter(
+        settings=Settings(environment="mainnet", allow_mainnet_trading=True)
+    )
+
+    assert blocked.base_url == BINANCE_USDM_TESTNET_BASE_URL
+    assert allowed.base_url == BINANCE_USDM_MAINNET_BASE_URL
 
 
 def test_sign_params_adds_signature_without_exposing_secret() -> None:

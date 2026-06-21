@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -67,10 +68,10 @@ class ExecutionEngine:
                 record.status = transition_execution(record.status, ExecutionStatus.COMPLETED)
                 record.final_reason = NO_ACTION_TARGET_ALREADY_REACHED
                 record.summary = self._summary(record)
-                return record
+                return self._snapshot(record)
 
             record.status = transition_execution(record.status, ExecutionStatus.RUNNING)
-            return record
+            return self._snapshot(record)
 
         return await actor.apply(start)
 
@@ -79,7 +80,7 @@ class ExecutionEngine:
         actor = self._actors[execution_id]
 
         async def read() -> ExecutionRecord:
-            return record
+            return self._snapshot(record)
 
         return await actor.apply(read)
 
@@ -89,11 +90,11 @@ class ExecutionEngine:
 
         async def cancel() -> ExecutionRecord:
             if record.status.is_terminal or record.status is ExecutionStatus.CANCELLING:
-                return record
+                return self._snapshot(record)
 
             record.status = transition_execution(record.status, ExecutionStatus.CANCELLING)
             record.final_reason = CANCEL_REQUESTED
-            return record
+            return self._snapshot(record)
 
         return await actor.apply(cancel)
 
@@ -113,3 +114,6 @@ class ExecutionEngine:
             "side": record.side,
             "child_order_count": len(record.child_orders),
         }
+
+    def _snapshot(self, record: ExecutionRecord) -> ExecutionRecord:
+        return deepcopy(record)

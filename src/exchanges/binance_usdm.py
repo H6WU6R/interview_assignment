@@ -24,7 +24,7 @@ from execution.models import (
 )
 
 
-BINANCE_USDM_TESTNET_BASE_URL = "https://testnet.binancefuture.com"
+BINANCE_USDM_TESTNET_BASE_URL = "https://demo-fapi.binance.com"
 BINANCE_USDM_MAINNET_BASE_URL = "https://fapi.binance.com"
 
 
@@ -157,13 +157,12 @@ class BinanceUsdmAdapter(ExchangeAdapter):
     async def get_symbol_rules(self, symbol: str) -> SymbolRules:
         url = f"{self.base_url}/fapi/v1/exchangeInfo"
         timeout = httpx.Timeout(5.0)
-        params = {"symbol": symbol}
 
         if self.client is None:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(url, params=params)
+                response = await client.get(url)
         else:
-            response = await self.client.get(url, params=params, timeout=timeout)
+            response = await self.client.get(url, timeout=timeout)
 
         response.raise_for_status()
         data = response.json()

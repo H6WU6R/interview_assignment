@@ -24,6 +24,27 @@ from execution.clock import ManualClock
 from execution.models import ChildOrderStatus, Environment, MarketSnapshot, SymbolRules
 
 
+class FakeExchangeInfoResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self.payload
+
+
+class FakeExchangeInfoClient:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.calls: list[dict] = []
+
+    async def get(self, url: str, **kwargs: object) -> FakeExchangeInfoResponse:
+        self.calls.append({"url": url, **kwargs})
+        return FakeExchangeInfoResponse(self.payload)
+
+
 def test_mainnet_requires_explicit_allow_flag() -> None:
     blocked = Settings(environment=Environment.MAINNET, allow_mainnet_trading=False)
     allowed = Settings(environment=Environment.MAINNET, allow_mainnet_trading=True)
@@ -189,6 +210,36 @@ def test_exchange_info_parsing_uses_filters_and_rate_limits() -> None:
         supported_time_in_force=frozenset({"GTC", "IOC", "GTX"}),
     )
     assert parse_exchange_info_rate_limits(payload) == {"REQUEST_WEIGHT": 2400, "ORDERS": 1200}
+
+
+async def test_get_symbol_rules_uses_current_testnet_exchange_info_endpoint_without_params() -> None:
+    payload = {
+        "symbols": [
+            {
+                "symbol": "BTCUSDT",
+                "status": "TRADING",
+                "timeInForce": ["GTC", "GTX"],
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                    {"filterType": "MIN_NOTIONAL", "notional": "100.00"},
+                ],
+            }
+        ],
+        "rateLimits": [
+            {"rateLimitType": "REQUEST_WEIGHT", "limit": 2400},
+            {"rateLimitType": "ORDERS", "limit": 1200},
+        ],
+    }
+    client = FakeExchangeInfoClient(payload)
+    adapter = BinanceUsdmAdapter(settings=Settings(environment="testnet"), client=client)
+
+    rules = await adapter.get_symbol_rules("BTCUSDT")
+
+    assert rules.symbol == "BTCUSDT"
+    assert adapter.rate_limits == {"REQUEST_WEIGHT": 2400, "ORDERS": 1200}
+    assert client.calls[0]["url"] == f"{BINANCE_USDM_TESTNET_BASE_URL}/fapi/v1/exchangeInfo"
+    assert "params" not in client.calls[0]
 
 
 async def test_market_snapshots_require_present_uncrossed_and_fresh_data() -> None:

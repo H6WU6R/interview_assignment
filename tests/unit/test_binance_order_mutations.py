@@ -174,6 +174,55 @@ async def test_signed_request_http_408_maps_mutations_to_ambiguous_outcome() -> 
         await read_adapter._signed_request("GET", ORDER_QUERY_PATH, {})
 
 
+async def test_signed_create_post_only_reject_remains_retryable_order_reject() -> None:
+    adapter = authed_adapter(
+        RecordingClient(
+            FakeResponse(
+                400,
+                {
+                    "code": -5022,
+                    "msg": "Due to the order could not be executed as maker, the Post Only order will be rejected.",
+                },
+            )
+        )
+    )
+
+    with pytest.raises(OrderRejected, match="Post Only") as exc_info:
+        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+    assert type(exc_info.value) is OrderRejected
+
+
+async def test_signed_create_non_post_only_4xx_with_maker_text_remains_terminal() -> None:
+    adapter = authed_adapter(
+        RecordingClient(
+            FakeResponse(
+                400,
+                {
+                    "code": -4999,
+                    "msg": "Maker account configuration is invalid.",
+                },
+            )
+        )
+    )
+
+    with pytest.raises(ExchangeTerminalReject, match="Maker account"):
+        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+
+
+async def test_signed_create_insufficient_margin_is_terminal_reject() -> None:
+    adapter = authed_adapter(
+        RecordingClient(
+            FakeResponse(
+                400,
+                {"code": -2019, "msg": "Margin is insufficient."},
+            )
+        )
+    )
+
+    with pytest.raises(ExchangeTerminalReject, match="Margin is insufficient"):
+        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+
+
 async def test_signed_request_uses_api_key_header_and_signed_params_without_secret() -> None:
     client = RecordingClient(FakeResponse(200, {"ok": True}))
     adapter = authed_adapter(client)
@@ -454,6 +503,7 @@ def test_testnet_scripts_refuse_without_credentials_and_never_fallback_to_simula
     env = os.environ.copy()
     env.pop("BINANCE_USDM_API_KEY", None)
     env.pop("BINANCE_USDM_API_SECRET", None)
+    env["PYTHON_DOTENV_DISABLED"] = "1"
 
     result = subprocess.run(
         [sys.executable, str(script)],

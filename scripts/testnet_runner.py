@@ -3,13 +3,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import suppress
-import os
 from dataclasses import asdict, is_dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from config import Settings
+from config import Settings, load_binance_usdm_credentials
 from exchanges.binance_usdm import BinanceUsdmAdapter
 from execution.ids import make_client_order_prefix
 from execution.models import (
@@ -47,9 +46,8 @@ def parse_args(algorithm: Algorithm) -> argparse.Namespace:
 
 async def run(algorithm: Algorithm) -> Path:
     args = parse_args(algorithm)
-    api_key = os.getenv("BINANCE_USDM_API_KEY")
-    api_secret = os.getenv("BINANCE_USDM_API_SECRET")
-    if not api_key or not api_secret:
+    credentials = load_binance_usdm_credentials()
+    if not credentials.is_configured:
         raise SystemExit(
             "Missing BINANCE_USDM_API_KEY or BINANCE_USDM_API_SECRET. "
             "This script never falls back to simulation."
@@ -65,8 +63,8 @@ async def run(algorithm: Algorithm) -> Path:
     adapter = BinanceUsdmAdapter(
         Settings(
             environment="testnet",
-            binance_api_key=api_key,
-            binance_api_secret=api_secret,
+            binance_api_key=credentials.api_key,
+            binance_api_secret=credentials.api_secret,
         )
     )
     adapter.set_market_stream_symbol(symbol)

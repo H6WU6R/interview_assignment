@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
-from exchanges.base import OrderCancelTimeout, OrderCreateTimeout
+from exchanges.base import OrderCancelTimeout, OrderCreateTimeout, OrderRejected, TerminalOrderRejected
 from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
 from execution.engine import ExecutionEngine
@@ -454,6 +454,51 @@ async def test_exact_create_timeout_lookup_not_found_clears_unknown_without_broa
     assert retried.child_orders[1].client_order_id != retried.child_orders[0].client_order_id
 
 
+async def test_terminal_exchange_reject_fails_execution_without_repeated_retry() -> None:
+    class TerminalRejectAdapter(DeterministicSimulator):
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            raise TerminalOrderRejected("MARGIN_INSUFFICIENT")
+
+    clock = ManualClock()
+    adapter = TerminalRejectAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    failed = await service.run_once(execution.execution_id)
+    second = await service.run_once(execution.execution_id)
+
+    assert len(failed.child_orders) == 1
+    assert failed.child_orders[0].status is ChildOrderStatus.REJECTED
+    assert failed.child_orders[0].terminal_reason == "MARGIN_INSUFFICIENT"
+    assert failed.status is ExecutionStatus.FAILED
+    assert failed.final_reason == "TERMINAL_ORDER_REJECTED: MARGIN_INSUFFICIENT"
+    assert failed.exposure.reserved_exposure == Decimal("0")
+    assert failed.summary is not None
+    assert len(second.child_orders) == 1
+    assert second.status is ExecutionStatus.FAILED
+
+
+async def test_retryable_order_reject_does_not_fail_parent_execution() -> None:
+    class RetryableRejectAdapter(DeterministicSimulator):
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            raise OrderRejected("post-only order would cross the current ask")
+
+    clock = ManualClock()
+    adapter = RetryableRejectAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert len(snapshot.child_orders) == 1
+    assert snapshot.child_orders[0].status is ChildOrderStatus.REJECTED
+    assert snapshot.status is ExecutionStatus.RUNNING
+    assert snapshot.summary is None
+    assert snapshot.exposure.reserved_exposure == Decimal("0")
+
+
 async def test_adapter_level_cancel_timeout_keeps_pending_cancel_exposure_until_reconcile() -> None:
     class CancelTimeoutAdapter(DeterministicSimulator):
         async def cancel_order(self, symbol: str, client_order_id: str) -> ChildOrder:
@@ -569,6 +614,45 @@ async def test_ambiguous_cancel_reconciled_open_keeps_live_exposure_without_repl
     assert after_run.child_orders[0].status is ChildOrderStatus.OPEN
     assert after_run.exposure.live_open_quantity == Decimal("0.010")
     assert after_run.exposure.reserved_exposure == Decimal("0.010")
+    assert after_run.summary is None
+
+
+async def test_manual_cancel_terminalizes_cancelled_after_no_fill_and_no_exposure() -> None:
+    service, _, _ = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+
+    terminal = await service.cancel_execution(execution.execution_id)
+
+    assert opened.child_orders[0].status is ChildOrderStatus.OPEN
+    assert terminal.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert terminal.status is ExecutionStatus.CANCELLED
+    assert terminal.final_reason == "CANCEL_REQUESTED"
+    assert terminal.exposure.confirmed_filled_quantity == Decimal("0")
+    assert terminal.exposure.reserved_exposure == Decimal("0")
+    assert terminal.completed_monotonic is not None
+    assert terminal.summary is not None
+
+
+async def test_manual_cancel_terminalizes_partially_completed_after_partial_fill_and_no_exposure() -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+    await simulator.push_fill(
+        opened.child_orders[0].client_order_id,
+        Decimal("0.004"),
+        Decimal("95000.00"),
+    )
+
+    terminal = await service.cancel_execution(execution.execution_id)
+
+    assert terminal.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert terminal.status is ExecutionStatus.PARTIALLY_COMPLETED
+    assert terminal.final_reason == "CANCEL_REQUESTED"
+    assert terminal.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert terminal.exposure.reserved_exposure == Decimal("0")
+    assert terminal.completed_monotonic is not None
+    assert terminal.summary is not None
 
 
 async def test_cancelling_run_once_reconciles_existing_fill_without_replacement() -> None:

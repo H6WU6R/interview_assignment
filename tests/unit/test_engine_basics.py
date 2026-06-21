@@ -150,9 +150,9 @@ async def test_cancel_running_execution_is_idempotent() -> None:
     first_cancel = await service.cancel_execution(record.execution_id)
     second_cancel = await service.cancel_execution(record.execution_id)
 
-    assert first_cancel.status is ExecutionStatus.CANCELLING
+    assert first_cancel.status is ExecutionStatus.CANCELLED
     assert first_cancel.final_reason == "CANCEL_REQUESTED"
-    assert second_cancel.status is ExecutionStatus.CANCELLING
+    assert second_cancel.status is ExecutionStatus.CANCELLED
     assert second_cancel.final_reason == "CANCEL_REQUESTED"
 
 
@@ -184,8 +184,8 @@ async def test_per_execution_actor_serializes_concurrent_cancels() -> None:
         service.cancel_execution(record.execution_id),
     )
 
-    assert all(result.status is ExecutionStatus.CANCELLING for result in results)
+    assert all(result.status is ExecutionStatus.CANCELLED for result in results)
     assert all(result.final_reason == "CANCEL_REQUESTED" for result in results)
     stored = await service.get_execution(record.execution_id)
-    assert stored.status is ExecutionStatus.CANCELLING
+    assert stored.status is ExecutionStatus.CANCELLED
     assert stored.final_reason == "CANCEL_REQUESTED"

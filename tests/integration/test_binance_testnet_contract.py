@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 
-from config import Settings
+from config import Settings, load_binance_usdm_credentials
 from exchanges.binance_usdm import BinanceUsdmAdapter
 
 
+_credentials = load_binance_usdm_credentials()
+
 pytestmark = pytest.mark.skipif(
-    not os.getenv("BINANCE_USDM_API_KEY") or not os.getenv("BINANCE_USDM_API_SECRET"),
+    not _credentials.is_configured,
     reason="Binance Testnet credentials are not configured",
 )
 
@@ -18,8 +18,8 @@ async def test_binance_testnet_exchange_info_contract() -> None:
     adapter = BinanceUsdmAdapter(
         Settings(
             environment="testnet",
-            binance_api_key=os.environ["BINANCE_USDM_API_KEY"],
-            binance_api_secret=os.environ["BINANCE_USDM_API_SECRET"],
+            binance_api_key=_credentials.api_key,
+            binance_api_secret=_credentials.api_secret,
         )
     )
 
@@ -35,8 +35,8 @@ async def test_binance_testnet_signed_read_and_listen_key_contract() -> None:
     adapter = BinanceUsdmAdapter(
         Settings(
             environment="testnet",
-            binance_api_key=os.environ["BINANCE_USDM_API_KEY"],
-            binance_api_secret=os.environ["BINANCE_USDM_API_SECRET"],
+            binance_api_key=_credentials.api_key,
+            binance_api_secret=_credentials.api_secret,
         )
     )
 

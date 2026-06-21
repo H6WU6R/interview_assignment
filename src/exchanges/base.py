@@ -16,6 +16,14 @@ class NoFreshMarketData(RuntimeError):
     pass
 
 
+class OrderCreateTimeout(RuntimeError):
+    pass
+
+
+class OrderRejected(RuntimeError):
+    pass
+
+
 class ExchangeAdapter(ABC):
     @abstractmethod
     async def get_symbol_rules(self, symbol: str) -> SymbolRules:

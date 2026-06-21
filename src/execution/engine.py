@@ -7,7 +7,7 @@ from typing import Any
 
 from algorithms.chase import ChaseDecision, chase_desired_price, should_reprice
 from algorithms.twap import safe_child_quantity, scheduled_cumulative_quantity, scheduled_deficit
-from exchanges.base import ExchangeAdapter
+from exchanges.base import ExchangeAdapter, OrderCreateTimeout, OrderRejected
 from execution.clock import Clock, ManualClock
 from execution import ids
 from execution.events import ExecutionEventActor
@@ -37,6 +37,7 @@ CREATE_TIMEOUT_PENDING_RECONCILIATION = "CREATE_TIMEOUT_PENDING_RECONCILIATION"
 CREATE_TIMEOUT_ORDER_NOT_FOUND = "CREATE_TIMEOUT_ORDER_NOT_FOUND"
 PRICE_OUTSIDE_RANGE = "PRICE_OUTSIDE_RANGE"
 POST_ONLY_CROSSES = "POST_ONLY_CROSSES"
+POST_ONLY_UNSUPPORTED = "POST_ONLY_UNSUPPORTED"
 ORDER_SAFETY_REJECTED = "ORDER_SAFETY_REJECTED"
 STREAM_HEALTH_DEGRADED_RECONCILED = "STREAM_HEALTH_DEGRADED_RECONCILED"
 TARGET_QUANTITY_FILLED = "TARGET_QUANTITY_FILLED"
@@ -325,18 +326,22 @@ class ExecutionEngine:
 
         try:
             submitted = await self._adapter.submit_limit_order(order_request)
-        except Exception as exc:  # simulator exposes timeout/reject as adapter exceptions
+        except OrderCreateTimeout as exc:
             tracker.release_pending_submit(quantity)
-            if exc.__class__.__name__ == "SimulatorOrderTimeout":
-                self._set_child_status(child, ChildOrderStatus.UNKNOWN)
-                child.terminal_reason = CREATE_TIMEOUT_PENDING_RECONCILIATION
-                tracker.reserve_unknown_create(quantity)
-                record.final_reason = CREATE_TIMEOUT_PENDING_RECONCILIATION
-                return child
-
+            self._set_child_status(child, ChildOrderStatus.UNKNOWN)
+            child.terminal_reason = CREATE_TIMEOUT_PENDING_RECONCILIATION
+            tracker.reserve_unknown_create(quantity)
+            record.final_reason = CREATE_TIMEOUT_PENDING_RECONCILIATION
+            return child
+        except OrderRejected as exc:
+            tracker.release_pending_submit(quantity)
             self._set_child_status(child, ChildOrderStatus.REJECTED)
             child.terminal_reason = str(exc)
             return child
+        except Exception:
+            tracker.release_pending_submit(quantity)
+            record.child_orders.remove(child)
+            raise
 
         tracker.release_pending_submit(quantity)
         self._copy_exchange_child(child, submitted)
@@ -503,6 +508,8 @@ class ExecutionEngine:
         reason = str(exc)
         if "bound" in reason:
             record.final_reason = PRICE_OUTSIDE_RANGE
+        elif "unsupported" in reason:
+            record.final_reason = POST_ONLY_UNSUPPORTED
         elif "post-only" in reason:
             record.final_reason = POST_ONLY_CROSSES
         else:
@@ -563,12 +570,12 @@ class ExecutionEngine:
             child.confirmed_filled_quantity,
         )
 
-    def _set_child_status(self, child: ChildOrder, target: ChildOrderStatus) -> None:
+    def _set_child_status(self, child: ChildOrder, target: ChildOrderStatus) -> bool:
         if child.status is target:
-            return
+            return True
         try:
             child.status = transition_child(child.status, target)
-            return
+            return True
         except InvalidStateTransition:
             pass
 
@@ -578,7 +585,7 @@ class ExecutionEngine:
         }:
             child.status = transition_child(child.status, ChildOrderStatus.PENDING_CANCEL)
             child.status = transition_child(child.status, target)
-            return
+            return True
 
         if child.status is ChildOrderStatus.PENDING_SUBMIT and target in {
             ChildOrderStatus.PARTIALLY_FILLED,
@@ -586,9 +593,9 @@ class ExecutionEngine:
         }:
             child.status = transition_child(child.status, ChildOrderStatus.OPEN)
             child.status = transition_child(child.status, target)
-            return
+            return True
 
-        child.status = target
+        return False
 
     def _first_active_child(self, record: ExecutionRecord) -> ChildOrder | None:
         for child in record.child_orders:

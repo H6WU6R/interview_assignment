@@ -3,17 +3,22 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+from exchanges.base import OrderCreateTimeout
 from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
+from execution.engine import ExecutionEngine
 from execution.ids import make_client_order_prefix
 from execution.models import (
     Algorithm,
+    ChildOrder,
     ChildOrderStatus,
     DeadlinePolicy,
     Environment,
     ExecutionParameters,
     ExecutionRequest,
     ExecutionStatus,
+    OrderRequest,
+    Side,
     SymbolRules,
 )
 from execution.service import ExecutionService
@@ -62,6 +67,24 @@ def test_static_single_submit_gate() -> None:
 
     assert "def _submit_child_locked(" in source
     assert source.count(".submit_limit_order(") == 1
+
+
+def test_terminal_child_status_is_not_resurrected_by_stale_reconciliation_status() -> None:
+    engine = ExecutionEngine(DeterministicSimulator())
+    child = ChildOrder(
+        child_order_id="child_0001",
+        client_order_id="ce_0123456789ab_1",
+        symbol=SYMBOL,
+        side=Side.BUY,
+        submitted_quantity=Decimal("0.010"),
+        price=Decimal("95000.00"),
+        status=ChildOrderStatus.FILLED,
+        confirmed_filled_quantity=Decimal("0.010"),
+    )
+
+    engine._set_child_status(child, ChildOrderStatus.OPEN)
+
+    assert child.status is ChildOrderStatus.FILLED
 
 
 async def test_chase_run_once_submits_one_safe_child() -> None:
@@ -124,6 +147,25 @@ async def test_create_timeout_not_found_clears_unknown_and_retries_with_new_clie
     assert retried.child_orders[0].terminal_reason == "CREATE_TIMEOUT_ORDER_NOT_FOUND"
     assert retried.child_orders[1].status is ChildOrderStatus.OPEN
     assert retried.child_orders[1].client_order_id != retried.child_orders[0].client_order_id
+
+
+async def test_adapter_level_create_timeout_reserves_unknown_exposure() -> None:
+    class TimeoutAdapter(DeterministicSimulator):
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            raise OrderCreateTimeout(f"ambiguous create for {order_request.client_order_id}")
+
+    clock = ManualClock()
+    adapter = TimeoutAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert len(snapshot.child_orders) == 1
+    assert snapshot.child_orders[0].status is ChildOrderStatus.UNKNOWN
+    assert snapshot.exposure.unknown_order_quantity == Decimal("0.010")
+    assert snapshot.exposure.reserved_exposure == snapshot.required_quantity
 
 
 async def test_fill_during_cancel_reduces_replacement_size_without_overfill() -> None:
@@ -277,7 +319,7 @@ async def test_post_only_unsupported_rejects_before_submit() -> None:
     reconciliation = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
 
     assert snapshot.status is ExecutionStatus.EXPIRED
-    assert snapshot.final_reason == "POST_ONLY_CROSSES"
+    assert snapshot.final_reason == "POST_ONLY_UNSUPPORTED"
     assert snapshot.child_orders == []
     assert reconciliation.orders == []
 

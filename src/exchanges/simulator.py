@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal
 
-from exchanges.base import ExchangeAdapter, NoFreshMarketData
+from exchanges.base import ExchangeAdapter, NoFreshMarketData, OrderCreateTimeout, OrderRejected
 from execution.clock import Clock, ManualClock
 from execution.models import (
     ChildOrder,
@@ -26,11 +26,11 @@ from execution.state_machine import transition_child
 EXECUTION_CLIENT_ORDER_PREFIX_RE = re.compile(r"^ce_[0-9a-f]{12}_$")
 
 
-class SimulatorOrderRejected(RuntimeError):
+class SimulatorOrderRejected(OrderRejected):
     pass
 
 
-class SimulatorOrderTimeout(RuntimeError):
+class SimulatorOrderTimeout(OrderCreateTimeout):
     pass
 
 

@@ -2794,6 +2794,7 @@ Create `tests/unit/test_engine_lifecycle.py`:
 
 ```python
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -2969,6 +2970,13 @@ async def test_twap_run_once_uses_schedule_deficit_not_equal_sleep_slices() -> N
 
     assert execution.child_orders
     assert execution.child_orders[0].submitted_quantity <= Decimal("0.005")
+
+
+def test_engine_has_single_adapter_submit_call_static_guard() -> None:
+    source = Path("src/execution/engine.py").read_text(encoding="utf-8")
+
+    assert source.count(".submit_limit_order(") == 1
+    assert "async def _submit_child_locked" in source
 ```
 
 - [ ] **Step 2: Run lifecycle tests to verify they fail**
@@ -3122,6 +3130,9 @@ Initial implementation uses a single active child order per execution.
 TWAP can still reserve open exposure, so safe_child_quantity subtracts live, pending, and unknown exposure.
 Chase repricing is the only path that cancels a live child order to free exposure for a replacement.
 Trading validation runs again before every child order because market data, rules, and exposure can change.
+All child-order demand paths only produce quantity/price intent. Normal submit, Chase replacement, TWAP slice, create-timeout retry, and any aggressive final attempt must all call `_submit_child_locked`.
+`_submit_child_locked` is the only engine method allowed to call `adapter.submit_limit_order`; it is the final exposure gate before any exchange mutation.
+An aggressive final attempt may set `post_only=False`, but it still must pass price bounds, order-shape validation, market freshness, and the exposure invariant before submission.
 ```
 
 - [ ] **Step 6: Implement submit, cancel, and reconciliation transitions**
@@ -3175,6 +3186,8 @@ Add `_submit_child_locked`:
         price: Decimal,
         post_only: bool,
     ) -> None:
+        # Final overfill gate. Do not call adapter.submit_limit_order from any
+        # other engine method; all algorithms and retry paths must pass here.
         record.exposure_tracker.check_can_submit(quantity)
         record.last_child_sequence += 1
         child_order_id = f"child_{record.last_child_sequence:04d}"
@@ -3951,6 +3964,8 @@ outputs/<execution_id>/ contains request_snapshot.json, execution_log.jsonl, exe
 - [ ] **Step 7: Add final required scenario invariant tests before commit**
 
 Before committing Task 14, replace or extend the bootstrap smoke tests with concrete Python tests using the names and assertions below. Do not accept tests that only prove the engine did not crash or that a status is merely non-failed.
+
+These are behavioral proof tests. Each test must assert the critical quantity, price, clientOrderId, exposure bucket, final reason, or absence of unsafe child orders that proves the scenario. Do not weaken them into status-only assertions such as `RUNNING`, `COMPLETED`, or `PARTIALLY_COMPLETED`.
 
 ```text
 test_t1_normal_chase_submits_passive_price_and_preserves_exposure_invariant
@@ -5444,6 +5459,8 @@ README explains architecture, state machines, overfill invariant, Chase/TWAP des
 AI_USAGE.md discloses AI support and validation.
 reports/report_draft.md has sections for simulator evidence, Testnet evidence, failure case, and limitations.
 reports/failure_case_log.md contains at least one real implementation failure before final submission.
+Engine code has exactly one `adapter.submit_limit_order` call, inside `_submit_child_locked`; submit, replace, retry, TWAP, and deadline paths all route through that gate.
+Final T1-T10 tests assert concrete safety behavior, not only broad execution statuses.
 Simulator demo artifacts exist for request snapshot, JSONL log, summary JSON, child orders CSV, fills CSV, and timeline CSV.
 Timeline CSV artifacts preserve heterogeneous event fields using a stable union schema or an explicitly stable schema.
 If Testnet credentials are available, Chase and TWAP Testnet evidence artifacts exist with order IDs, clientOrderIds, request snapshots, and summaries.
@@ -5470,6 +5487,7 @@ Exact tick/step and post-only crossing validation: Tasks 4, 12, 17
 TRADING symbol status validation before submit: Tasks 4, 12, 15
 API decimal strings reject JSON floats: Task 13
 Exposure buckets and overfill invariant: Task 11
+Single submit gate for submit, replace, retry, TWAP, and deadline attempts: Task 12
 Chase ADVERSE_ONLY/TWO_SIDED config: Task 9 plus config in Task 1
 TWAP schedule and carry-forward math: Task 10
 child_order_timeout_seconds: Tasks 10, 11, 12, and Task 14 scenarios
@@ -5483,6 +5501,7 @@ Binance exchangeInfo parsing, market-data freshness, and routed WebSocket paths:
 Source-of-truth priority and REST reconciliation: Tasks 11, 12, 15, 16, 17
 Create-timeout found and not-found reconciliation outcomes: Tasks 7, 12, 14, 17
 Monotonic cumulative fill deduplication for duplicate or out-of-order fills: Tasks 11, 14
+Behavioral final T1-T10 proof tests instead of status-only smoke tests: Task 14
 Log sanitization, JSON-safe artifact values, and summaries: Task 6
 External position drift assumption: Task 14/18 documentation
 Testnet credential gating and final evidence instructions: Tasks 16, 17, 18

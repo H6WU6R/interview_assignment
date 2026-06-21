@@ -20,6 +20,8 @@ SENSITIVE_KEY_CONCEPTS = (
     "signedpayload",
     "signedparams",
 )
+SENSITIVE_CONTAINER_PREFIXES = ("raw", "authenticated", "signed")
+SENSITIVE_CONTAINER_TARGETS = ("request", "payload", "params")
 
 _KEY_NORMALIZATION_TABLE = str.maketrans("", "", "_- ")
 
@@ -45,13 +47,16 @@ def sanitize_log_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     for key, value in payload.items():
         if _is_sensitive_key(key):
             continue
-        sanitized[key] = _sanitize_value(value)
+        sanitized[str(key)] = _sanitize_value(value)
     return sanitized
 
 
 def _is_sensitive_key(key: Any) -> bool:
     normalized = str(key).lower().translate(_KEY_NORMALIZATION_TABLE)
-    return any(concept in normalized for concept in SENSITIVE_KEY_CONCEPTS)
+    return any(concept in normalized for concept in SENSITIVE_KEY_CONCEPTS) or (
+        any(normalized.startswith(prefix) for prefix in SENSITIVE_CONTAINER_PREFIXES)
+        and any(target in normalized for target in SENSITIVE_CONTAINER_TARGETS)
+    )
 
 
 def _sanitize_value(value: Any) -> Any:

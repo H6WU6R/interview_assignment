@@ -105,6 +105,41 @@ def test_sanitize_log_payload_sanitizes_nested_auth_headers_and_signed_payloads(
     }
 
 
+def test_sanitize_log_payload_removes_raw_authenticated_and_signed_artifact_aliases() -> None:
+    payload = {
+        "authenticated_payload": {"signature": "authenticated-payload-signature"},
+        "authenticated_params": {"signature": "authenticated-params-signature"},
+        "raw_payload": {"signature": "raw-payload-signature"},
+        "raw_params": {"signature": "raw-params-signature"},
+        "raw_authenticated_payload": {"signature": "raw-authenticated-payload-signature"},
+        "raw-authenticated-params": {"signature": "raw-authenticated-params-signature"},
+        "signed_request": {"signature": "signed-request-signature"},
+        "signed_payload": {"signature": "signed-payload-signature"},
+        "signed_params": {"signature": "signed-params-signature"},
+        "client_order_id": "ce_abc_1",
+        "orderId": 123,
+        "timestamp": 1_782_009_600_000,
+        "quantity": Decimal("0.010"),
+        "status": "ACKED",
+    }
+
+    sanitized = sanitize_log_payload(payload)
+
+    assert sanitized == {
+        "client_order_id": "ce_abc_1",
+        "orderId": 123,
+        "timestamp": 1_782_009_600_000,
+        "quantity": "0.010",
+        "status": "ACKED",
+    }
+
+
+def test_sanitize_log_payload_stringifies_mapping_keys() -> None:
+    sanitized = sanitize_log_payload({1: "one", "status": "ACKED"})
+
+    assert sanitized == {"1": "one", "status": "ACKED"}
+
+
 def test_to_jsonable_converts_decimal_enum_datetime_and_path() -> None:
     payload = {
         "quantity": Decimal("0.010"),

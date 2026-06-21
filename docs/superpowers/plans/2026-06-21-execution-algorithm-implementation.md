@@ -1612,6 +1612,26 @@ def test_write_execution_artifacts_creates_required_files(tmp_path) -> None:
     assert (output_dir / "child_orders.csv").exists()
     assert (output_dir / "fills.csv").exists()
     assert (output_dir / "timeline.csv").exists()
+
+
+def test_write_execution_artifacts_tolerates_heterogeneous_timeline_rows(tmp_path) -> None:
+    output_dir = write_execution_artifacts(
+        root=tmp_path,
+        execution_id="exec_mixed_timeline",
+        request_snapshot={"symbol": "BTCUSDT"},
+        log_events=[],
+        summary={"execution_id": "exec_mixed_timeline"},
+        child_orders=[],
+        fills=[],
+        timeline=[
+            {"event": "submit", "client_order_id": "ce_test_1"},
+            {"event": "reconcile", "warning": "order_not_found"},
+        ],
+    )
+
+    timeline = (output_dir / "timeline.csv").read_text(encoding="utf-8")
+    assert "client_order_id" in timeline
+    assert "warning" in timeline
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1749,8 +1769,9 @@ def _write_csv(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     if not rows:
         path.write_text("", encoding="utf-8")
         return
+    fieldnames = sorted({key for row in rows for key in row.keys()})
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
@@ -1884,6 +1905,18 @@ async def test_scripted_create_timeout_creates_unknown_order_for_reconciliation(
     assert reconciled.orders[0].client_order_id == "ce_exec_1"
 
 
+async def test_scripted_create_timeout_can_reconcile_to_not_found_warning() -> None:
+    simulator = DeterministicSimulator(clock=ManualClock())
+    simulator.script_create_timeout_not_found(client_order_prefix="ce_")
+
+    child = await simulator.submit_limit_order(make_order("ce_exec_1"))
+    reconciled = await simulator.reconcile_orders_and_fills("BTCUSDT", client_order_prefix="ce_")
+
+    assert child.status is ChildOrderStatus.UNKNOWN
+    assert reconciled.orders == []
+    assert "CREATE_TIMEOUT_ORDER_NOT_FOUND" in reconciled.warnings
+
+
 async def test_scripted_ambiguous_cancel_reconciles_to_still_open() -> None:
     simulator = DeterministicSimulator(clock=ManualClock())
     simulator.script_cancel_reconcile_open(client_order_prefix="ce_")
@@ -1930,6 +1963,7 @@ Add these fields to `DeterministicSimulator`:
     _user_event_queue: asyncio.Queue[SimulatorOrderEvent] = field(default_factory=asyncio.Queue)
     _fill_during_cancel: dict[str, Decimal] = field(default_factory=dict)
     _create_timeout_prefixes: set[str] = field(default_factory=set)
+    _create_timeout_not_found_prefixes: set[str] = field(default_factory=set)
     _cancel_reconcile_open_prefixes: set[str] = field(default_factory=set)
     _stream_healthy: bool = True
 ```
@@ -1943,6 +1977,9 @@ Replace the order methods with:
     def script_create_timeout(self, client_order_prefix: str) -> None:
         self._create_timeout_prefixes.add(client_order_prefix)
 
+    def script_create_timeout_not_found(self, client_order_prefix: str) -> None:
+        self._create_timeout_not_found_prefixes.add(client_order_prefix)
+
     def script_cancel_reconcile_open(self, client_order_prefix: str) -> None:
         self._cancel_reconcile_open_prefixes.add(client_order_prefix)
 
@@ -1953,6 +1990,18 @@ Replace the order methods with:
         return next((prefix for prefix in prefixes if client_order_id.startswith(prefix)), None)
 
     async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+        if self._matching_prefix(order_request.client_order_id, self._create_timeout_not_found_prefixes):
+            return ChildOrder(
+                child_order_id=order_request.child_order_id,
+                client_order_id=order_request.client_order_id,
+                symbol=order_request.symbol,
+                side=order_request.side,
+                submitted_quantity=order_request.quantity,
+                price=order_request.price,
+                status=ChildOrderStatus.UNKNOWN,
+                terminal_reason="SCRIPTED_CREATE_TIMEOUT_NOT_FOUND",
+            )
+
         if self._matching_prefix(order_request.client_order_id, self._create_timeout_prefixes):
             child = ChildOrder(
                 child_order_id=order_request.child_order_id,
@@ -2077,13 +2126,19 @@ Replace the order methods with:
             fills = [fill for fill in self._fills if fill.client_order_id.startswith(client_order_prefix)]
         else:
             fills = list(self._fills)
+        warnings = []
+        if client_order_prefix is not None and any(
+            client_order_prefix.startswith(prefix) or prefix.startswith(client_order_prefix)
+            for prefix in self._create_timeout_not_found_prefixes
+        ):
+            warnings.append("CREATE_TIMEOUT_ORDER_NOT_FOUND")
         for order in orders:
             if (
                 self._matching_prefix(order.client_order_id, self._cancel_reconcile_open_prefixes)
                 and order.status is ChildOrderStatus.PENDING_CANCEL
             ):
                 order.status = ChildOrderStatus.OPEN
-        return ReconciliationResult(orders=orders, fills=fills, warnings=[])
+        return ReconciliationResult(orders=orders, fills=fills, warnings=warnings)
 
     async def health_check_streams(self) -> bool:
         return self._stream_healthy
@@ -2628,6 +2683,15 @@ def test_duplicate_trade_id_not_counted_twice() -> None:
     tracker.apply_fill(trade_id="t1", cumulative=Decimal("0.003"))
 
     assert tracker.exposure.confirmed_filled_quantity == Decimal("0.003")
+
+
+def test_out_of_order_or_stale_cumulative_fill_is_ignored() -> None:
+    tracker = ExposureTracker(target_quantity=Decimal("0.010"))
+
+    tracker.apply_fill(trade_id="t2", cumulative=Decimal("0.006"))
+    tracker.apply_fill(trade_id="t1", cumulative=Decimal("0.004"))
+
+    assert tracker.exposure.confirmed_filled_quantity == Decimal("0.006")
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2680,6 +2744,8 @@ class ExposureTracker:
             if trade_id in self.seen_trade_ids:
                 return
             self.seen_trade_ids.add(trade_id)
+        # Fill events carry cumulative order quantity. Ignore duplicate or stale
+        # events rather than summing every last_filled_quantity message.
         if cumulative > self.exposure.confirmed_filled_quantity:
             self.exposure.confirmed_filled_quantity = cumulative
 ```
@@ -3174,6 +3240,8 @@ Add `_reconcile_locked`:
     async def _reconcile_locked(self, record: ExecutionRecord) -> None:
         prefix = make_client_order_prefix(record.execution_id)
         reconciliation = await self.adapter.reconcile_orders_and_fills(record.request.symbol, client_order_prefix=prefix)
+        if "CREATE_TIMEOUT_ORDER_NOT_FOUND" in reconciliation.warnings:
+            record.exposure.unknown_order_quantity = Decimal("0")
         for fill in reconciliation.fills:
             record.exposure_tracker.apply_fill(fill.trade_id, fill.cumulative_filled_quantity)
         for exchange_child in reconciliation.orders:
@@ -3901,10 +3969,16 @@ test_t3_cancel_fill_race_updates_confirmed_fills_before_replacement_sizing
   replacement quantity is no larger than required_quantity - confirmed_filled_quantity - reserved_exposure;
   confirmed fills plus all reserved exposure never exceeds required quantity.
 
-test_t4_create_timeout_unknown_exposure_blocks_duplicate_client_order_id
+test_t4a_create_timeout_reconciles_to_open_order_without_new_client_order_id
   timed-out create becomes UNKNOWN exposure;
   no second clientOrderId is created before reconciliation;
-  after reconciliation resolves the original clientOrderId, new demand uses the reconciled exposure state.
+  reconciliation finds the original order OPEN by clientOrderId;
+  the engine moves unknown exposure to live open exposure without creating a replacement ID.
+
+test_t4b_create_timeout_not_found_releases_unknown_exposure_before_safe_retry
+  timed-out create becomes UNKNOWN exposure;
+  exact query by clientOrderId confirms no venue order exists;
+  only after that not-found reconciliation may the engine release unknown exposure and create a new clientOrderId.
 
 test_t5_twap_carry_forward_deficit_includes_previous_unfilled_quantity
   later scheduled deficit includes prior unfilled quantity;
@@ -4459,6 +4533,7 @@ from exchanges.binance_usdm import (
     BinanceUsdmAdapter,
     ExchangeTerminalReject,
     MutationKind,
+    ORDER_QUERY_PATH,
     classify_mutation_timeout,
 )
 from execution.ids import make_client_order_id
@@ -4511,6 +4586,11 @@ def test_post_only_rejects_when_gtx_is_missing_or_uncertain() -> None:
 def test_timeout_classification_distinguishes_create_and_cancel() -> None:
     assert classify_mutation_timeout(MutationKind.CREATE) == "UNKNOWN_CREATE_OUTCOME"
     assert classify_mutation_timeout(MutationKind.CANCEL) == "PENDING_CANCEL_OUTCOME"
+
+
+def test_exact_order_lookup_uses_query_order_not_current_open_order_endpoint() -> None:
+    assert ORDER_QUERY_PATH == "/fapi/v1/order"
+    assert ORDER_QUERY_PATH != "/fapi/v1/openOrder"
 ```
 
 - [ ] **Step 2: Run order-mutation tests to verify they fail**
@@ -4562,6 +4642,10 @@ class RetryableReadFailure(RuntimeError):
 
 class StreamHealthFailure(RuntimeError):
     pass
+
+
+ORDER_REST_PATH = "/fapi/v1/order"
+ORDER_QUERY_PATH = ORDER_REST_PATH
 
 
 def decimal_to_api(value: Decimal) -> str:
@@ -4695,13 +4779,13 @@ Implement the adapter methods:
     async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
         rules = await self.get_symbol_rules(order_request.symbol)
         payload = self.build_new_order_params(order_request, rules)
-        raw = await self._signed_request("POST", "/fapi/v1/order", payload, mutation_kind=MutationKind.CREATE)
+        raw = await self._signed_request("POST", ORDER_REST_PATH, payload, mutation_kind=MutationKind.CREATE)
         return self.parse_order(raw, order_request)
 
     async def cancel_order(self, symbol: str, client_order_id: str) -> ChildOrder:
         raw = await self._signed_request(
             "DELETE",
-            "/fapi/v1/order",
+            ORDER_REST_PATH,
             {"symbol": symbol, "origClientOrderId": client_order_id},
             mutation_kind=MutationKind.CANCEL,
         )
@@ -4710,7 +4794,7 @@ Implement the adapter methods:
     async def get_order_by_client_order_id(self, symbol: str, client_order_id: str) -> ChildOrder:
         raw = await self._signed_request(
             "GET",
-            "/fapi/v1/order",
+            ORDER_QUERY_PATH,
             {"symbol": symbol, "origClientOrderId": client_order_id},
         )
         return self.parse_order(raw)
@@ -4724,6 +4808,8 @@ Implement the adapter methods:
 ```
 
 Implement reconciliation so it cannot absorb unrelated manual orders:
+
+Do not use `GET /fapi/v1/openOrder` as the only status-repair source. Binance returns "Order does not exist" from the current-open-order endpoint when an order has filled or cancelled, so exact timeout repair must prefer `GET /fapi/v1/order` with `origClientOrderId`, and broad reconciliation should combine open orders, recent all-orders, and recent user trades.
 
 ```python
     async def reconcile_orders_and_fills(
@@ -5359,9 +5445,11 @@ AI_USAGE.md discloses AI support and validation.
 reports/report_draft.md has sections for simulator evidence, Testnet evidence, failure case, and limitations.
 reports/failure_case_log.md contains at least one real implementation failure before final submission.
 Simulator demo artifacts exist for request snapshot, JSONL log, summary JSON, child orders CSV, fills CSV, and timeline CSV.
+Timeline CSV artifacts preserve heterogeneous event fields using a stable union schema or an explicitly stable schema.
 If Testnet credentials are available, Chase and TWAP Testnet evidence artifacts exist with order IDs, clientOrderIds, request snapshots, and summaries.
 Testnet evidence shows exchangeInfo parsing, position query, market-data snapshot, submit, cancel, lookup/reconciliation, and artifact output; simulator evidence covers race fills if Testnet does not fill.
 Artifact/log serialization converts Decimal, Enum, datetime, and Path values before JSON encoding.
+Binance exact order status repair uses `GET /fapi/v1/order` with `origClientOrderId`; `GET /fapi/v1/openOrder` is not the sole reconciliation source.
 Calais-facing README/report content does not include the internal agentic-worker execution-plan header.
 No logs or artifacts contain API keys, secret keys, signatures, listenKeys, or raw authenticated payloads.
 ```
@@ -5388,10 +5476,13 @@ child_order_timeout_seconds: Tasks 10, 11, 12, and Task 14 scenarios
 ExchangeAdapter interface: Task 5
 Typed ReconciliationResult for orders, fills, and warnings: Tasks 2, 5, 7, 12, 17
 Deterministic simulator: Tasks 5, 7, 14
-Simulator artifact generation and smoke checks: Tasks 6, 14
+Simulator artifact generation, heterogeneous timeline CSVs, and smoke checks: Tasks 6, 14
 Binance adapter, signing, recvWindow, rate limits, status mapping: Tasks 15, 16, 17
+Binance exact Query Order endpoint for `origClientOrderId` reconciliation: Task 17
 Binance exchangeInfo parsing, market-data freshness, and routed WebSocket paths: Tasks 15, 16, 17
 Source-of-truth priority and REST reconciliation: Tasks 11, 12, 15, 16, 17
+Create-timeout found and not-found reconciliation outcomes: Tasks 7, 12, 14, 17
+Monotonic cumulative fill deduplication for duplicate or out-of-order fills: Tasks 11, 14
 Log sanitization, JSON-safe artifact values, and summaries: Task 6
 External position drift assumption: Task 14/18 documentation
 Testnet credential gating and final evidence instructions: Tasks 16, 17, 18

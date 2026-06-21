@@ -231,7 +231,18 @@ class ExecutionEngine:
         actor = self._actors[execution_id]
 
         async def run() -> ExecutionRecord:
-            if record.status.is_terminal or record.status is ExecutionStatus.CANCELLING:
+            if record.status.is_terminal:
+                return self._snapshot(record)
+
+            if record.status is ExecutionStatus.CANCELLING:
+                await self._reconcile_locked(record)
+                if self._target_filled(record):
+                    record.status = transition_execution(record.status, ExecutionStatus.PARTIALLY_COMPLETED)
+                    record.final_reason = TARGET_QUANTITY_FILLED
+                    record.summary = self._summary(record)
+                return self._snapshot(record)
+
+            if record.exposure.unknown_order_quantity > Decimal("0"):
                 return self._snapshot(record)
 
             await self._reconcile_locked(record)

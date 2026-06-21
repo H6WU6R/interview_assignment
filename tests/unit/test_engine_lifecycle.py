@@ -90,11 +90,15 @@ async def test_create_timeout_discoverable_reserves_unknown_until_reconcile_maps
     simulator.script_create_timeout(prefix)
 
     timed_out = await service.run_once(execution.execution_id)
+    blocked_before_reconcile = await service.run_once(execution.execution_id)
 
     assert len(timed_out.child_orders) == 1
     assert timed_out.child_orders[0].status is ChildOrderStatus.UNKNOWN
     assert timed_out.exposure.unknown_order_quantity == Decimal("0.010")
     assert timed_out.exposure.reserved_exposure == timed_out.required_quantity
+    assert len(blocked_before_reconcile.child_orders) == 1
+    assert blocked_before_reconcile.child_orders[0].client_order_id == timed_out.child_orders[0].client_order_id
+    assert blocked_before_reconcile.exposure.unknown_order_quantity == Decimal("0.010")
 
     reconciled = await service.reconcile_execution(execution.execution_id)
 
@@ -143,6 +147,68 @@ async def test_fill_during_cancel_reduces_replacement_size_without_overfill() ->
     assert repriced.exposure.confirmed_filled_quantity == Decimal("0.004")
     assert repriced.exposure.live_open_quantity == Decimal("0.006")
     assert repriced.exposure.confirmed_filled_quantity + repriced.exposure.reserved_exposure <= Decimal("0.010")
+
+
+async def test_ambiguous_cancel_reconciled_open_keeps_live_exposure_without_replacement() -> None:
+    clock = ManualClock()
+    service, simulator, _ = await fresh_service(clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+    prefix = make_client_order_prefix(execution.execution_id)
+    simulator.script_cancel_reconcile_open(prefix)
+    clock.advance(0.5)
+    await simulator.push_market_data(SYMBOL, Decimal("96000.00"), Decimal("96001.00"), exchange_event_time=20)
+
+    cancelled = await service.cancel_execution(execution.execution_id)
+    after_run = await service.run_once(execution.execution_id)
+
+    assert len(opened.child_orders) == 1
+    assert cancelled.status is ExecutionStatus.CANCELLING
+    assert len(after_run.child_orders) == 1
+    assert after_run.child_orders[0].status is ChildOrderStatus.OPEN
+    assert after_run.exposure.live_open_quantity == Decimal("0.010")
+    assert after_run.exposure.reserved_exposure == Decimal("0.010")
+
+
+async def test_cancelling_run_once_reconciles_existing_fill_without_replacement() -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+    prefix = make_client_order_prefix(execution.execution_id)
+    simulator.script_cancel_reconcile_open(prefix)
+    await service.cancel_execution(execution.execution_id)
+    await simulator.push_fill(opened.child_orders[0].client_order_id, Decimal("0.004"), Decimal("95000.00"))
+
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert snapshot.status is ExecutionStatus.CANCELLING
+    assert len(snapshot.child_orders) == 1
+    assert snapshot.child_orders[0].confirmed_filled_quantity == Decimal("0.004")
+    assert snapshot.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert snapshot.exposure.live_open_quantity == Decimal("0.006")
+
+
+async def test_chase_reprice_waits_for_min_interval_and_threshold() -> None:
+    clock = ManualClock()
+    params = ExecutionParameters(reprice_threshold_bps=Decimal("2.0"), minimum_reprice_interval_ms=500)
+    service, simulator, _ = await fresh_service(clock=clock)
+    execution = await service.create_execution(execution_request(parameters=params))
+    opened = await service.run_once(execution.execution_id)
+
+    clock.advance(0.499)
+    await simulator.push_market_data(SYMBOL, Decimal("96000.00"), Decimal("96001.00"), exchange_event_time=20)
+    before_interval = await service.run_once(execution.execution_id)
+
+    clock.advance(0.001)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.10"), Decimal("95001.10"), exchange_event_time=30)
+    below_threshold = await service.run_once(execution.execution_id)
+
+    assert len(opened.child_orders) == 1
+    assert len(before_interval.child_orders) == 1
+    assert before_interval.child_orders[0].status is ChildOrderStatus.OPEN
+    assert len(below_threshold.child_orders) == 1
+    assert below_threshold.child_orders[0].status is ChildOrderStatus.OPEN
+    assert below_threshold.child_orders[0].client_order_id == opened.child_orders[0].client_order_id
 
 
 async def test_twap_uses_absolute_schedule_and_carries_forward_unfilled_deficit() -> None:
@@ -216,6 +282,22 @@ async def test_post_only_unsupported_rejects_before_submit() -> None:
     assert reconciliation.orders == []
 
 
+async def test_post_only_crossing_rejects_before_submit(monkeypatch) -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    prefix = make_client_order_prefix(execution.execution_id)
+
+    monkeypatch.setattr("execution.engine.chase_desired_price", lambda *_args, **_kwargs: Decimal("95001.00"))
+
+    snapshot = await service.run_once(execution.execution_id)
+    reconciliation = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
+
+    assert snapshot.status is ExecutionStatus.EXPIRED
+    assert snapshot.final_reason == "POST_ONLY_CROSSES"
+    assert snapshot.child_orders == []
+    assert reconciliation.orders == []
+
+
 async def test_stream_health_failure_pauses_new_submit_and_reconciles() -> None:
     service, simulator, _ = await fresh_service()
     execution = await service.create_execution(execution_request())
@@ -227,6 +309,22 @@ async def test_stream_health_failure_pauses_new_submit_and_reconciles() -> None:
     assert snapshot.final_reason == "STREAM_HEALTH_DEGRADED_RECONCILED"
     assert snapshot.child_orders == []
     assert snapshot.exposure.reserved_exposure == Decimal("0")
+
+
+async def test_stream_health_failure_reconciles_existing_fill_without_new_submit() -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+    await simulator.push_fill(opened.child_orders[0].client_order_id, Decimal("0.004"), Decimal("95000.00"))
+    simulator.set_stream_health(user_stream_healthy=False)
+
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert snapshot.status is ExecutionStatus.RUNNING
+    assert snapshot.final_reason == "STREAM_HEALTH_DEGRADED_RECONCILED"
+    assert len(snapshot.child_orders) == 1
+    assert snapshot.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert snapshot.exposure.live_open_quantity == Decimal("0.006")
 
 
 async def test_duplicate_fill_reconciliation_does_not_double_count_confirmed_fills() -> None:

@@ -160,6 +160,45 @@ async def test_aggressive_deadline_does_not_cancel_its_own_final_attempt() -> No
     assert second_run.child_orders[0].status is ChildOrderStatus.OPEN
 
 
+async def test_aggressive_deadline_cancels_passive_child_before_marketable_replacement() -> None:
+    class RecordingSimulator(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            return await super().submit_limit_order(order_request)
+
+    clock = ManualClock()
+    params = ExecutionParameters(child_order_timeout_seconds=100)
+    simulator = RecordingSimulator(clock=clock)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(simulator, clock=clock)
+    execution = await service.create_execution(
+        execution_request(duration=1, upper=Decimal("95001.00"), parameters=params)
+    )
+    passive = await service.run_once(execution.execution_id)
+
+    clock.advance(1)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+    final_attempt = await service.run_once(execution.execution_id)
+
+    assert len(passive.child_orders) == 1
+    assert passive.child_orders[0].price == Decimal("95000.00")
+    assert simulator.submissions[0].post_only is True
+    assert len(final_attempt.child_orders) == 2
+    assert final_attempt.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert final_attempt.child_orders[1].status is ChildOrderStatus.OPEN
+    assert final_attempt.child_orders[1].price == Decimal("95001.00")
+    assert simulator.submissions[1].client_order_id == final_attempt.child_orders[1].client_order_id
+    assert simulator.submissions[1].post_only is False
+    assert final_attempt.exposure.live_open_quantity == Decimal("0.010")
+    assert final_attempt.exposure.reserved_exposure == Decimal("0.010")
+
+
 async def test_aggressive_deadline_rejects_buy_when_marketable_price_exceeds_upper_bound() -> None:
     class RecordingSimulator(DeterministicSimulator):
         submissions: list[OrderRequest]
@@ -379,7 +418,7 @@ async def test_child_order_timeout_cancels_stale_child_and_replaces_remaining_qu
     service, simulator, _ = await fresh_service(clock=clock)
     execution = await service.create_execution(execution_request(parameters=params))
     first = await service.run_once(execution.execution_id)
-    clock.advance(1.001)
+    clock.advance(1)
     await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
 
     replaced = await service.run_once(execution.execution_id)
@@ -402,7 +441,7 @@ async def test_child_order_timeout_fill_during_cancel_reduces_replacement_size()
     first = await service.run_once(execution.execution_id)
     prefix = make_client_order_prefix(execution.execution_id)
     simulator.script_fill_during_cancel(prefix, Decimal("0.004"))
-    clock.advance(1.001)
+    clock.advance(1)
     await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
 
     replaced = await service.run_once(execution.execution_id)

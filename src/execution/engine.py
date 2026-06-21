@@ -629,7 +629,7 @@ class ExecutionEngine:
         submitted_at = record.child_submitted_monotonic.get(child.client_order_id)
         if submitted_at is None:
             submitted_at = record.started_monotonic
-        return self._now_decimal() - submitted_at > timeout
+        return self._now_decimal() - submitted_at >= timeout
 
     def _needs_aggressive_deadline_cancel(self, record: ExecutionRecord, child: ChildOrder) -> bool:
         return (

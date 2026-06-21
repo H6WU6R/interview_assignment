@@ -2,7 +2,7 @@
 
 ## Problem Statement
 
-Build a compact execution service for Binance USD-M that can receive a target position, compute the required trade, place passive child orders, reconcile fills and ambiguous exchange outcomes, and preserve exposure safety throughout the lifecycle. The implementation favors correctness and inspectability over production breadth.
+Build a compact execution service for Binance USD-M that can receive a target position, compute the required trade, place passive child orders, reconcile fills and ambiguous exchange outcomes, and preserve exposure safety throughout the lifecycle. The implementation is small but correct by design. It prioritizes deterministic order-lifecycle safety over feature breadth. API background scheduling, multi-symbol portfolio reservations, and production WebSocket supervisors are treated as future production hardening rather than part of the compact submission.
 
 ## Architecture
 
@@ -33,11 +33,13 @@ This includes ambiguous create-timeout children as `unknown_order_quantity`, so 
 
 All quantities and prices use `Decimal`; API decimal values are accepted as strings. Market timing and schedule calculations use monotonic time.
 
+Price range is a safety gate, not a fake completion mechanism. Before deadline, out-of-range quotes produce no submit and the execution remains running. At deadline, the engine returns the actual partial or unfilled result. Under `CANCEL_REMAINDER`, a manual `run_once` deadline observation cancels active children, reconciles exchange state, and terminalizes only after reserved exposure clears. Under `AGGRESSIVE_WITHIN_RANGE`, the engine allows one bounded final marketable limit attempt; after that aggressive attempt is cancelled or reconciled and no exposure remains reserved, the execution terminalizes with the actual filled or unfilled result instead of repeatedly submitting new aggressive children.
+
 ## Algorithms
 
 Chase places passive orders at the current best bid for buys or best ask for sells. It reprices only after the configured minimum interval and bps threshold. The default repricing mode is adverse-only, with two-sided repricing available as a parameter.
 
-TWAP uses elapsed time to compute scheduled cumulative quantity, subtracts confirmed fills, subtracts reserved exposure, floors to quantity step, and submits only the remaining safe deficit. `number_of_slices` is available in `ExecutionParameters` and Testnet CLI arguments, but the implemented scheduling model is schedule-deficit based rather than fixed equal-slice sleep.
+TWAP uses absolute slice boundaries from `number_of_slices`; it never sleeps and does not accumulate scheduler drift. At each observed boundary, it computes scheduled cumulative quantity from elapsed monotonic time, subtracts confirmed fills and reserved exposure, floors to quantity step, and submits only the safe deficit.
 
 ## Simulator Evidence
 

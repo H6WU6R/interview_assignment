@@ -156,7 +156,11 @@ health_check_streams()
 
 `get_best_bid_ask()` reads the latest cached market-data snapshot maintained by `stream_market_data()`. `SymbolRules` is loaded dynamically rather than hardcoded. It includes tick size, quantity step, minimum quantity, minimum notional, trading status, supported time-in-force modes, and post-only support assumptions. The engine uses these rules for all order normalization and safety checks.
 
-Every child order uses a traceable `clientOrderId` derived from the execution ID and child order ID, so timed-out create requests can be reconciled without generating duplicate exposure.
+Before the first fresh market-data snapshot arrives, `get_best_bid_ask()` returns no actionable quote. The engine must not submit new orders or reprice existing orders until a fresh, non-crossed snapshot exists.
+
+Every child order uses a traceable `clientOrderId` derived from the execution ID and child order ID, so timed-out create requests can be reconciled without generating duplicate exposure. The format must stay inside Binance's documented `newClientOrderId` constraints: allowed characters and 36-character maximum length. The planned compact format is `ce_<short_exec>_<child_seq>`.
+
+`reconcile_orders_and_fills(symbol)` is execution-scoped by default. It reconciles orders and fills whose `clientOrderId` matches the execution prefix, which keeps recovery auditable and avoids taking ownership of unrelated manual or external orders. A broader symbol-level diagnostic mode may be added separately, but it is not part of the default execution lifecycle.
 
 `DeterministicSimulator` is the primary automated correctness proof. It accepts scripted timelines of market data, order events, fills, cancellations, rejections, timeouts, stream disconnects, and stale data. Tests use predefined scripts rather than random behavior unless a fixed seed is explicitly configured. The simulator must support at least:
 
@@ -165,6 +169,7 @@ partial fill
 fill after cancel request
 cancel delay
 post-only rejection
+unsupported post-only time-in-force rejection
 create timeout where order may still exist
 duplicate execution event
 delayed/out-of-order execution event
@@ -192,6 +197,7 @@ submit post-only and marketable limit orders with clientOrderId
 map passive post-only LIMIT orders to timeInForce=GTX when supported by SymbolRules
 reject passive post-only orders clearly if GTX support cannot be confirmed from SymbolRules
 cancel orders by clientOrderId
+handle cancel responses where the order is already filled as terminal reconciliation, not fatal engine failure
 look up orders by clientOrderId after timeout
 reconcile open orders, final order states, and recent fills after timeout or disconnect
 detect stale market data and private stream health
@@ -385,10 +391,14 @@ Additional tests will cover:
 
 ```text
 post-only rejection retry limit
+unsupported GTX/post-only rejection path in simulator
 stale market data safety gate
+no submit or reprice before first fresh market-data snapshot
 stale decisions use local monotonic receive time rather than wall-clock time
 unknown order exposure counted as reserved exposure
+execution-scoped reconciliation by clientOrderId prefix
 duplicate fill handling by exchange trade ID or monotonic cumulative executed quantity
+filled-during-cancel treated as valid terminal reconciliation
 terminal state cannot return to RUNNING
 AGGRESSIVE_WITHIN_RANGE bounded by price range
 CANCEL_REMAINDER cancels and reports remaining quantity
@@ -404,6 +414,7 @@ all prices/quantities normalized using symbol rules
 no test allows confirmed fills + reserved exposure to exceed target quantity
 duplicate events are counted once
 create timeout never generates a second clientOrderId before reconciliation
+clientOrderId format satisfies Binance allowed-character and 36-character limits
 TWAP uses absolute monotonic schedule times
 logs and summaries are generated for demo executions
 all required scenarios produce reproducible logs and execution summaries linked to execution_id and clientOrderId

@@ -106,9 +106,9 @@ unknown_order_quantity
 
 `unknown_order_quantity` is treated as real exposure until reconciled. Replacement order size is always computed from parent-level confirmed fills and reserved exposure, not from one child order's remaining quantity. A timed-out create request becomes `UNKNOWN`; the engine must reconcile by `clientOrderId` before retrying.
 
-For Chase, default behavior is `ADVERSE_ONLY` repricing: buy orders reprice only when best bid moves up enough; sell orders reprice only when best ask moves down enough. This is a deliberate design choice allowed by the brief; `TWO_SIDED` can be supported later as a parameter. Repricing requires both `reprice_threshold_bps` and `minimum_reprice_interval_ms`. Passive orders use post-only checks; if near deadline and policy is `AGGRESSIVE_WITHIN_RANGE`, the engine may submit marketable limits bounded by `upper` for buys and `lower` for sells.
+For Chase, `repricing_mode` is a config enum. Default behavior is `ADVERSE_ONLY`: buy orders reprice only when best bid moves up enough; sell orders reprice only when best ask moves down enough. This is a deliberate design choice allowed by the brief. `TWO_SIDED` is supported as an optional enum value so it can be changed quickly during interview discussion or future experiments. Repricing requires both `reprice_threshold_bps` and `minimum_reprice_interval_ms`. Passive orders use post-only checks; if near deadline and policy is `AGGRESSIVE_WITHIN_RANGE`, the engine may submit marketable limits bounded by `upper` for buys and `lower` for sells.
 
-For TWAP, the schedule uses absolute monotonic timestamps, not chained `sleep(interval)`:
+For TWAP, all quantities are represented as positive absolute trade quantities. Side is tracked separately, so formulas such as `scheduled_deficit` and `safe_child_quantity` do not become confusing for sell executions. The schedule uses absolute monotonic timestamps, not chained `sleep(interval)`:
 
 ```text
 scheduled_cumulative_quantity(t)
@@ -127,6 +127,10 @@ safe_child_quantity
 Each slice submits only positive, normalized `safe_child_quantity`. Unfilled earlier slices carry forward automatically. The final slice absorbs legal rounding remainder but cannot exceed the normalized total quantity.
 
 Before submitting any new child order, the engine checks that confirmed fills plus all reserved or unknown exposure plus the new child quantity cannot exceed the normalized target trade quantity.
+
+The initial implementation uses a single active child order per execution. If TWAP is later extended to allow multiple active child orders, each active order must reserve open exposure through the same invariant before any additional child order can be submitted.
+
+Fill deduplication uses the exchange trade ID when available. If trade IDs are unavailable in a simulator or reconciliation result, the engine falls back to monotonic cumulative executed quantity per order. It never counts fills by raw message arrival count.
 
 Deadline behavior is explicit:
 
@@ -150,7 +154,7 @@ reconcile_orders_and_fills(symbol)
 health_check_streams()
 ```
 
-`get_best_bid_ask()` reads the latest cached market-data snapshot maintained by `stream_market_data()`. `SymbolRules` is loaded dynamically rather than hardcoded. It includes tick size, quantity step, minimum quantity, minimum notional, trading status, and post-only support assumptions. The engine uses these rules for all order normalization and safety checks.
+`get_best_bid_ask()` reads the latest cached market-data snapshot maintained by `stream_market_data()`. `SymbolRules` is loaded dynamically rather than hardcoded. It includes tick size, quantity step, minimum quantity, minimum notional, trading status, supported time-in-force modes, and post-only support assumptions. The engine uses these rules for all order normalization and safety checks.
 
 Every child order uses a traceable `clientOrderId` derived from the execution ID and child order ID, so timed-out create requests can be reconciled without generating duplicate exposure.
 
@@ -182,12 +186,21 @@ query current one-way position
 reject unsupported hedge mode by default
 subscribe to bookTicker or equivalent best bid/ask stream
 subscribe to user-data stream for order and fill events
+renew listenKey before expiry
+handle expected 24h WebSocket disconnect with reconnect and reconciliation
 submit post-only and marketable limit orders with clientOrderId
+map passive post-only LIMIT orders to timeInForce=GTX when supported by SymbolRules
+reject passive post-only orders clearly if GTX support cannot be confirmed from SymbolRules
 cancel orders by clientOrderId
 look up orders by clientOrderId after timeout
 reconcile open orders, final order states, and recent fills after timeout or disconnect
 detect stale market data and private stream health
+record Binance transaction time T and event time E when available
 ```
+
+REST requests use bounded timeouts. Non-order-mutating reads may use bounded retry and backoff. Order-mutating create requests are never blindly retried without idempotency reconciliation by `clientOrderId`.
+
+When Binance event timestamps are available, the adapter records both transaction time `T` and event time `E`. The engine does not rely on cross-stream arrival order for correctness; `E` is used for ordering diagnostics and audit timelines.
 
 Integration tests will be present but skipped when testnet keys are missing. This lets the repository be runnable immediately through simulator tests, while remaining ready for real Testnet validation once credentials are added.
 
@@ -230,11 +243,11 @@ Aggressive sell:
 
 Post-only orders are checked before submit using the latest bid/ask snapshot. If an order is rejected as post-only, the engine refreshes market data, applies reprice throttling, and either retries safely or waits. It does not loop indefinitely.
 
-Market-data freshness is a hard safety gate. If best bid/ask is stale, missing, crossed, or outside the adapter's health tolerance, the engine pauses new submits and reprices. It may cancel existing exposure depending on deadline policy and final safety state, but it does not blindly chase with stale prices.
+Market-data freshness is a hard safety gate. Each market-data snapshot records `last_market_event_time_exchange` when exchange event time is available and `last_market_event_time_local_monotonic` when the adapter receives the event locally. Stale decisions use the local monotonic clock so tests are deterministic and not affected by wall-clock changes; exchange timestamps are retained for audit and diagnostics. If best bid/ask is stale, missing, crossed, or outside the adapter's health tolerance, the engine pauses new submits and reprices. It may cancel existing exposure depending on deadline policy and final safety state, but it does not blindly chase with stale prices.
 
 Position mode is explicit. The default implementation supports Binance One-way Mode only. If Hedge Mode is detected, the Binance adapter returns a clear unsupported-mode error instead of guessing `positionSide`.
 
-Mainnet is protected in two stages: environment config must select mainnet, and a separate explicit `ALLOW_MAINNET_TRADING=true` guard must be present. Without both, any real mainnet order submission is rejected before reaching the adapter.
+Mainnet is protected in two stages: environment config must select mainnet, and a separate explicit `ALLOW_MAINNET_TRADING=true` guard must be present. Without both, any real mainnet order submission is rejected before reaching the adapter. Mainnet is configuration-compatible only; assignment demo and validation are performed on the simulator and Binance Testnet.
 
 ## API, CLI Scripts, Outputs, And Observability
 
@@ -310,6 +323,8 @@ unknown orders reconciled
 final status and reason
 ```
 
+Completion rate is computed on absolute required trade quantity. Slippage bps is side-aware: buy slippage compares execution VWAP above arrival mid; sell slippage compares arrival mid above execution VWAP.
+
 Structured logs are JSONL and append-only per execution. They include UTC wall-clock timestamp and monotonic elapsed time, making them suitable for the PDF report and live debugging. The goal is that every reported summary metric can be traced to raw child order, fill, cancel, timeout, or reconciliation events.
 
 ## Testing Strategy And Acceptance Criteria
@@ -371,10 +386,13 @@ Additional tests will cover:
 ```text
 post-only rejection retry limit
 stale market data safety gate
+stale decisions use local monotonic receive time rather than wall-clock time
 unknown order exposure counted as reserved exposure
+duplicate fill handling by exchange trade ID or monotonic cumulative executed quantity
 terminal state cannot return to RUNNING
 AGGRESSIVE_WITHIN_RANGE bounded by price range
 CANCEL_REMAINDER cancels and reports remaining quantity
+side-aware completion rate and slippage metrics
 ```
 
 Acceptance criteria:

@@ -65,12 +65,12 @@ CHILD_TRANSITIONS: dict[ChildOrderStatus, set[ChildOrderStatus]] = {
 
 
 def transition_execution(current: ExecutionStatus, target: ExecutionStatus) -> ExecutionStatus:
-    if target not in EXECUTION_TRANSITIONS[current]:
+    if target not in EXECUTION_TRANSITIONS.get(current, set()):
         raise InvalidStateTransition(f"execution transition {current} -> {target} is not allowed")
     return target
 
 
 def transition_child(current: ChildOrderStatus, target: ChildOrderStatus) -> ChildOrderStatus:
-    if target not in CHILD_TRANSITIONS[current]:
+    if target not in CHILD_TRANSITIONS.get(current, set()):
         raise InvalidStateTransition(f"child order transition {current} -> {target} is not allowed")
     return target

@@ -23,3 +23,16 @@ def test_client_order_prefix_matches_derived_order_ids() -> None:
     client = make_client_order_id(execution, 1)
 
     assert client.startswith(make_client_order_prefix(execution))
+
+
+def test_client_order_prefix_is_execution_specific() -> None:
+    first_execution = "exec_0123456789abcdef"
+    second_execution = "exec_fedcba9876543210"
+
+    first_prefix = make_client_order_prefix(first_execution)
+    second_prefix = make_client_order_prefix(second_execution)
+    first_client = make_client_order_id(first_execution, 1)
+
+    assert first_prefix != second_prefix
+    assert first_client.startswith(first_prefix)
+    assert not first_client.startswith(second_prefix)

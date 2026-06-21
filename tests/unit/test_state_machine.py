@@ -39,3 +39,13 @@ def test_child_unknown_can_be_reconciled_to_exchange_truth() -> None:
 def test_pending_cancel_does_not_turn_into_create_rejected_state() -> None:
     with pytest.raises(InvalidStateTransition):
         transition_child(ChildOrderStatus.PENDING_CANCEL, ChildOrderStatus.REJECTED)
+
+
+def test_unexpected_current_execution_state_raises_invalid_transition() -> None:
+    with pytest.raises(InvalidStateTransition):
+        transition_execution("UNEXPECTED", ExecutionStatus.RUNNING)  # type: ignore[arg-type]
+
+
+def test_unexpected_current_child_state_raises_invalid_transition() -> None:
+    with pytest.raises(InvalidStateTransition):
+        transition_child("UNEXPECTED", ChildOrderStatus.OPEN)  # type: ignore[arg-type]

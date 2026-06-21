@@ -32,4 +32,6 @@ class ManualClock(Clock):
         return datetime.fromtimestamp(self.current, tz=UTC)
 
     def advance(self, seconds: float) -> None:
+        if seconds < 0:
+            raise ValueError("manual clock cannot advance by negative seconds")
         self.current += seconds

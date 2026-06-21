@@ -14,6 +14,7 @@ from algorithms.twap import (
 )
 from exchanges.base import (
     ExchangeAdapter,
+    NoFreshMarketData,
     OrderCancelTimeout,
     OrderCreateTimeout,
     OrderRejected,
@@ -36,6 +37,7 @@ from execution.models import (
     PositionSnapshot,
     Side,
     SymbolRules,
+    TimeInForce,
     required_trade,
 )
 from execution.state_machine import InvalidStateTransition, transition_child, transition_execution
@@ -63,6 +65,7 @@ POST_ONLY_UNSUPPORTED = "POST_ONLY_UNSUPPORTED"
 ORDER_SAFETY_REJECTED = "ORDER_SAFETY_REJECTED"
 TERMINAL_ORDER_REJECTED = "TERMINAL_ORDER_REJECTED"
 STREAM_HEALTH_DEGRADED_RECONCILED = "STREAM_HEALTH_DEGRADED_RECONCILED"
+MARKET_DATA_STALE_RECONCILED = "MARKET_DATA_STALE_RECONCILED"
 TARGET_QUANTITY_FILLED = "TARGET_QUANTITY_FILLED"
 UNTRADEABLE_TARGET_DUST = "UNTRADEABLE_TARGET_DUST"
 
@@ -348,20 +351,31 @@ class ExecutionEngine:
                     self._terminalize_deadline_locked(record, DEADLINE_AGGRESSIVE_ATTEMPTED)
                     return self._snapshot(record)
 
-            if record.exposure.reserved_exposure > Decimal("0"):
-                if record.request.algorithm is Algorithm.CHASE:
-                    await self._maybe_reprice_chase_locked(record)
-                    await self._reconcile_locked(record)
+            try:
                 if record.exposure.reserved_exposure > Decimal("0"):
-                    return self._snapshot(record)
+                    if record.request.algorithm is Algorithm.CHASE:
+                        await self._maybe_reprice_chase_locked(record)
+                        await self._reconcile_locked(record)
+                    if record.exposure.reserved_exposure > Decimal("0"):
+                        return self._snapshot(record)
 
-            demand = await self._build_child_demand_locked(record)
+                demand = await self._build_child_demand_locked(record)
+            except NoFreshMarketData:
+                record.final_reason = MARKET_DATA_STALE_RECONCILED
+                await self._reconcile_locked(record)
+                return self._snapshot(record)
+
             if demand is None:
                 return self._snapshot(record)
 
             quantity, price, post_only = demand
             if quantity > Decimal("0"):
-                await self._submit_child_locked(record, quantity, price, post_only=post_only)
+                try:
+                    await self._submit_child_locked(record, quantity, price, post_only=post_only)
+                except NoFreshMarketData:
+                    record.final_reason = MARKET_DATA_STALE_RECONCILED
+                    await self._reconcile_locked(record)
+                    return self._snapshot(record)
 
             if self._target_filled(record):
                 self._complete_locked(record, TARGET_QUANTITY_FILLED)
@@ -369,11 +383,21 @@ class ExecutionEngine:
 
         return await actor.apply(run)
 
-    async def reconcile_execution(self, execution_id: str) -> ExecutionRecord:
+    async def reconcile_execution(
+        self,
+        execution_id: str,
+        *,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+    ) -> ExecutionRecord:
         record, actor = self._lookup_execution(execution_id)
 
         async def reconcile() -> ExecutionRecord:
-            await self._reconcile_locked(record)
+            await self._reconcile_locked(
+                record,
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+            )
             if record.status is ExecutionStatus.CANCELLING:
                 self._terminalize_manual_cancel_if_clear_locked(record)
             elif not record.status.is_terminal:
@@ -427,6 +451,7 @@ class ExecutionEngine:
             quantity=quantity,
             price=price,
             post_only=post_only,
+            time_in_force=TimeInForce.GTX if post_only else TimeInForce.IOC,
         )
 
         try:
@@ -438,6 +463,7 @@ class ExecutionEngine:
             tracker.reserve_unknown_create(quantity)
             self._record_max_reserved_exposure(record)
             record.final_reason = CREATE_TIMEOUT_PENDING_RECONCILIATION
+            self._assert_exposure_invariant_locked(record)
             return child
         except OrderRejected as exc:
             tracker.release_pending_submit(quantity)
@@ -446,6 +472,7 @@ class ExecutionEngine:
             self._increment_metric(record, "rejections")
             if isinstance(exc, TerminalOrderRejected):
                 self._fail_locked(record, f"{TERMINAL_ORDER_REJECTED}: {exc}")
+            self._assert_exposure_invariant_locked(record)
             return child
         except Exception:
             tracker.release_pending_submit(quantity)
@@ -457,14 +484,21 @@ class ExecutionEngine:
         tracker.release_pending_submit(quantity)
         self._copy_exchange_child(child, submitted)
         self._set_child_status(child, submitted.status)
+        if child.confirmed_filled_quantity > Decimal("0"):
+            self._update_child_cumulative_fill_locked(
+                record,
+                child,
+                child.confirmed_filled_quantity,
+                trade_id=None,
+                fill_price=child.price,
+            )
 
         if child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
             tracker.reserve_live_open(child.remaining_quantity)
-        elif child.status is ChildOrderStatus.FILLED:
-            self._apply_order_fill_locked(record, child, trade_id=None, fill_price=child.price)
         elif child.status is ChildOrderStatus.UNKNOWN:
             tracker.reserve_unknown_create(child.remaining_quantity)
         self._record_max_reserved_exposure(record)
+        self._assert_exposure_invariant_locked(record)
         return child
 
     async def _cancel_active_children_locked(self, record: ExecutionRecord) -> bool:
@@ -509,6 +543,7 @@ class ExecutionEngine:
             cancelled = await self._adapter.cancel_order(record.request.symbol, child.client_order_id)
         except OrderCancelTimeout as exc:
             child.terminal_reason = str(exc)
+            self._assert_exposure_invariant_locked(record)
             return True
         except Exception as exc:
             tracker.release_pending_cancel(remaining_before_cancel)
@@ -516,13 +551,20 @@ class ExecutionEngine:
             self._record_max_reserved_exposure(record)
             child.terminal_reason = str(exc)
             self._set_child_status(child, ChildOrderStatus.OPEN)
+            self._assert_exposure_invariant_locked(record)
             return False
 
         self._copy_exchange_child(child, cancelled)
         self._set_child_status(child, cancelled.status)
 
         if child.confirmed_filled_quantity > Decimal("0"):
-            self._apply_order_fill_locked(record, child, trade_id=None, fill_price=child.price)
+            self._update_child_cumulative_fill_locked(
+                record,
+                child,
+                child.confirmed_filled_quantity,
+                trade_id=None,
+                fill_price=child.price,
+            )
 
         if child.status in {ChildOrderStatus.CANCELLED, ChildOrderStatus.FILLED}:
             tracker.release_pending_cancel(remaining_before_cancel)
@@ -530,17 +572,30 @@ class ExecutionEngine:
             tracker.release_pending_cancel(remaining_before_cancel)
             tracker.reserve_live_open(child.remaining_quantity)
         self._record_max_reserved_exposure(record)
+        self._assert_exposure_invariant_locked(record)
         return True
 
-    async def _reconcile_locked(self, record: ExecutionRecord) -> None:
+    async def _reconcile_locked(
+        self,
+        record: ExecutionRecord,
+        *,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+    ) -> None:
         tracker = record.exposure_tracker
         if tracker is None:
             return
 
         prefix = ids.make_client_order_prefix(record.execution_id)
+        reconciliation_kwargs = {}
+        if start_time_ms is not None:
+            reconciliation_kwargs["start_time_ms"] = start_time_ms
+        if end_time_ms is not None:
+            reconciliation_kwargs["end_time_ms"] = end_time_ms
         result = await self._adapter.reconcile_orders_and_fills(
             record.request.symbol,
             client_order_prefix=prefix,
+            **reconciliation_kwargs,
         )
 
         children_by_client_id = {child.client_order_id: child for child in record.child_orders}
@@ -562,18 +617,26 @@ class ExecutionEngine:
             child = children_by_client_id.get(fill.client_order_id)
             if child is None:
                 continue
-            if fill.cumulative_filled_quantity > child.confirmed_filled_quantity:
-                child.confirmed_filled_quantity = fill.cumulative_filled_quantity
-            self._apply_order_fill_locked(record, child, trade_id=fill.trade_id, fill_price=fill.last_fill_price)
+            self._update_child_cumulative_fill_locked(
+                record,
+                child,
+                fill.cumulative_filled_quantity,
+                trade_id=fill.trade_id,
+                fill_price=fill.last_fill_price,
+            )
 
         for exchange_order in result.orders:
             child = children_by_client_id.get(exchange_order.client_order_id)
             if child is None:
                 continue
             was_unknown = child.status is ChildOrderStatus.UNKNOWN
-            if exchange_order.confirmed_filled_quantity > child.confirmed_filled_quantity:
-                child.confirmed_filled_quantity = exchange_order.confirmed_filled_quantity
-                self._apply_order_fill_locked(record, child, trade_id=None, fill_price=child.price)
+            self._update_child_cumulative_fill_locked(
+                record,
+                child,
+                exchange_order.confirmed_filled_quantity,
+                trade_id=None,
+                fill_price=child.price,
+            )
             self._copy_exchange_child(child, exchange_order)
             self._set_child_status(child, exchange_order.status)
             if was_unknown and child.status is not ChildOrderStatus.UNKNOWN:
@@ -592,6 +655,7 @@ class ExecutionEngine:
 
         self._refresh_reserved_exposure_locked(record)
         self._record_max_reserved_exposure(record)
+        self._assert_exposure_invariant_locked(record)
         if (
             record.final_reason == CREATE_TIMEOUT_PENDING_RECONCILIATION
             and record.exposure.unknown_order_quantity == Decimal("0")
@@ -620,7 +684,13 @@ class ExecutionEngine:
             self._copy_exchange_child(child, exchange_child)
             self._set_child_status(child, getattr(exchange_child, "status", child.status))
             if child.confirmed_filled_quantity > Decimal("0"):
-                self._apply_order_fill_locked(record, child, trade_id=None, fill_price=child.price)
+                self._update_child_cumulative_fill_locked(
+                    record,
+                    child,
+                    child.confirmed_filled_quantity,
+                    trade_id=None,
+                    fill_price=child.price,
+                )
             self._increment_metric(record, "unknown_orders_reconciled")
 
     async def _maybe_reprice_chase_locked(self, record: ExecutionRecord) -> None:
@@ -894,6 +964,13 @@ class ExecutionEngine:
         if record.exposure.reserved_exposure > record.max_reserved_exposure:
             record.max_reserved_exposure = record.exposure.reserved_exposure
 
+    def _assert_exposure_invariant_locked(self, record: ExecutionRecord) -> None:
+        check_exposure_invariant(
+            record.exposure,
+            Decimal("0"),
+            record.required_quantity,
+        )
+
     def _refresh_reserved_exposure_locked(self, record: ExecutionRecord) -> None:
         tracker = self._require_exposure_tracker(record)
         confirmed = tracker.exposure.confirmed_filled_quantity
@@ -908,6 +985,24 @@ class ExecutionEngine:
                 tracker.exposure.pending_cancel_quantity += remaining
             elif child.status is ChildOrderStatus.UNKNOWN:
                 tracker.exposure.unknown_order_quantity += remaining
+
+    def _update_child_cumulative_fill_locked(
+        self,
+        record: ExecutionRecord,
+        child: ChildOrder,
+        incoming_cumulative: Decimal,
+        *,
+        trade_id: str | None,
+        fill_price: Decimal,
+    ) -> None:
+        if incoming_cumulative > child.confirmed_filled_quantity:
+            child.confirmed_filled_quantity = incoming_cumulative
+        self._apply_order_fill_locked(
+            record,
+            child,
+            trade_id=trade_id,
+            fill_price=fill_price,
+        )
 
     def _apply_order_fill_locked(
         self,
@@ -939,11 +1034,13 @@ class ExecutionEngine:
         child.exchange_order_id = getattr(exchange_child, "exchange_order_id", child.exchange_order_id)
         child.raw_status = getattr(exchange_child, "raw_status", child.raw_status)
         if include_filled:
-            child.confirmed_filled_quantity = getattr(
+            incoming_filled_quantity = getattr(
                 exchange_child,
                 "confirmed_filled_quantity",
                 child.confirmed_filled_quantity,
             )
+            if incoming_filled_quantity > child.confirmed_filled_quantity:
+                child.confirmed_filled_quantity = incoming_filled_quantity
 
     def _set_child_status(self, child: ChildOrder, target: ChildOrderStatus) -> bool:
         if child.status is target:
@@ -958,6 +1055,12 @@ class ExecutionEngine:
             ChildOrderStatus.OPEN,
             ChildOrderStatus.PARTIALLY_FILLED,
         }:
+            child.status = transition_child(child.status, ChildOrderStatus.PENDING_CANCEL)
+            child.status = transition_child(child.status, target)
+            return True
+
+        if target is ChildOrderStatus.CANCELLED and child.status is ChildOrderStatus.PENDING_SUBMIT:
+            child.status = transition_child(child.status, ChildOrderStatus.OPEN)
             child.status = transition_child(child.status, ChildOrderStatus.PENDING_CANCEL)
             child.status = transition_child(child.status, target)
             return True

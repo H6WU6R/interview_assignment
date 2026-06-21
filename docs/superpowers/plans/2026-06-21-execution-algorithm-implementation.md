@@ -553,6 +553,13 @@ class Fill:
     transaction_time_ms: int | None
 
 
+@dataclass(frozen=True)
+class ReconciliationResult:
+    orders: list[ChildOrder]
+    fills: list[Fill]
+    warnings: list[str] = field(default_factory=list)
+
+
 @dataclass
 class Exposure:
     confirmed_filled_quantity: Decimal = Decimal("0")
@@ -915,6 +922,8 @@ T = TypeVar("T")
 class ExecutionEventActor:
     def __init__(self, execution_id: str) -> None:
         self.execution_id = execution_id
+        # Serializes local state mutation only. Exchange event times E/T are still retained
+        # for audit and reconciliation ordering diagnostics.
         self._lock = asyncio.Lock()
 
     async def apply(self, operation: Callable[[], Awaitable[T]]) -> T:
@@ -1066,6 +1075,28 @@ def test_validate_order_shape_rejects_post_only_crossing_prices() -> None:
         )
 
 
+def test_validate_order_shape_rejects_non_trading_symbol() -> None:
+    rules = SymbolRules(
+        symbol="BTCUSDT",
+        tick_size=Decimal("0.10"),
+        quantity_step=Decimal("0.001"),
+        min_quantity=Decimal("0.001"),
+        min_notional=Decimal("5"),
+        status="BREAK",
+    )
+
+    with pytest.raises(ValidationError, match="not trading"):
+        validate_order_shape(
+            quantity=Decimal("0.001"),
+            price=Decimal("100000"),
+            side=Side.BUY,
+            rules=rules,
+            best_bid=Decimal("99999.9"),
+            best_ask=Decimal("100000.1"),
+            post_only=True,
+        )
+
+
 def test_exposure_invariant_rejects_over_reserved_quantity() -> None:
     exposure = Exposure(
         confirmed_filled_quantity=Decimal("0.005"),
@@ -1180,6 +1211,8 @@ def validate_order_shape(
     best_ask: Decimal,
     post_only: bool,
 ) -> None:
+    if rules.status != "TRADING":
+        raise ValidationError(f"symbol {rules.symbol} is not trading: status={rules.status}")
     validate_quantity(quantity, price, rules)
     if not _is_multiple(quantity, rules.quantity_step):
         raise ValidationError(f"quantity step violation: {quantity} not multiple of {rules.quantity_step}")
@@ -1237,6 +1270,7 @@ Create `tests/unit/test_exchange_contract.py`:
 
 ```python
 from exchanges.base import ExchangeAdapter
+from execution.models import ReconciliationResult
 
 
 def test_exchange_adapter_defines_required_methods() -> None:
@@ -1254,6 +1288,14 @@ def test_exchange_adapter_defines_required_methods() -> None:
     }
     for name in required:
         assert hasattr(ExchangeAdapter, name)
+
+
+def test_reconciliation_result_exposes_orders_fills_and_warnings() -> None:
+    result = ReconciliationResult(orders=[], fills=[], warnings=["diagnostic"])
+
+    assert result.orders == []
+    assert result.fills == []
+    assert result.warnings == ["diagnostic"]
 ```
 
 - [ ] **Step 2: Write failing simulator market-data tests**
@@ -1308,7 +1350,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
-from execution.models import MarketSnapshot, OrderRequest, PositionSnapshot, SymbolRules
+from execution.models import MarketSnapshot, OrderRequest, PositionSnapshot, ReconciliationResult, SymbolRules
 
 
 class NoFreshMarketData(RuntimeError):
@@ -1349,7 +1391,7 @@ class ExchangeAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def reconcile_orders_and_fills(self, symbol: str, client_order_prefix: str | None = None) -> object:
+    async def reconcile_orders_and_fills(self, symbol: str, client_order_prefix: str | None = None) -> ReconciliationResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -1371,7 +1413,7 @@ from decimal import Decimal
 
 from exchanges.base import ExchangeAdapter, NoFreshMarketData
 from execution.clock import Clock, ManualClock
-from execution.models import MarketSnapshot, OrderRequest, PositionSnapshot, SymbolRules
+from execution.models import MarketSnapshot, OrderRequest, PositionSnapshot, ReconciliationResult, SymbolRules
 
 
 @dataclass
@@ -1442,8 +1484,8 @@ class DeterministicSimulator(ExchangeAdapter):
             yield None
         return
 
-    async def reconcile_orders_and_fills(self, symbol: str, client_order_prefix: str | None = None) -> object:
-        return []
+    async def reconcile_orders_and_fills(self, symbol: str, client_order_prefix: str | None = None) -> ReconciliationResult:
+        return ReconciliationResult(orders=[], fills=[], warnings=[])
 
     async def health_check_streams(self) -> bool:
         return True
@@ -1816,7 +1858,8 @@ async def test_reconcile_is_scoped_by_client_order_prefix() -> None:
 
     scoped = await simulator.reconcile_orders_and_fills("BTCUSDT", client_order_prefix="ce_")
 
-    assert [order.client_order_id for order in scoped] == ["ce_exec_1"]
+    assert [order.client_order_id for order in scoped.orders] == ["ce_exec_1"]
+    assert scoped.fills == []
 
 
 async def test_scripted_fill_during_cancel_keeps_partial_fill_exposure() -> None:
@@ -1838,7 +1881,7 @@ async def test_scripted_create_timeout_creates_unknown_order_for_reconciliation(
     reconciled = await simulator.reconcile_orders_and_fills("BTCUSDT", client_order_prefix="ce_")
 
     assert child.status is ChildOrderStatus.UNKNOWN
-    assert reconciled[0].client_order_id == "ce_exec_1"
+    assert reconciled.orders[0].client_order_id == "ce_exec_1"
 
 
 async def test_scripted_ambiguous_cancel_reconciles_to_still_open() -> None:
@@ -1850,7 +1893,7 @@ async def test_scripted_ambiguous_cancel_reconciles_to_still_open() -> None:
     reconciled = await simulator.reconcile_orders_and_fills("BTCUSDT", client_order_prefix="ce_")
 
     assert child.status is ChildOrderStatus.PENDING_CANCEL
-    assert reconciled[0].status is ChildOrderStatus.OPEN
+    assert reconciled.orders[0].status is ChildOrderStatus.OPEN
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1868,7 +1911,7 @@ Expected: FAIL because simulator order lifecycle is not implemented.
 Modify `src/exchanges/simulator.py` by adding these definitions near the top:
 
 ```python
-from execution.models import ChildOrder, ChildOrderStatus, Fill
+from execution.models import ChildOrder, ChildOrderStatus, Fill, ReconciliationResult
 
 
 @dataclass(frozen=True)
@@ -1883,6 +1926,7 @@ Add these fields to `DeterministicSimulator`:
 
 ```python
     _orders: dict[str, ChildOrder] = field(default_factory=dict)
+    _fills: list[Fill] = field(default_factory=list)
     _user_event_queue: asyncio.Queue[SimulatorOrderEvent] = field(default_factory=asyncio.Queue)
     _fill_during_cancel: dict[str, Decimal] = field(default_factory=dict)
     _create_timeout_prefixes: set[str] = field(default_factory=set)
@@ -1973,6 +2017,7 @@ Replace the order methods with:
                 event_time_ms=None,
                 transaction_time_ms=None,
             )
+            self._fills.append(fill)
             await self._user_event_queue.put(SimulatorOrderEvent(client_order_id, ChildOrderStatus.PENDING_CANCEL, fill=fill))
             return child
         if self._matching_prefix(client_order_id, self._cancel_reconcile_open_prefixes):
@@ -2008,6 +2053,7 @@ Replace the order methods with:
             event_time_ms=None,
             transaction_time_ms=None,
         )
+        self._fills.append(fill)
         await self._user_event_queue.put(SimulatorOrderEvent(client_order_id, status, fill=fill))
 
     async def get_order_by_client_order_id(self, symbol: str, client_order_id: str) -> ChildOrder:
@@ -2024,17 +2070,20 @@ Replace the order methods with:
         self,
         symbol: str,
         client_order_prefix: str | None = None,
-    ) -> list[ChildOrder]:
+    ) -> ReconciliationResult:
         orders = [order for order in self._orders.values() if order.symbol == symbol]
         if client_order_prefix is not None:
             orders = [order for order in orders if order.client_order_id.startswith(client_order_prefix)]
+            fills = [fill for fill in self._fills if fill.client_order_id.startswith(client_order_prefix)]
+        else:
+            fills = list(self._fills)
         for order in orders:
             if (
                 self._matching_prefix(order.client_order_id, self._cancel_reconcile_open_prefixes)
                 and order.status is ChildOrderStatus.PENDING_CANCEL
             ):
                 order.status = ChildOrderStatus.OPEN
-        return orders
+        return ReconciliationResult(orders=orders, fills=fills, warnings=[])
 
     async def health_check_streams(self) -> bool:
         return self._stream_healthy
@@ -2680,10 +2729,14 @@ Create `tests/unit/test_engine_lifecycle.py`:
 ```python
 from decimal import Decimal
 
+import pytest
+
+import execution.engine as engine_module
 from execution.clock import ManualClock
 from execution.models import Algorithm, ChildOrderStatus, DeadlinePolicy, Environment, ExecutionRequest, ExecutionStatus
 from execution.service import ExecutionService
 from exchanges.simulator import DeterministicSimulator
+from risk.validation import ValidationError
 
 
 def request(algorithm: Algorithm, target: Decimal = Decimal("0.010")) -> ExecutionRequest:
@@ -2750,6 +2803,43 @@ async def test_stream_health_failure_pauses_new_submit_and_reconciles() -> None:
 
     assert execution.child_orders == []
     assert execution.final_reason == "STREAM_HEALTH_DEGRADED_RECONCILED"
+
+
+async def test_engine_rejects_price_bound_violation_before_submit() -> None:
+    clock = ManualClock()
+    simulator = DeterministicSimulator(clock=clock, position=Decimal("0"))
+    await simulator.push_market_data("BTCUSDT", Decimal("100"), Decimal("101"))
+    service = ExecutionService(adapter=simulator, clock=clock)
+    bounded_request = ExecutionRequest(
+        environment=Environment.SIMULATION,
+        symbol="BTCUSDT",
+        algorithm=Algorithm.CHASE,
+        target_position=Decimal("0.010"),
+        target_price_lower=Decimal("90"),
+        target_price_upper=Decimal("99"),
+        target_duration_seconds=30,
+        deadline_policy=DeadlinePolicy.CANCEL_REMAINDER,
+    )
+
+    execution = await service.create_execution(bounded_request)
+
+    assert execution.status is ExecutionStatus.EXPIRED
+    assert execution.final_reason == "PRICE_OUTSIDE_RANGE"
+    assert execution.child_orders == []
+
+
+async def test_engine_rejects_post_only_crossing_before_submit(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = ManualClock()
+    simulator = DeterministicSimulator(clock=clock, position=Decimal("0"))
+    await simulator.push_market_data("BTCUSDT", Decimal("100"), Decimal("101"))
+    service = ExecutionService(adapter=simulator, clock=clock)
+    execution = await service.create_execution(request(Algorithm.CHASE))
+
+    monkeypatch.setattr(engine_module, "chase_desired_price", lambda *_args, **_kwargs: Decimal("101"))
+    with pytest.raises(ValidationError, match="post-only buy"):
+        await service.run_once(execution.execution_id)
+
+    assert execution.child_orders == []
 
 
 async def test_create_timeout_keeps_unknown_exposure_until_reconciled() -> None:
@@ -3083,8 +3173,10 @@ Add `_reconcile_locked`:
 ```python
     async def _reconcile_locked(self, record: ExecutionRecord) -> None:
         prefix = make_client_order_prefix(record.execution_id)
-        reconciled = await self.adapter.reconcile_orders_and_fills(record.request.symbol, client_order_prefix=prefix)
-        for exchange_child in reconciled:
+        reconciliation = await self.adapter.reconcile_orders_and_fills(record.request.symbol, client_order_prefix=prefix)
+        for fill in reconciliation.fills:
+            record.exposure_tracker.apply_fill(fill.trade_id, fill.cumulative_filled_quantity)
+        for exchange_child in reconciliation.orders:
             local = next((child for child in record.child_orders if child.client_order_id == exchange_child.client_order_id), None)
             if local is None:
                 continue
@@ -4059,7 +4151,7 @@ import httpx
 from config import Settings
 from exchanges.base import ExchangeAdapter, NoFreshMarketData
 from execution.clock import Clock, SystemClock
-from execution.models import ChildOrderStatus, MarketSnapshot, OrderRequest, PositionSnapshot, SymbolRules
+from execution.models import ChildOrderStatus, MarketSnapshot, OrderRequest, PositionSnapshot, ReconciliationResult, SymbolRules
 
 
 def sign_params(params: dict[str, str], secret: str) -> dict[str, str]:
@@ -4177,8 +4269,8 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             yield None
         return
 
-    async def reconcile_orders_and_fills(self, symbol: str, client_order_prefix: str | None = None) -> object:
-        return []
+    async def reconcile_orders_and_fills(self, symbol: str, client_order_prefix: str | None = None) -> ReconciliationResult:
+        return ReconciliationResult(orders=[], fills=[], warnings=["reconciliation not implemented in REST foundation task"])
 
     async def health_check_streams(self) -> bool:
         return True
@@ -4438,7 +4530,7 @@ Update imports in `src/exchanges/binance_usdm.py`:
 ```python
 import json
 import websockets
-from execution.models import ChildOrder, ChildOrderStatus, MarketSnapshot, OrderRequest, PositionSnapshot, Side, SymbolRules
+from execution.models import ChildOrder, ChildOrderStatus, Fill, MarketSnapshot, OrderRequest, PositionSnapshot, ReconciliationResult, Side, SymbolRules
 ```
 
 In `src/exchanges/binance_usdm.py`, add:
@@ -4584,6 +4676,17 @@ Add parse and clock helpers:
             price=Decimal(str(raw.get("price") or fallback.price)),
             status=normalize_order_status(str(raw["status"])),
         )
+
+    def parse_fill(self, raw: dict, cumulative_quantity: Decimal) -> Fill:
+        return Fill(
+            client_order_id=str(raw["clientOrderId"]),
+            trade_id=str(raw["id"]) if raw.get("id") is not None else None,
+            cumulative_filled_quantity=cumulative_quantity,
+            last_filled_quantity=Decimal(str(raw["qty"])),
+            last_fill_price=Decimal(str(raw["price"])),
+            event_time_ms=raw.get("time"),
+            transaction_time_ms=raw.get("time"),
+        )
 ```
 
 Implement the adapter methods:
@@ -4627,18 +4730,28 @@ Implement reconciliation so it cannot absorb unrelated manual orders:
         self,
         symbol: str,
         client_order_prefix: str | None = None,
-    ) -> list[ChildOrder]:
+    ) -> ReconciliationResult:
         if client_order_prefix is None:
             raise ValueError("client_order_prefix is required for execution reconciliation")
         open_orders = await self._signed_request("GET", "/fapi/v1/openOrders", {"symbol": symbol})
         recent_orders = await self._signed_request("GET", "/fapi/v1/allOrders", {"symbol": symbol, "limit": "50"})
+        recent_fills = await self._signed_request("GET", "/fapi/v1/userTrades", {"symbol": symbol, "limit": "50"})
         rows = [*open_orders, *recent_orders]
-        filtered = [
+        orders = [
             self.parse_order(row)
             for row in rows
             if str(row.get("clientOrderId", "")).startswith(client_order_prefix)
         ]
-        return filtered
+        cumulative_by_client_order_id: dict[str, Decimal] = {}
+        fills: list[Fill] = []
+        for row in sorted(recent_fills, key=lambda item: (item.get("time", 0), item.get("id", 0))):
+            client_order_id = str(row.get("clientOrderId", ""))
+            if not client_order_id.startswith(client_order_prefix):
+                continue
+            cumulative = cumulative_by_client_order_id.get(client_order_id, Decimal("0")) + Decimal(str(row["qty"]))
+            cumulative_by_client_order_id[client_order_id] = cumulative
+            fills.append(self.parse_fill(row, cumulative))
+        return ReconciliationResult(orders=orders, fills=fills, warnings=[])
 ```
 
 Important implementation rules:
@@ -5071,6 +5184,8 @@ uv run python scripts/run_testnet_twap.py \
 
 Before final submission, if Binance Testnet credentials are available, run one Chase and one TWAP Testnet execution and attach the raw execution logs, order IDs, request snapshot, and result summary. If credentials are unavailable, state that explicitly and show that Testnet scripts are credential-gated.
 
+Each Testnet evidence run must prove the integration path touched exchangeInfo parsing, one-way position query, fresh market-data snapshot, order submit, cancel request, order lookup or reconciliation by clientOrderId prefix, and artifact output. Testnet fills are useful if available, but deterministic simulator tests remain the proof for race-condition fills.
+
 ## Known Limitations
 
 - Only BTCUSDT is supported.
@@ -5137,6 +5252,8 @@ Include output from:
 ## Testnet Evidence
 
 After API keys are added, include raw execution log, order IDs, request snapshot, and result summary for one Chase and one TWAP run. If Testnet credentials are not available before submission, state that limitation explicitly and include the credential-gating output.
+
+Each Testnet run should show exchangeInfo parsing, one-way position query, fresh market-data snapshot, submit, cancel, order lookup or reconciliation by clientOrderId, and artifact output. If Testnet does not fill, explain that simulator scenarios provide deterministic fill/race proof.
 
 ## Real Development Failure Case
 
@@ -5243,6 +5360,7 @@ reports/report_draft.md has sections for simulator evidence, Testnet evidence, f
 reports/failure_case_log.md contains at least one real implementation failure before final submission.
 Simulator demo artifacts exist for request snapshot, JSONL log, summary JSON, child orders CSV, fills CSV, and timeline CSV.
 If Testnet credentials are available, Chase and TWAP Testnet evidence artifacts exist with order IDs, clientOrderIds, request snapshots, and summaries.
+Testnet evidence shows exchangeInfo parsing, position query, market-data snapshot, submit, cancel, lookup/reconciliation, and artifact output; simulator evidence covers race fills if Testnet does not fill.
 Artifact/log serialization converts Decimal, Enum, datetime, and Path values before JSON encoding.
 Calais-facing README/report content does not include the internal agentic-worker execution-plan header.
 No logs or artifacts contain API keys, secret keys, signatures, listenKeys, or raw authenticated payloads.
@@ -5261,12 +5379,14 @@ PENDING_CANCEL can reconcile back to live order state without freeing exposure u
 Per-execution event serialization: Task 3 and Task 18 checklist
 Decimal and side-aware rounding: Task 4
 Exact tick/step and post-only crossing validation: Tasks 4, 12, 17
+TRADING symbol status validation before submit: Tasks 4, 12, 15
 API decimal strings reject JSON floats: Task 13
 Exposure buckets and overfill invariant: Task 11
 Chase ADVERSE_ONLY/TWO_SIDED config: Task 9 plus config in Task 1
 TWAP schedule and carry-forward math: Task 10
 child_order_timeout_seconds: Tasks 10, 11, 12, and Task 14 scenarios
 ExchangeAdapter interface: Task 5
+Typed ReconciliationResult for orders, fills, and warnings: Tasks 2, 5, 7, 12, 17
 Deterministic simulator: Tasks 5, 7, 14
 Simulator artifact generation and smoke checks: Tasks 6, 14
 Binance adapter, signing, recvWindow, rate limits, status mapping: Tasks 15, 16, 17

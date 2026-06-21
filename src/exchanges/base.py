@@ -20,6 +20,10 @@ class OrderCreateTimeout(RuntimeError):
     pass
 
 
+class OrderCancelTimeout(RuntimeError):
+    pass
+
+
 class OrderRejected(RuntimeError):
     pass
 

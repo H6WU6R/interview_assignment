@@ -7,7 +7,7 @@ from typing import Any
 
 from algorithms.chase import ChaseDecision, chase_desired_price, should_reprice
 from algorithms.twap import safe_child_quantity, scheduled_cumulative_quantity, scheduled_deficit
-from exchanges.base import ExchangeAdapter, OrderCreateTimeout, OrderRejected
+from exchanges.base import ExchangeAdapter, OrderCancelTimeout, OrderCreateTimeout, OrderRejected
 from execution.clock import Clock, ManualClock
 from execution import ids
 from execution.events import ExecutionEventActor
@@ -379,6 +379,9 @@ class ExecutionEngine:
             self._set_child_status(child, ChildOrderStatus.PENDING_CANCEL)
             try:
                 cancelled = await self._adapter.cancel_order(record.request.symbol, child.client_order_id)
+            except OrderCancelTimeout as exc:
+                child.terminal_reason = str(exc)
+                continue
             except Exception as exc:
                 tracker.release_pending_cancel(remaining_before_cancel)
                 tracker.reserve_live_open(remaining_before_cancel)

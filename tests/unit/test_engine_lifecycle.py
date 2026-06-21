@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
-from exchanges.base import OrderCreateTimeout
+from exchanges.base import OrderCancelTimeout, OrderCreateTimeout
 from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
 from execution.engine import ExecutionEngine
@@ -18,6 +18,7 @@ from execution.models import (
     ExecutionRequest,
     ExecutionStatus,
     OrderRequest,
+    ReconciliationResult,
     Side,
     SymbolRules,
 )
@@ -166,6 +167,34 @@ async def test_adapter_level_create_timeout_reserves_unknown_exposure() -> None:
     assert snapshot.child_orders[0].status is ChildOrderStatus.UNKNOWN
     assert snapshot.exposure.unknown_order_quantity == Decimal("0.010")
     assert snapshot.exposure.reserved_exposure == snapshot.required_quantity
+
+
+async def test_adapter_level_cancel_timeout_keeps_pending_cancel_exposure_until_reconcile() -> None:
+    class CancelTimeoutAdapter(DeterministicSimulator):
+        async def cancel_order(self, symbol: str, client_order_id: str) -> ChildOrder:
+            raise OrderCancelTimeout(f"ambiguous cancel for {client_order_id}")
+
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+        ) -> ReconciliationResult:
+            return ReconciliationResult(orders=[], fills=[])
+
+    clock = ManualClock()
+    adapter = CancelTimeoutAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+
+    cancelled = await service.cancel_execution(execution.execution_id)
+
+    assert len(opened.child_orders) == 1
+    assert cancelled.child_orders[0].status is ChildOrderStatus.PENDING_CANCEL
+    assert cancelled.exposure.pending_cancel_quantity == Decimal("0.010")
+    assert cancelled.exposure.live_open_quantity == Decimal("0")
+    assert cancelled.exposure.reserved_exposure == Decimal("0.010")
 
 
 async def test_fill_during_cancel_reduces_replacement_size_without_overfill() -> None:

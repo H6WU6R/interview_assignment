@@ -98,6 +98,24 @@ async def test_fill_during_cancel_records_fill_event_and_reconciles_state() -> N
     assert result.orders == [order]
 
 
+async def test_repeated_partial_fills_accumulate_without_status_self_transition() -> None:
+    simulator = await fresh_simulator()
+    request = order_request(quantity=Decimal("0.010"))
+    order = await simulator.submit_limit_order(request)
+
+    first_fill = await simulator.push_fill(request.client_order_id, Decimal("0.003"), Decimal("99.00"))
+    second_fill = await simulator.push_fill(request.client_order_id, Decimal("0.002"), Decimal("99.50"))
+
+    assert order.status == ChildOrderStatus.PARTIALLY_FILLED
+    assert order.confirmed_filled_quantity == Decimal("0.005")
+    assert first_fill.cumulative_filled_quantity == Decimal("0.003")
+    assert second_fill.cumulative_filled_quantity == Decimal("0.005")
+    assert [first_fill.last_filled_quantity, second_fill.last_filled_quantity] == [
+        Decimal("0.003"),
+        Decimal("0.002"),
+    ]
+
+
 async def test_cancel_reconcile_open_script_leaves_order_open_until_reconciliation() -> None:
     execution_id = "exec_0123456789abcdef"
     prefix = make_client_order_prefix(execution_id)

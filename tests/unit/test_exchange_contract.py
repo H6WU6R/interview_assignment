@@ -36,6 +36,10 @@ def test_reconciliation_result_exposes_orders_fills_and_warnings() -> None:
 def test_exchange_stream_contract_methods_are_not_coroutine_functions() -> None:
     assert not inspect.iscoroutinefunction(ExchangeAdapter.stream_market_data)
     assert not inspect.iscoroutinefunction(ExchangeAdapter.stream_user_events)
+    assert not inspect.iscoroutinefunction(DeterministicSimulator.stream_market_data)
+    assert not inspect.iscoroutinefunction(DeterministicSimulator.stream_user_events)
+    assert not inspect.isasyncgenfunction(DeterministicSimulator.stream_market_data)
+    assert not inspect.isasyncgenfunction(DeterministicSimulator.stream_user_events)
 
 
 async def test_market_data_stream_can_be_consumed_from_adapter_typed_variable() -> None:
@@ -53,6 +57,15 @@ async def test_market_data_stream_can_be_consumed_from_adapter_typed_variable() 
             last_market_event_time_local_monotonic=0,
         )
         break
+
+
+def test_market_data_stream_returns_async_iterator_from_adapter_typed_variable() -> None:
+    adapter: ExchangeAdapter = DeterministicSimulator(clock=ManualClock())
+
+    market_data = adapter.stream_market_data()
+
+    assert hasattr(market_data, "__anext__")
+    assert not inspect.isawaitable(market_data)
 
 
 def test_user_events_stream_returns_async_iterator_from_adapter_typed_variable() -> None:

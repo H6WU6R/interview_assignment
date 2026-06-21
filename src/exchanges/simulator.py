@@ -109,9 +109,12 @@ class DeterministicSimulator(ExchangeAdapter):
             raise NoFreshMarketData(f"stale market data for {symbol}: age={age}")
         return snapshot
 
-    async def stream_market_data(self) -> AsyncIterator[MarketSnapshot]:
-        while True:
-            yield await self._market_queue.get()
+    def stream_market_data(self) -> AsyncIterator[MarketSnapshot]:
+        async def events() -> AsyncIterator[MarketSnapshot]:
+            while True:
+                yield await self._market_queue.get()
+
+        return events()
 
     async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
         snapshot = await self.get_best_bid_ask(order_request.symbol)
@@ -197,7 +200,9 @@ class DeterministicSimulator(ExchangeAdapter):
             raise SimulatorOrderRejected(f"fill exceeds remaining quantity for {client_order_id}")
 
         order.confirmed_filled_quantity += fill_quantity
-        order.status = transition_child(order.status, self._open_status_for(order))
+        target = self._open_status_for(order)
+        if order.status != target:
+            order.status = transition_child(order.status, target)
 
         self._trade_sequence += 1
         fill = Fill(

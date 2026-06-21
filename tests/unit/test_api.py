@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import Any
 
@@ -7,6 +8,10 @@ import httpx
 import pytest
 
 from api.app import create_app
+from api.schemas import ExecutionCreateRequest
+from exchanges.simulator import DeterministicSimulator
+from execution import ids
+from execution.models import MarketSnapshot
 
 
 SYMBOL = "BTCUSDT"
@@ -14,19 +19,23 @@ SYMBOL = "BTCUSDT"
 
 def execution_payload(
     *,
+    environment: str = "simulation",
+    symbol: str = SYMBOL,
+    algorithm: str = "CHASE",
     target_position: str = "0.010",
     target_price_lower: str = "94000",
     target_price_upper: str = "97000",
+    target_duration_seconds: int = 300,
     parameters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "environment": "simulation",
-        "symbol": SYMBOL,
-        "algorithm": "CHASE",
+        "environment": environment,
+        "symbol": symbol,
+        "algorithm": algorithm,
         "target_position": target_position,
         "target_price_lower": target_price_lower,
         "target_price_upper": target_price_upper,
-        "target_duration_seconds": 300,
+        "target_duration_seconds": target_duration_seconds,
         "deadline_policy": "AGGRESSIVE_WITHIN_RANGE",
     }
     if parameters is not None:
@@ -44,6 +53,26 @@ async def get_json(app: Any, url: str) -> httpx.Response:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         return await client.get(url)
+
+
+async def wait_for_execution(
+    app: Any,
+    execution_id: str,
+    predicate,
+    *,
+    timeout_seconds: float = 1.5,
+) -> dict[str, Any]:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    last_body: dict[str, Any] | None = None
+    while asyncio.get_running_loop().time() < deadline:
+        response = await get_json(app, f"/executions/{execution_id}")
+        assert response.status_code == 200
+        last_body = response.json()
+        if predicate(last_body):
+            return last_body
+        await asyncio.sleep(0.02)
+    assert last_body is not None
+    return last_body
 
 
 def assert_decimal_field(body: dict[str, Any], field: str, expected: str) -> None:
@@ -98,6 +127,599 @@ async def test_create_execution_no_action_completes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_testnet_request_constructs_binance_adapter_with_system_clock_and_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from config import BinanceUsdmCredentials
+    from execution.clock import SystemClock
+    from execution.models import Environment
+
+    runtime_module = importlib.import_module("api.runtime")
+    constructed: list[DeterministicSimulator] = []
+
+    class RecordingBinanceAdapter(DeterministicSimulator):
+        def __init__(self, *, settings: Any, clock: Any) -> None:
+            super().__init__(clock=clock, position=Decimal("0.010"))
+            self.settings = settings
+            constructed.append(self)
+
+    monkeypatch.setattr(
+        runtime_module,
+        "load_binance_usdm_credentials",
+        lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
+    )
+    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", RecordingBinanceAdapter)
+    app = create_app()
+
+    response = await post_json(
+        app,
+        "/executions",
+        execution_payload(environment="testnet", target_position="0.010"),
+    )
+
+    assert response.status_code == 200
+    assert len(constructed) == 1
+    adapter = constructed[0]
+    assert isinstance(adapter.clock, SystemClock)
+    assert adapter.settings.environment is Environment.TESTNET
+    assert adapter.settings.binance_api_key == "test-key"
+    assert adapter.settings.binance_api_secret == "test-secret"
+    assert response.json()["request"]["environment"] == "testnet"
+
+
+@pytest.mark.asyncio
+async def test_runtime_starts_binance_stream_supervisors_and_renews_listen_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from config import BinanceUsdmCredentials
+
+    runtime_module = importlib.import_module("api.runtime")
+    constructed: list[DeterministicSimulator] = []
+
+    class StreamingBinanceAdapter(DeterministicSimulator):
+        def __init__(self, *, settings: Any, clock: Any) -> None:
+            super().__init__(clock=clock, position=Decimal("0.010"))
+            self.settings = settings
+            self.latest_listen_key = "listen-1"
+            self.market_stream_healthy = False
+            self.user_stream_healthy = False
+            self.market_started = asyncio.Event()
+            self.market_closed = asyncio.Event()
+            self.market_continue = asyncio.Event()
+            self.user_started = asyncio.Event()
+            self.user_closed = asyncio.Event()
+            self.user_continue = asyncio.Event()
+            self.renewed = asyncio.Event()
+            self.renewed_listen_keys: list[str] = []
+            constructed.append(self)
+
+        def stream_market_data(self):
+            async def events():
+                self.market_stream_healthy = True
+                self.market_started.set()
+                try:
+                    yield MarketSnapshot(
+                        symbol=SYMBOL,
+                        bid=Decimal("95000.00"),
+                        ask=Decimal("95001.00"),
+                        last_market_event_time_exchange=1,
+                        last_market_event_time_local_monotonic=self.clock.monotonic(),
+                    )
+                    await self.market_continue.wait()
+                    yield MarketSnapshot(
+                        symbol=SYMBOL,
+                        bid=Decimal("95000.10"),
+                        ask=Decimal("95001.10"),
+                        last_market_event_time_exchange=2,
+                        last_market_event_time_local_monotonic=self.clock.monotonic(),
+                    )
+                finally:
+                    self.market_stream_healthy = False
+                    self.market_closed.set()
+
+            return events()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_stream_healthy = True
+                self.user_started.set()
+                try:
+                    await self.user_continue.wait()
+                    yield {"event_type": "noop"}
+                finally:
+                    self.user_stream_healthy = False
+                    self.user_closed.set()
+
+            return events()
+
+        async def renew_listen_key(self, listen_key: str) -> None:
+            self.renewed_listen_keys.append(listen_key)
+            self.renewed.set()
+
+        async def health_check_streams(self) -> bool:
+            return self.market_stream_healthy and self.user_stream_healthy
+
+    monkeypatch.setattr(
+        runtime_module,
+        "load_binance_usdm_credentials",
+        lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
+    )
+    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", StreamingBinanceAdapter)
+
+    runtime = runtime_module.ExecutionRuntime(
+        background_tick_interval_seconds=0.01,
+        stream_keepalive_interval_seconds=0.01,
+    )
+    await runtime.start()
+    try:
+        request = ExecutionCreateRequest.model_validate(
+            execution_payload(environment="testnet", target_position="0.010")
+        ).to_domain()
+        created = await runtime.create_execution(request)
+        adapter = constructed[0]
+
+        await asyncio.wait_for(adapter.market_started.wait(), timeout=0.5)
+        await asyncio.wait_for(adapter.user_started.wait(), timeout=0.5)
+        await asyncio.wait_for(adapter.renewed.wait(), timeout=0.5)
+
+        assert adapter.renewed_listen_keys
+        assert set(adapter.renewed_listen_keys) == {"listen-1"}
+        assert adapter.market_stream_healthy is True
+        assert not adapter.market_closed.is_set()
+    finally:
+        await runtime.stop()
+
+    assert constructed[0].market_closed.is_set()
+    assert constructed[0].user_closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_runtime_restarts_binance_user_stream_after_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from config import BinanceUsdmCredentials
+
+    runtime_module = importlib.import_module("api.runtime")
+    constructed: list[DeterministicSimulator] = []
+
+    class DisconnectingUserStreamAdapter(DeterministicSimulator):
+        def __init__(self, *, settings: Any, clock: Any) -> None:
+            super().__init__(clock=clock, position=Decimal("0"))
+            self.settings = settings
+            self.latest_listen_key = "listen-1"
+            self.market_stream_healthy = False
+            self.user_stream_healthy = False
+            self.market_continue = asyncio.Event()
+            self.first_user_started = asyncio.Event()
+            self.second_user_started = asyncio.Event()
+            self.disconnect_user = asyncio.Event()
+            self.user_continue = asyncio.Event()
+            self.user_runs = 0
+            self.reconciliation_windows: list[tuple[str | None, int | None, int | None]] = []
+            constructed.append(self)
+
+        def stream_market_data(self):
+            async def events():
+                self.market_stream_healthy = True
+                try:
+                    await self.market_continue.wait()
+                    yield MarketSnapshot(
+                        symbol=SYMBOL,
+                        bid=Decimal("95000.00"),
+                        ask=Decimal("95001.00"),
+                        last_market_event_time_exchange=1,
+                        last_market_event_time_local_monotonic=self.clock.monotonic(),
+                    )
+                finally:
+                    self.market_stream_healthy = False
+
+            return events()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_runs += 1
+                run_number = self.user_runs
+                self.user_stream_healthy = True
+                if run_number == 1:
+                    self.first_user_started.set()
+                    try:
+                        await self.disconnect_user.wait()
+                        return
+                    finally:
+                        self.user_stream_healthy = False
+
+                self.second_user_started.set()
+                try:
+                    await self.user_continue.wait()
+                    yield {"event_type": "noop"}
+                finally:
+                    self.user_stream_healthy = False
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.market_stream_healthy and self.user_stream_healthy
+
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ):
+            self.reconciliation_windows.append((client_order_prefix, start_time_ms, end_time_ms))
+            return await super().reconcile_orders_and_fills(
+                symbol,
+                client_order_prefix=client_order_prefix,
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+            )
+
+    monkeypatch.setattr(
+        runtime_module,
+        "load_binance_usdm_credentials",
+        lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
+    )
+    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", DisconnectingUserStreamAdapter)
+
+    runtime = runtime_module.ExecutionRuntime(
+        background_tick_interval_seconds=0.01,
+        stream_restart_delay_seconds=0.01,
+    )
+    await runtime.start()
+    try:
+        request = ExecutionCreateRequest.model_validate(
+            execution_payload(environment="testnet", target_position="0.010")
+        ).to_domain()
+        created = await runtime.create_execution(request)
+        adapter = constructed[0]
+
+        await asyncio.wait_for(adapter.first_user_started.wait(), timeout=0.5)
+        adapter.disconnect_user.set()
+        await asyncio.wait_for(adapter.second_user_started.wait(), timeout=0.5)
+
+        assert adapter.user_runs == 2
+        assert await adapter.health_check_streams() is True
+        bounded_windows = [
+            window
+            for window in adapter.reconciliation_windows
+            if window[1] is not None and window[2] is not None
+        ]
+        assert bounded_windows
+        prefix, start_time_ms, end_time_ms = bounded_windows[-1]
+        assert prefix == ids.make_client_order_prefix(created.execution_id)
+        assert start_time_ms is not None
+        assert end_time_ms is not None
+        assert end_time_ms >= start_time_ms
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_user_stream_event_reconciles_active_execution_with_event_time_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from config import BinanceUsdmCredentials
+
+    runtime_module = importlib.import_module("api.runtime")
+    constructed: list[DeterministicSimulator] = []
+
+    class EventReconcilingUserStreamAdapter(DeterministicSimulator):
+        def __init__(self, *, settings: Any, clock: Any) -> None:
+            super().__init__(clock=clock, position=Decimal("0"))
+            self.settings = settings
+            self.latest_listen_key = "listen-1"
+            self.user_started = asyncio.Event()
+            self.event_to_emit: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+            self.reconciliation_windows: list[tuple[str | None, int | None, int | None]] = []
+            constructed.append(self)
+
+        def stream_user_events(self):
+            async def events():
+                self._user_stream_healthy = True
+                self.user_started.set()
+                try:
+                    yield await self.event_to_emit.get()
+                    await asyncio.Event().wait()
+                finally:
+                    self._user_stream_healthy = False
+
+            return events()
+
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ):
+            self.reconciliation_windows.append((client_order_prefix, start_time_ms, end_time_ms))
+            return await super().reconcile_orders_and_fills(
+                symbol,
+                client_order_prefix=client_order_prefix,
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+            )
+
+    monkeypatch.setattr(
+        runtime_module,
+        "load_binance_usdm_credentials",
+        lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
+    )
+    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", EventReconcilingUserStreamAdapter)
+
+    runtime = runtime_module.ExecutionRuntime(background_tick_interval_seconds=0.01)
+    await runtime.start()
+    try:
+        request = ExecutionCreateRequest.model_validate(
+            execution_payload(environment="testnet", target_position="0.010")
+        ).to_domain()
+        created = await runtime.create_execution(request)
+        adapter = constructed[0]
+        await asyncio.wait_for(adapter.user_started.wait(), timeout=0.5)
+
+        await adapter.event_to_emit.put({"event_type": "ORDER_TRADE_UPDATE", "event_time_ms": 123_456})
+
+        deadline = asyncio.get_running_loop().time() + 0.5
+        while (
+            not any(window[2] == 123_456 for window in adapter.reconciliation_windows)
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.01)
+
+        bounded_window = next(
+            window for window in adapter.reconciliation_windows if window[2] == 123_456
+        )
+        prefix, start_time_ms, end_time_ms = bounded_window
+        assert prefix == ids.make_client_order_prefix(created.execution_id)
+        assert start_time_ms == 63_456
+        assert end_time_ms == 123_456
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_loop_advances_twap_without_external_run_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from config import BinanceUsdmCredentials
+
+    runtime_module = importlib.import_module("api.runtime")
+
+    class AutoMarketBinanceAdapter(DeterministicSimulator):
+        def __init__(self, *, settings: Any, clock: Any) -> None:
+            super().__init__(clock=clock, position=Decimal("0"))
+            self.settings = settings
+
+        async def get_best_bid_ask(self, symbol: str) -> MarketSnapshot:
+            return MarketSnapshot(
+                symbol=symbol,
+                bid=Decimal("95000.00"),
+                ask=Decimal("95001.00"),
+                last_market_event_time_exchange=1,
+                last_market_event_time_local_monotonic=self.clock.monotonic(),
+            )
+
+    monkeypatch.setattr(
+        runtime_module,
+        "load_binance_usdm_credentials",
+        lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
+    )
+    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", AutoMarketBinanceAdapter)
+    app = create_app(background_tick_interval_seconds=0.01)
+    await app.state.runtime.start()
+    try:
+        created_response = await post_json(
+            app,
+            "/executions",
+            execution_payload(
+                environment="testnet",
+                algorithm="TWAP",
+                target_duration_seconds=1,
+                parameters={
+                    "number_of_slices": 2,
+                    "child_order_timeout_seconds": 10,
+                },
+            ),
+        )
+        created = created_response.json()
+
+        progressed = await wait_for_execution(
+            app,
+            created["execution_id"],
+            lambda body: len(body["child_orders"]) == 1,
+        )
+
+        assert created_response.status_code == 200
+        assert progressed["status"] == "RUNNING"
+        assert progressed["child_orders"][0]["submitted_quantity"] == "0.005"
+    finally:
+        await app.state.runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_loop_reconciles_unknown_child_without_manual_reconcile() -> None:
+    app = create_app(simulator_position="0", background_tick_interval_seconds=0.01)
+    await app.state.runtime.start()
+    try:
+        created_response = await post_json(app, "/executions", execution_payload())
+        created = created_response.json()
+        prefix = ids.make_client_order_prefix(created["execution_id"])
+        app.state.adapter.script_create_timeout(prefix)
+        await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+
+        reconciled = await wait_for_execution(
+            app,
+            created["execution_id"],
+            lambda body: bool(body["child_orders"])
+            and body["child_orders"][0]["status"] == "OPEN",
+            timeout_seconds=1.0,
+        )
+
+        assert created_response.status_code == 200
+        assert reconciled["unknown_order_quantity"] == "0"
+        assert reconciled["child_orders"][0]["terminal_reason"] is None
+    finally:
+        await app.state.runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_loop_records_unexpected_failure_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(simulator_position="0", background_tick_interval_seconds=0.01)
+    created_response = await post_json(app, "/executions", execution_payload())
+    created = created_response.json()
+    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    original_run_once = app.state.service.run_once
+    calls = 0
+
+    async def flaky_run_once(execution_id: str):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("background loop boom")
+        return await original_run_once(execution_id)
+
+    monkeypatch.setattr(app.state.service, "run_once", flaky_run_once)
+    await app.state.runtime.start()
+    try:
+        progressed = await wait_for_execution(
+            app,
+            created["execution_id"],
+            lambda body: len(body["child_orders"]) == 1,
+            timeout_seconds=1.0,
+        )
+
+        assert progressed["child_orders"][0]["status"] == "OPEN"
+        assert calls >= 2
+        assert "background loop boom" in app.state.runtime.runtime_errors[created["execution_id"]][-1]
+        assert app.state.runtime.background_task_count == 1
+    finally:
+        await app.state.runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_loop_records_unknown_reconcile_failure_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(simulator_position="0", background_tick_interval_seconds=0.01)
+    created_response = await post_json(app, "/executions", execution_payload())
+    created = created_response.json()
+    prefix = ids.make_client_order_prefix(created["execution_id"])
+    app.state.adapter.script_create_timeout(prefix)
+    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+
+    original_reconcile = app.state.runtime.reconcile_execution
+    calls = 0
+
+    async def flaky_reconcile(execution_id: str):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("unknown reconcile boom")
+        return await original_reconcile(execution_id)
+
+    monkeypatch.setattr(app.state.runtime, "reconcile_execution", flaky_reconcile)
+    await app.state.runtime.start()
+    try:
+        reconciled = await wait_for_execution(
+            app,
+            created["execution_id"],
+            lambda body: calls >= 2
+            and bool(body["child_orders"])
+            and body["unknown_order_quantity"] == "0",
+            timeout_seconds=1.0,
+        )
+
+        assert reconciled["child_orders"][0]["status"] == "OPEN"
+        assert calls >= 2
+        assert "unknown reconcile boom" in app.state.runtime.runtime_errors[created["execution_id"]][-1]
+        assert app.state.runtime.background_task_count == 1
+    finally:
+        await app.state.runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_stop_cancels_and_reconciles_active_execution() -> None:
+    app = create_app(simulator_position="0", background_tick_interval_seconds=0.05)
+    await app.state.runtime.start()
+    created_response = await post_json(app, "/executions", execution_payload())
+    created = created_response.json()
+    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    opened_response = await post_json(app, f"/executions/{created['execution_id']}/run-once")
+
+    assert created_response.status_code == 200
+    assert opened_response.status_code == 200
+    assert opened_response.json()["child_orders"][0]["status"] == "OPEN"
+
+    await app.state.runtime.stop()
+    stopped = await app.state.runtime.get_execution(created["execution_id"])
+
+    assert stopped.status.value == "CANCELLED"
+    assert stopped.exposure.reserved_exposure == Decimal("0")
+    assert stopped.child_orders[0].status.value == "CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_runtime_stop_cancels_background_execution_tasks() -> None:
+    app = create_app(background_tick_interval_seconds=0.01)
+    await app.state.runtime.start()
+    created_response = await post_json(app, "/executions", execution_payload())
+
+    assert created_response.status_code == 200
+    assert app.state.runtime.background_task_count == 1
+
+    await app.state.runtime.stop()
+
+    assert app.state.runtime.background_task_count == 0
+    assert app.state.runtime.is_started is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_start_during_stop_does_not_restart_until_shutdown_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    runtime_module = importlib.import_module("api.runtime")
+    runtime = runtime_module.ExecutionRuntime()
+    stop_entered = asyncio.Event()
+    release_stop = asyncio.Event()
+
+    async def slow_cancel_and_reconcile() -> None:
+        stop_entered.set()
+        await release_stop.wait()
+
+    monkeypatch.setattr(runtime, "_cancel_and_reconcile_active_executions", slow_cancel_and_reconcile)
+
+    await runtime.start()
+    stop_task = asyncio.create_task(runtime.stop())
+    await asyncio.wait_for(stop_entered.wait(), timeout=0.5)
+
+    await runtime.start()
+
+    assert runtime.is_started is False
+
+    release_stop.set()
+    await asyncio.wait_for(stop_task, timeout=0.5)
+
+    assert runtime.is_started is False
+
+
+@pytest.mark.asyncio
 async def test_cancel_terminal_execution_is_idempotent_and_preserves_reason() -> None:
     app = create_app(simulator_position="0.010")
     created = (await post_json(app, "/executions", execution_payload())).json()
@@ -132,6 +754,18 @@ async def test_create_nonzero_execution_then_get_returns_running_buy() -> None:
     assert_decimal_field(fetched, "target_dust_quantity", "0")
     assert_decimal_field(fetched, "unfilled_quantity", "0.010")
     assert fetched["child_orders"] == []
+
+
+@pytest.mark.asyncio
+async def test_second_active_execution_for_same_environment_and_symbol_returns_409() -> None:
+    app = create_app(simulator_position="0")
+    first = await post_json(app, "/executions", execution_payload())
+
+    second = await post_json(app, "/executions", execution_payload(target_position="0.020"))
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert "active execution already exists" in second.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -293,12 +927,40 @@ async def test_empty_parameters_default_and_repricing_mode_accepts_enum() -> Non
         "/executions",
         execution_payload(parameters={"repricing_mode": "TWO_SIDED"}),
     )
-    empty = await post_json(app, "/executions", execution_payload(parameters={}))
+    empty = await post_json(
+        create_app(simulator_position="0"),
+        "/executions",
+        execution_payload(parameters={}),
+    )
 
     assert created.status_code == 200
     assert empty.status_code == 200
     assert created.json()["status"] == "RUNNING"
     assert empty.json()["status"] == "RUNNING"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        execution_payload(symbol="ETHUSDT"),
+        execution_payload(target_price_lower="0"),
+        execution_payload(target_price_upper="0"),
+        execution_payload(target_price_lower="-1"),
+        execution_payload(target_price_upper="-1"),
+        execution_payload(target_position="NaN"),
+        execution_payload(parameters={"reprice_threshold_bps": "-0.1"}),
+        execution_payload(parameters={"minimum_reprice_interval_ms": -1}),
+        execution_payload(parameters={"number_of_slices": 0}),
+        execution_payload(parameters={"child_order_timeout_seconds": 0}),
+    ],
+)
+async def test_invalid_execution_request_fields_are_rejected(payload: dict[str, Any]) -> None:
+    app = create_app()
+
+    response = await post_json(app, "/executions", payload)
+
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio

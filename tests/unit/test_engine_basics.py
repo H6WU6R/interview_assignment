@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
+from execution.ids import make_client_order_prefix
 from execution.models import (
     Algorithm,
     DeadlinePolicy,
@@ -93,7 +94,10 @@ async def test_create_nonzero_execution_runs_and_stores_normalized_quantity() ->
     stored = await service.get_execution(record.execution_id)
     assert stored.execution_id == record.execution_id
     assert stored.status is ExecutionStatus.RUNNING
-    reconciliation = await simulator.reconcile_orders_and_fills(SYMBOL)
+    reconciliation = await simulator.reconcile_orders_and_fills(
+        SYMBOL,
+        client_order_prefix=make_client_order_prefix(record.execution_id),
+    )
     assert reconciliation.orders == []
 
 

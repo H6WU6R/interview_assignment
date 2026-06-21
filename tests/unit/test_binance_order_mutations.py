@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from decimal import Decimal
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 from config import Settings
 from exchanges.base import OrderCreateTimeout, OrderRejected
 from exchanges.binance_usdm import (
+    LISTEN_KEY_PATH,
     ORDER_QUERY_PATH,
     ORDER_REST_PATH,
     BinanceUsdmAdapter,
@@ -34,16 +36,20 @@ from execution.models import (
     OrderRequest,
     Side,
     SymbolRules,
+    TimeInForce,
 )
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload: Any) -> None:
+    def __init__(self, status_code: int, payload: Any, *, json_error: Exception | None = None) -> None:
         self.status_code = status_code
         self._payload = payload
+        self._json_error = json_error
         self.text = str(payload)
 
     def json(self) -> Any:
+        if self._json_error is not None:
+            raise self._json_error
         return self._payload
 
     def raise_for_status(self) -> None:
@@ -56,16 +62,45 @@ class FakeResponse:
 
 
 class RecordingClient:
-    def __init__(self, response: FakeResponse | None = None, *, timeout: bool = False) -> None:
+    def __init__(
+        self,
+        response: FakeResponse | None = None,
+        *,
+        timeout: bool = False,
+        exception: Exception | None = None,
+    ) -> None:
         self.response = response or FakeResponse(200, {})
         self.timeout = timeout
+        self.exception = exception
         self.calls: list[dict[str, Any]] = []
 
     async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         self.calls.append({"method": method, "url": url, **kwargs})
         if self.timeout:
             raise httpx.TimeoutException("timed out")
+        if self.exception is not None:
+            raise self.exception
         return self.response
+
+
+class FakeWebSocket:
+    def __init__(self, messages: list[str]) -> None:
+        self._messages = list(messages)
+        self.closed = asyncio.Event()
+
+    async def __aenter__(self) -> FakeWebSocket:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.closed.set()
+
+    def __aiter__(self) -> FakeWebSocket:
+        return self
+
+    async def __anext__(self) -> str:
+        if not self._messages:
+            raise StopAsyncIteration
+        return self._messages.pop(0)
 
 
 def rules(*, tif: frozenset[str] = frozenset({"GTC", "GTX"})) -> SymbolRules:
@@ -84,6 +119,7 @@ def order_request(
     *,
     client_order_id: str = "ce_abcdef123456_1",
     post_only: bool = True,
+    time_in_force: TimeInForce | None = None,
 ) -> OrderRequest:
     return OrderRequest(
         execution_id="exec_abcdef1234567890",
@@ -94,6 +130,7 @@ def order_request(
         quantity=Decimal("0.010"),
         price=Decimal("95000.10"),
         post_only=post_only,
+        time_in_force=time_in_force,
     )
 
 
@@ -138,6 +175,16 @@ def test_new_order_payload_rejects_post_only_without_gtx_and_invalid_client_id()
         build_new_order_params(order_request(client_order_id="x" * 37), rules())
 
 
+def test_new_order_payload_uses_explicit_ioc_and_rejects_unsupported_ioc() -> None:
+    request = order_request(post_only=False, time_in_force=TimeInForce.IOC)
+
+    params = build_new_order_params(request, rules(tif=frozenset({"GTC", "GTX", "IOC"})))
+
+    assert params["timeInForce"] == "IOC"
+    with pytest.raises(ExchangeTerminalReject, match="IOC_TIME_IN_FORCE_UNSUPPORTED"):
+        build_new_order_params(request, rules(tif=frozenset({"GTC", "GTX"})))
+
+
 def test_timeout_classification_and_exception_hierarchy() -> None:
     assert ORDER_REST_PATH == "/fapi/v1/order"
     assert ORDER_QUERY_PATH == "/fapi/v1/order"
@@ -161,6 +208,69 @@ async def test_signed_request_timeout_maps_by_mutation_kind() -> None:
         await read_adapter._signed_request("GET", ORDER_QUERY_PATH, {})
 
 
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        httpx.ConnectError("connect failed"),
+        httpx.ReadError("read failed"),
+        httpx.WriteError("write failed"),
+        httpx.RemoteProtocolError("remote protocol failed"),
+        httpx.TransportError("transport failed"),
+        httpx.TimeoutException("timed out"),
+    ],
+)
+async def test_signed_request_transport_errors_map_by_operation(transport_error: Exception) -> None:
+    with pytest.raises(UnknownCreateOutcome):
+        await authed_adapter(RecordingClient(exception=transport_error))._signed_request(
+            "POST",
+            ORDER_REST_PATH,
+            {},
+            mutation_kind=MutationKind.CREATE,
+        )
+    with pytest.raises(PendingCancelOutcome):
+        await authed_adapter(RecordingClient(exception=transport_error))._signed_request(
+            "DELETE",
+            ORDER_REST_PATH,
+            {},
+            mutation_kind=MutationKind.CANCEL,
+        )
+    with pytest.raises(RetryableReadFailure):
+        await authed_adapter(RecordingClient(exception=transport_error))._signed_request(
+            "GET",
+            ORDER_QUERY_PATH,
+            {},
+        )
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_exc", "match"),
+    [
+        (429, RetryableReadFailure, "RATE_LIMIT_BACKOFF"),
+        (418, RuntimeError, "VENUE_BAN_HARD_STOP"),
+    ],
+)
+async def test_signed_request_status_only_hard_stops_ignore_malformed_json(
+    status_code: int,
+    expected_exc: type[Exception],
+    match: str,
+) -> None:
+    def malformed_response() -> FakeResponse:
+        return FakeResponse(status_code, "", json_error=ValueError("invalid json"))
+
+    for method, path, mutation_kind in (
+        ("POST", ORDER_REST_PATH, MutationKind.CREATE),
+        ("DELETE", ORDER_REST_PATH, MutationKind.CANCEL),
+        ("GET", ORDER_QUERY_PATH, None),
+    ):
+        with pytest.raises(expected_exc, match=match):
+            await authed_adapter(RecordingClient(malformed_response()))._signed_request(
+                method,
+                path,
+                {},
+                mutation_kind=mutation_kind,
+            )
+
+
 async def test_signed_request_http_408_maps_mutations_to_ambiguous_outcome() -> None:
     create_adapter = authed_adapter(RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"})))
     cancel_adapter = authed_adapter(RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"})))
@@ -172,6 +282,74 @@ async def test_signed_request_http_408_maps_mutations_to_ambiguous_outcome() -> 
         await cancel_adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
     with pytest.raises(RetryableReadFailure):
         await read_adapter._signed_request("GET", ORDER_QUERY_PATH, {})
+
+
+async def test_signed_request_invalid_json_after_http_success_maps_conservatively() -> None:
+    bad_json = FakeResponse(200, "not-json", json_error=ValueError("invalid json"))
+
+    with pytest.raises(UnknownCreateOutcome):
+        await authed_adapter(RecordingClient(bad_json))._signed_request(
+            "POST",
+            ORDER_REST_PATH,
+            {},
+            mutation_kind=MutationKind.CREATE,
+        )
+    with pytest.raises(PendingCancelOutcome):
+        await authed_adapter(RecordingClient(bad_json))._signed_request(
+            "DELETE",
+            ORDER_REST_PATH,
+            {},
+            mutation_kind=MutationKind.CANCEL,
+        )
+    with pytest.raises(RetryableReadFailure):
+        await authed_adapter(RecordingClient(bad_json))._signed_request(
+            "GET",
+            ORDER_QUERY_PATH,
+            {},
+        )
+
+
+@pytest.mark.parametrize("status_code", [400, 503])
+async def test_signed_request_malformed_error_json_maps_conservatively_by_operation(
+    status_code: int,
+) -> None:
+    def malformed_response() -> FakeResponse:
+        return FakeResponse(status_code, "not-json", json_error=ValueError("invalid json"))
+
+    with pytest.raises(UnknownCreateOutcome):
+        await authed_adapter(RecordingClient(malformed_response()))._signed_request(
+            "POST",
+            ORDER_REST_PATH,
+            {},
+            mutation_kind=MutationKind.CREATE,
+        )
+    with pytest.raises(PendingCancelOutcome):
+        await authed_adapter(RecordingClient(malformed_response()))._signed_request(
+            "DELETE",
+            ORDER_REST_PATH,
+            {},
+            mutation_kind=MutationKind.CANCEL,
+        )
+    with pytest.raises(RetryableReadFailure):
+        await authed_adapter(RecordingClient(malformed_response()))._signed_request(
+            "GET",
+            ORDER_QUERY_PATH,
+            {},
+        )
+
+
+async def test_signed_create_503_with_specific_terminal_reject_is_not_ambiguous() -> None:
+    adapter = authed_adapter(
+        RecordingClient(
+            FakeResponse(
+                503,
+                {"code": -2019, "msg": "Margin is insufficient."},
+            )
+        )
+    )
+
+    with pytest.raises(ExchangeTerminalReject, match="Margin is insufficient"):
+        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
 
 
 async def test_signed_create_post_only_reject_remains_retryable_order_reject() -> None:
@@ -391,6 +569,37 @@ async def test_reconciliation_requires_prefix_filters_manual_orders_and_joins_tr
     ]
 
 
+async def test_reconciliation_passes_time_window_and_limit_to_historical_endpoints() -> None:
+    class EmptyReconciliationClient(RecordingClient):
+        async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            return FakeResponse(200, [])
+
+    client = EmptyReconciliationClient()
+    adapter = authed_adapter(client)
+
+    result = await adapter.reconcile_orders_and_fills(
+        "BTCUSDT",
+        client_order_prefix="ce_abcdef123456_",
+        start_time_ms=1000,
+        end_time_ms=2000,
+    )
+
+    assert result.orders == []
+    assert result.fills == []
+    params_by_path = {
+        call["url"].split(adapter.base_url, 1)[1]: call["params"]
+        for call in client.calls
+    }
+    assert params_by_path["/fapi/v1/openOrders"]["symbol"] == "BTCUSDT"
+    assert params_by_path["/fapi/v1/allOrders"]["limit"] == "1000"
+    assert params_by_path["/fapi/v1/allOrders"]["startTime"] == "1000"
+    assert params_by_path["/fapi/v1/allOrders"]["endTime"] == "2000"
+    assert params_by_path["/fapi/v1/userTrades"]["limit"] == "1000"
+    assert params_by_path["/fapi/v1/userTrades"]["startTime"] == "1000"
+    assert params_by_path["/fapi/v1/userTrades"]["endTime"] == "2000"
+
+
 async def test_position_lookup_rejects_hedge_mode_and_returns_zero_for_missing_symbol() -> None:
     hedge = RecordingClient(
         FakeResponse(
@@ -426,6 +635,73 @@ def test_stream_parsers_preserve_exchange_timestamps() -> None:
     assert event["event_time_ms"] == 100
     assert event["transaction_time_ms"] == 101
     assert event["raw"]["o"]["x"] == "TRADE"
+
+
+async def test_market_stream_marks_health_around_iterator_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    websocket = FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "stream": "btcusdt@bookTicker",
+                    "data": {"s": "BTCUSDT", "b": "100.10", "a": "100.20", "E": 99},
+                }
+            )
+        ]
+    )
+    adapter = BinanceUsdmAdapter(settings=Settings(environment=Environment.TESTNET), clock=ManualClock())
+
+    monkeypatch.setattr("exchanges.binance_usdm.websockets.connect", lambda _url: websocket)
+
+    stream = adapter.stream_market_data()
+    snapshot = await anext(stream)
+
+    assert snapshot.symbol == "BTCUSDT"
+    assert adapter.market_stream_healthy is True
+
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+
+    assert adapter.market_stream_healthy is False
+    assert websocket.closed.is_set()
+
+
+async def test_user_stream_creates_listen_key_tracks_health_and_degrades_on_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = RecordingClient(FakeResponse(200, {"listenKey": "listen-1"}))
+    websocket = FakeWebSocket(
+        [
+            json.dumps(
+                {
+                    "e": "ORDER_TRADE_UPDATE",
+                    "E": 100,
+                    "T": 101,
+                    "o": {"x": "NEW"},
+                }
+            )
+        ]
+    )
+    adapter = authed_adapter(client)
+
+    monkeypatch.setattr("exchanges.binance_usdm.websockets.connect", lambda _url: websocket)
+
+    stream = adapter.stream_user_events()
+    event = await anext(stream)
+
+    assert event["event_type"] == "ORDER_TRADE_UPDATE"
+    assert adapter.latest_listen_key == "listen-1"
+    assert adapter.user_stream_healthy is True
+    assert client.calls[0]["method"] == "POST"
+    assert client.calls[0]["url"].endswith(LISTEN_KEY_PATH)
+
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+
+    assert adapter.user_stream_healthy is False
+    assert await adapter.health_check_streams() is False
+    assert websocket.closed.is_set()
 
 
 def test_market_stream_url_uses_requested_symbol_and_public_route() -> None:

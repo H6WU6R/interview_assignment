@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 
-from exchanges.base import OrderCancelTimeout, OrderCreateTimeout, OrderRejected, TerminalOrderRejected
+from exchanges.base import (
+    OrderCancelTimeout,
+    OrderCreateTimeout,
+    OrderRejected,
+    TerminalOrderRejected,
+)
 from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
 from execution.engine import ExecutionEngine
@@ -151,6 +157,7 @@ async def test_aggressive_deadline_submits_non_post_only_marketable_limit() -> N
     assert simulator.submissions[0].client_order_id == snapshot.child_orders[0].client_order_id
     assert simulator.submissions[0].price == Decimal("95001.00")
     assert simulator.submissions[0].post_only is False
+    assert getattr(simulator.submissions[0], "time_in_force", None) == "IOC"
 
 
 async def test_aggressive_deadline_does_not_cancel_its_own_final_attempt() -> None:
@@ -362,6 +369,94 @@ async def test_adapter_level_create_timeout_reserves_unknown_exposure() -> None:
     assert snapshot.child_orders[0].status is ChildOrderStatus.UNKNOWN
     assert snapshot.exposure.unknown_order_quantity == Decimal("0.010")
     assert snapshot.exposure.reserved_exposure == snapshot.required_quantity
+
+
+async def test_partially_filled_create_response_immediately_confirms_parent_fill() -> None:
+    class PartialCreateAdapter(DeterministicSimulator):
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            order = self._create_open_order(order_request)
+            order.confirmed_filled_quantity = Decimal("0.004")
+            order.status = ChildOrderStatus.PARTIALLY_FILLED
+            return order
+
+    clock = ManualClock()
+    adapter = PartialCreateAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert snapshot.child_orders[0].status is ChildOrderStatus.PARTIALLY_FILLED
+    assert snapshot.child_orders[0].confirmed_filled_quantity == Decimal("0.004")
+    assert snapshot.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert snapshot.exposure.live_open_quantity == Decimal("0.006")
+    assert snapshot.exposure.confirmed_filled_quantity + snapshot.exposure.reserved_exposure <= snapshot.required_quantity
+
+
+async def test_cancelled_create_response_from_pending_submit_clears_exposure() -> None:
+    class CancelledCreateAdapter(DeterministicSimulator):
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            return ChildOrder(
+                child_order_id=order_request.child_order_id,
+                client_order_id=order_request.client_order_id,
+                symbol=order_request.symbol,
+                side=order_request.side,
+                submitted_quantity=order_request.quantity,
+                price=order_request.price,
+                status=ChildOrderStatus.CANCELLED,
+                raw_status="EXPIRED",
+            )
+
+    clock = ManualClock()
+    adapter = CancelledCreateAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(
+        execution_request(duration=1, upper=Decimal("95001.00"))
+    )
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert snapshot.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert snapshot.child_orders[0].confirmed_filled_quantity == Decimal("0")
+    assert snapshot.exposure.confirmed_filled_quantity == Decimal("0")
+    assert snapshot.exposure.reserved_exposure == Decimal("0")
+
+
+async def test_cancelled_create_response_with_partial_fill_confirms_fill_and_clears_exposure() -> None:
+    class PartiallyFilledCancelledCreateAdapter(DeterministicSimulator):
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            return ChildOrder(
+                child_order_id=order_request.child_order_id,
+                client_order_id=order_request.client_order_id,
+                symbol=order_request.symbol,
+                side=order_request.side,
+                submitted_quantity=order_request.quantity,
+                price=order_request.price,
+                status=ChildOrderStatus.CANCELLED,
+                confirmed_filled_quantity=Decimal("0.004"),
+                raw_status="EXPIRED",
+            )
+
+    clock = ManualClock()
+    adapter = PartiallyFilledCancelledCreateAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(
+        execution_request(duration=1, upper=Decimal("95001.00"))
+    )
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert snapshot.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert snapshot.child_orders[0].confirmed_filled_quantity == Decimal("0.004")
+    assert snapshot.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert snapshot.exposure.reserved_exposure == Decimal("0")
 
 
 async def test_exact_create_timeout_lookup_maps_found_order_to_live_open() -> None:
@@ -974,6 +1069,61 @@ async def test_stream_health_failure_reconciles_existing_fill_without_new_submit
     assert len(snapshot.child_orders) == 1
     assert snapshot.exposure.confirmed_filled_quantity == Decimal("0.004")
     assert snapshot.exposure.live_open_quantity == Decimal("0.006")
+
+
+async def test_stale_rest_snapshot_cannot_reduce_child_cumulative_fill() -> None:
+    class LowerRestSnapshotAdapter(DeterministicSimulator):
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+        ) -> ReconciliationResult:
+            result = await super().reconcile_orders_and_fills(
+                symbol,
+                client_order_prefix=client_order_prefix,
+            )
+            lowered_orders = []
+            for order in result.orders:
+                stale_order = deepcopy(order)
+                stale_order.confirmed_filled_quantity = Decimal("0.001")
+                stale_order.status = ChildOrderStatus.PARTIALLY_FILLED
+                lowered_orders.append(stale_order)
+            return ReconciliationResult(
+                orders=lowered_orders,
+                fills=result.fills,
+                warnings=result.warnings,
+            )
+
+    clock = ManualClock()
+    adapter = LowerRestSnapshotAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+    await adapter.push_fill(opened.child_orders[0].client_order_id, Decimal("0.004"), Decimal("95000.00"))
+
+    snapshot = await service.reconcile_execution(execution.execution_id)
+
+    assert snapshot.child_orders[0].confirmed_filled_quantity == Decimal("0.004")
+    assert snapshot.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert snapshot.exposure.live_open_quantity == Decimal("0.006")
+    assert snapshot.exposure.confirmed_filled_quantity + snapshot.exposure.reserved_exposure <= snapshot.required_quantity
+
+
+async def test_stale_market_data_pauses_without_new_submit_or_raise() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    prefix = make_client_order_prefix(execution.execution_id)
+    clock.advance(2)
+
+    snapshot = await service.run_once(execution.execution_id)
+    reconciliation = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
+
+    assert snapshot.status is ExecutionStatus.RUNNING
+    assert snapshot.final_reason == "MARKET_DATA_STALE_RECONCILED"
+    assert snapshot.child_orders == []
+    assert snapshot.exposure.reserved_exposure == Decimal("0")
+    assert reconciliation.orders == []
 
 
 async def test_duplicate_fill_reconciliation_does_not_double_count_confirmed_fills() -> None:

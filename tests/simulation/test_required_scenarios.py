@@ -415,7 +415,7 @@ async def test_t9_duplicate_fill_event_does_not_double_count_cumulative_fill() -
     client_order_id = execution.child_orders[0].client_order_id
 
     fill = await simulator.push_fill(client_order_id, Decimal("0.003"), execution.child_orders[0].price)
-    simulator._fills.append(
+    simulator.inject_reconciliation_fill(
         Fill(
             client_order_id=client_order_id,
             trade_id=fill.trade_id,
@@ -426,7 +426,7 @@ async def test_t9_duplicate_fill_event_does_not_double_count_cumulative_fill() -
             transaction_time_ms=fill.transaction_time_ms,
         )
     )
-    simulator._fills.append(
+    simulator.inject_reconciliation_fill(
         Fill(
             client_order_id=client_order_id,
             trade_id="sim_trade_stale",

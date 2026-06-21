@@ -28,6 +28,10 @@ class OrderRejected(RuntimeError):
     pass
 
 
+class TerminalOrderRejected(OrderRejected):
+    pass
+
+
 class ExchangeAdapter(ABC):
     @abstractmethod
     async def get_symbol_rules(self, symbol: str) -> SymbolRules:

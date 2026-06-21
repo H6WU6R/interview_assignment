@@ -21,6 +21,7 @@ from exchanges.base import (
     OrderCancelTimeout,
     OrderCreateTimeout,
     OrderRejected,
+    TerminalOrderRejected,
 )
 from execution.clock import Clock, SystemClock
 from execution import ids
@@ -57,7 +58,7 @@ class MutationKind(StrEnum):
     CANCEL = "CANCEL"
 
 
-class ExchangeTerminalReject(OrderRejected):
+class ExchangeTerminalReject(TerminalOrderRejected):
     pass
 
 
@@ -279,7 +280,10 @@ class BinanceUsdmAdapter(ExchangeAdapter):
                 raise PendingCancelOutcome("PENDING_CANCEL_OUTCOME")
             raise RetryableReadFailure("RETRYABLE_READ_FAILURE")
         if 400 <= response.status_code <= 499:
-            raise ExchangeTerminalReject(_terminal_reject_reason(response))
+            reason = _terminal_reject_reason(response)
+            if mutation_kind is MutationKind.CREATE and _is_retryable_order_reject_reason(reason):
+                raise OrderRejected(reason)
+            raise ExchangeTerminalReject(reason)
         raise RuntimeError(f"unexpected Binance HTTP status: {response.status_code}")
 
     async def get_best_bid_ask(self, symbol: str) -> MarketSnapshot:
@@ -602,3 +606,7 @@ def _terminal_reject_reason(response: Any) -> str:
 
 def _is_order_not_found_reason(reason: str) -> bool:
     return "BINANCE_-2013" in reason or "Order does not exist" in reason
+
+
+def _is_retryable_order_reject_reason(reason: str) -> bool:
+    return reason.startswith("BINANCE_-5022:")

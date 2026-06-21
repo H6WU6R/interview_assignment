@@ -12,7 +12,13 @@ from algorithms.twap import (
     scheduled_cumulative_quantity,
     scheduled_deficit,
 )
-from exchanges.base import ExchangeAdapter, OrderCancelTimeout, OrderCreateTimeout, OrderRejected
+from exchanges.base import (
+    ExchangeAdapter,
+    OrderCancelTimeout,
+    OrderCreateTimeout,
+    OrderRejected,
+    TerminalOrderRejected,
+)
 from execution.clock import Clock, ManualClock
 from execution import ids
 from execution.events import ExecutionEventActor
@@ -55,6 +61,7 @@ DEADLINE_AGGRESSIVE_ATTEMPTED = "DEADLINE_AGGRESSIVE_ATTEMPTED"
 POST_ONLY_CROSSES = "POST_ONLY_CROSSES"
 POST_ONLY_UNSUPPORTED = "POST_ONLY_UNSUPPORTED"
 ORDER_SAFETY_REJECTED = "ORDER_SAFETY_REJECTED"
+TERMINAL_ORDER_REJECTED = "TERMINAL_ORDER_REJECTED"
 STREAM_HEALTH_DEGRADED_RECONCILED = "STREAM_HEALTH_DEGRADED_RECONCILED"
 TARGET_QUANTITY_FILLED = "TARGET_QUANTITY_FILLED"
 UNTRADEABLE_TARGET_DUST = "UNTRADEABLE_TARGET_DUST"
@@ -272,6 +279,7 @@ class ExecutionEngine:
             record.final_reason = CANCEL_REQUESTED
             await self._cancel_active_children_locked(record)
             await self._reconcile_locked(record)
+            self._terminalize_manual_cancel_if_clear_locked(record)
             return self._snapshot(record)
 
         return await actor.apply(cancel)
@@ -285,8 +293,7 @@ class ExecutionEngine:
 
             if record.status is ExecutionStatus.CANCELLING:
                 await self._reconcile_locked(record)
-                if self._target_filled(record):
-                    self._complete_locked(record, TARGET_QUANTITY_FILLED)
+                self._terminalize_manual_cancel_if_clear_locked(record)
                 return self._snapshot(record)
 
             if record.exposure.unknown_order_quantity > Decimal("0"):
@@ -367,7 +374,9 @@ class ExecutionEngine:
 
         async def reconcile() -> ExecutionRecord:
             await self._reconcile_locked(record)
-            if not record.status.is_terminal and record.status is not ExecutionStatus.CANCELLING:
+            if record.status is ExecutionStatus.CANCELLING:
+                self._terminalize_manual_cancel_if_clear_locked(record)
+            elif not record.status.is_terminal:
                 if self._target_filled(record):
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
             return self._snapshot(record)
@@ -435,6 +444,8 @@ class ExecutionEngine:
             self._set_child_status(child, ChildOrderStatus.REJECTED)
             child.terminal_reason = str(exc)
             self._increment_metric(record, "rejections")
+            if isinstance(exc, TerminalOrderRejected):
+                self._fail_locked(record, f"{TERMINAL_ORDER_REJECTED}: {exc}")
             return child
         except Exception:
             tracker.release_pending_submit(quantity)
@@ -824,6 +835,13 @@ class ExecutionEngine:
             record.completed_monotonic = self._now_decimal()
             record.summary = self._summary(record)
 
+    def _fail_locked(self, record: ExecutionRecord, reason: str) -> None:
+        if record.status in {ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING}:
+            record.status = transition_execution(record.status, ExecutionStatus.FAILED)
+            record.final_reason = reason
+            record.completed_monotonic = self._now_decimal()
+            record.summary = self._summary(record)
+
     def _terminalize_deadline_locked(self, record: ExecutionRecord, reason: str) -> None:
         if record.status is not ExecutionStatus.RUNNING:
             return
@@ -837,6 +855,27 @@ class ExecutionEngine:
         )
         record.status = transition_execution(record.status, target_status)
         record.final_reason = reason
+        record.completed_monotonic = self._now_decimal()
+        record.summary = self._summary(record)
+
+    def _terminalize_manual_cancel_if_clear_locked(self, record: ExecutionRecord) -> None:
+        if record.status is not ExecutionStatus.CANCELLING:
+            return
+
+        if self._target_filled(record):
+            self._complete_locked(record, TARGET_QUANTITY_FILLED)
+            return
+
+        if record.exposure.reserved_exposure > Decimal("0"):
+            return
+
+        target_status = (
+            ExecutionStatus.PARTIALLY_COMPLETED
+            if record.exposure.confirmed_filled_quantity > Decimal("0")
+            else ExecutionStatus.CANCELLED
+        )
+        record.status = transition_execution(record.status, target_status)
+        record.final_reason = record.final_reason or CANCEL_REQUESTED
         record.completed_monotonic = self._now_decimal()
         record.summary = self._summary(record)
 

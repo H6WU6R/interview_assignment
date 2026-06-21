@@ -22,7 +22,7 @@ def chase_desired_price(side: Side, best_bid: Decimal, best_ask: Decimal, passiv
 
 
 def reprice_difference_bps(desired_price: Decimal, active_order_price: Decimal) -> Decimal:
-    if active_order_price == Decimal("0"):
+    if active_order_price <= Decimal("0"):
         return Decimal("0")
     return abs(desired_price - active_order_price) / active_order_price * Decimal("10000")
 

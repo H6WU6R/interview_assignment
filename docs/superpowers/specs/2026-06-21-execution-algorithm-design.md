@@ -493,6 +493,8 @@ known limitations
 
 The report will be a compact Markdown draft under `reports/`, intended for later LaTeX/PDF conversion. If time allows, it can be converted into a compact PDF report summarizing design decisions, invariants, simulator results, Testnet evidence, failure cases, and known limitations.
 
+The report should include one real development failure case, such as an overfill-risk bug, stale-market-data bug, Decimal rounding bug, duplicate-fill bug, or timeout-reconciliation bug. It should explain the failing behavior, the test or log that exposed it, and the fix that resolved it.
+
 Explicitly out of scope for this compact production-quality version:
 
 ```text
@@ -531,4 +533,5 @@ Make the stale quote threshold configurable and covered by tests.
 Route every state transition through state_machine.py rather than ad hoc assignments.
 Ensure reconciliation cannot absorb unrelated manual or external orders.
 Label Testnet scripts clearly so they cannot be confused with simulator demos.
+Record at least one real development failure case and the test/log evidence that exposed it.
 ```

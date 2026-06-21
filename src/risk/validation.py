@@ -47,6 +47,8 @@ def validate_order_shape(
         raise ValidationError(f"quantity step must be positive: {rules.quantity_step}")
     if rules.tick_size <= Decimal("0"):
         raise ValidationError(f"tick size must be positive: {rules.tick_size}")
+    if post_only and "GTX" not in rules.supported_time_in_force:
+        raise ValidationError(f"post-only time in force unsupported for {rules.symbol}")
     if not _is_multiple(quantity, rules.quantity_step):
         raise ValidationError(f"quantity step violation: {quantity} not multiple of {rules.quantity_step}")
     if not _is_multiple(price, rules.tick_size):

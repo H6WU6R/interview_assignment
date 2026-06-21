@@ -2,6 +2,7 @@ import asyncio
 from decimal import Decimal
 
 from exchanges.simulator import DeterministicSimulator
+from execution.clock import ManualClock
 from execution.models import (
     Algorithm,
     DeadlinePolicy,
@@ -9,11 +10,17 @@ from execution.models import (
     ExecutionRequest,
     ExecutionStatus,
     Side,
+    SymbolRules,
 )
 from execution.service import ExecutionService
 
 
 SYMBOL = "BTCUSDT"
+
+
+class SymbolRulesUnavailableSimulator(DeterministicSimulator):
+    async def get_symbol_rules(self, symbol: str) -> SymbolRules:
+        raise AssertionError("symbol rules should not be fetched for no-action targets")
 
 
 def execution_request(target_position: Decimal) -> ExecutionRequest:
@@ -47,6 +54,19 @@ async def test_no_action_target_already_reached_completes_immediately() -> None:
     assert record.summary.final_reason == "NO_ACTION_TARGET_ALREADY_REACHED"
 
 
+async def test_no_action_target_does_not_fetch_symbol_rules() -> None:
+    simulator = SymbolRulesUnavailableSimulator(position=Decimal("0.010"))
+    service = ExecutionService(simulator)
+
+    record = await service.create_execution(execution_request(Decimal("0.010")))
+
+    assert record.status is ExecutionStatus.COMPLETED
+    assert record.final_reason == "NO_ACTION_TARGET_ALREADY_REACHED"
+    assert record.raw_required_quantity == Decimal("0")
+    assert record.required_quantity == Decimal("0")
+    assert record.target_dust_quantity == Decimal("0")
+
+
 async def test_cancel_is_idempotent_for_completed_no_action_execution() -> None:
     simulator = DeterministicSimulator(position=Decimal("0.010"))
     service = ExecutionService(simulator)
@@ -75,6 +95,39 @@ async def test_create_nonzero_execution_runs_and_stores_normalized_quantity() ->
     assert stored.status is ExecutionStatus.RUNNING
     reconciliation = await simulator.reconcile_orders_and_fills(SYMBOL)
     assert reconciliation.orders == []
+
+
+async def test_create_execution_stores_raw_normalized_and_dust_quantities() -> None:
+    clock = ManualClock()
+    simulator = DeterministicSimulator(clock=clock, position=Decimal("0"))
+    await simulator.push_market_data(
+        SYMBOL,
+        Decimal("50000.00"),
+        Decimal("50001.00"),
+        exchange_event_time=1,
+    )
+    service = ExecutionService(simulator, clock=clock)
+
+    execution = await service.create_execution(execution_request(Decimal("0.0025")))
+
+    assert execution.raw_required_quantity == Decimal("0.0025")
+    assert execution.required_quantity == Decimal("0.002")
+    assert execution.target_dust_quantity == Decimal("0.0005")
+    assert execution.side is Side.BUY
+
+
+async def test_create_execution_completes_when_target_delta_is_only_dust() -> None:
+    simulator = DeterministicSimulator(position=Decimal("0"))
+    service = ExecutionService(simulator)
+
+    execution = await service.create_execution(execution_request(Decimal("0.0005")))
+
+    assert execution.status is ExecutionStatus.COMPLETED
+    assert execution.final_reason == "UNTRADEABLE_TARGET_DUST"
+    assert execution.raw_required_quantity == Decimal("0.0005")
+    assert execution.required_quantity == Decimal("0.000")
+    assert execution.target_dust_quantity == Decimal("0.0005")
+    assert execution.child_orders == []
 
 
 async def test_sell_target_below_current_uses_absolute_quantity() -> None:

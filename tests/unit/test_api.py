@@ -46,6 +46,11 @@ async def get_json(app: Any, url: str) -> httpx.Response:
         return await client.get(url)
 
 
+def assert_decimal_field(body: dict[str, Any], field: str, expected: str) -> None:
+    assert isinstance(body[field], str)
+    assert Decimal(body[field]) == Decimal(expected)
+
+
 @pytest.mark.asyncio
 async def test_create_execution_no_action_completes() -> None:
     app = create_app(simulator_position="0.010")
@@ -57,8 +62,11 @@ async def test_create_execution_no_action_completes() -> None:
     assert body["status"] == "COMPLETED"
     assert body["final_reason"] == "NO_ACTION_TARGET_ALREADY_REACHED"
     assert body["child_orders"] == []
-    assert body["required_quantity"] == "0"
-    assert body["initial_position"] == "0.010"
+    assert_decimal_field(body, "raw_required_quantity", "0")
+    assert_decimal_field(body, "required_quantity", "0")
+    assert_decimal_field(body, "target_dust_quantity", "0")
+    assert_decimal_field(body, "unfilled_quantity", "0")
+    assert_decimal_field(body, "initial_position", "0.010")
     assert body["side"] == "NO_ACTION"
     assert body["request"] == {
         "environment": "simulation",
@@ -79,13 +87,12 @@ async def test_create_execution_no_action_completes() -> None:
     }
     assert body["summary_final_status"] == "COMPLETED"
     assert body["summary_final_reason"] == "NO_ACTION_TARGET_ALREADY_REACHED"
-    assert body["summary_metrics"] == {
-        "initial_position": "0.010",
-        "target_position": "0.010",
-        "required_quantity": "0",
-        "side": "NO_ACTION",
-        "child_order_count": 0,
-    }
+    summary_metrics = body["summary_metrics"]
+    assert summary_metrics["target_position"] == "0.010"
+    assert summary_metrics["side"] == "NO_ACTION"
+    assert summary_metrics["child_order_count"] == 0
+    assert_decimal_field(summary_metrics, "initial_position", "0.010")
+    assert_decimal_field(summary_metrics, "required_quantity", "0")
     assert body["started_monotonic"] is None
     assert body["last_reprice_monotonic"] is None
 
@@ -120,8 +127,28 @@ async def test_create_nonzero_execution_then_get_returns_running_buy() -> None:
     assert fetched["execution_id"] == created["execution_id"]
     assert fetched["status"] == "RUNNING"
     assert fetched["side"] == "BUY"
-    assert fetched["required_quantity"] == "0.010"
+    assert_decimal_field(fetched, "raw_required_quantity", "0.010")
+    assert_decimal_field(fetched, "required_quantity", "0.010")
+    assert_decimal_field(fetched, "target_dust_quantity", "0")
+    assert_decimal_field(fetched, "unfilled_quantity", "0.010")
     assert fetched["child_orders"] == []
+
+
+@pytest.mark.asyncio
+async def test_create_execution_below_step_returns_untradeable_dust_fields() -> None:
+    app = create_app(simulator_position="0")
+
+    response = await post_json(app, "/executions", execution_payload(target_position="0.0005"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "COMPLETED"
+    assert body["final_reason"] == "UNTRADEABLE_TARGET_DUST"
+    assert_decimal_field(body, "raw_required_quantity", "0.0005")
+    assert_decimal_field(body, "required_quantity", "0")
+    assert_decimal_field(body, "target_dust_quantity", "0.0005")
+    assert_decimal_field(body, "unfilled_quantity", "0")
+    assert body["child_orders"] == []
 
 
 @pytest.mark.asyncio
@@ -145,6 +172,39 @@ async def test_run_once_creates_child_order_when_market_data_is_present() -> Non
     assert child["remaining_quantity"] == "0.010"
     assert child["price"] == "95000.00"
     assert child["terminal_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_terminal_response_serializes_rich_summary_metrics() -> None:
+    app = create_app(simulator_position="0")
+    created = (await post_json(app, "/executions", execution_payload(target_position="0.004"))).json()
+    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    opened = (await post_json(app, f"/executions/{created['execution_id']}/run-once")).json()
+    child = opened["child_orders"][0]
+    await app.state.adapter.push_fill(child["client_order_id"], Decimal("0.004"), Decimal("95010.00"))
+
+    response = await post_json(app, f"/executions/{created['execution_id']}/reconcile")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "COMPLETED"
+    metrics = body["summary_metrics"]
+    assert metrics["final_status"] == "COMPLETED"
+    assert metrics["raw_required_quantity"] == "0.004"
+    assert metrics["required_quantity"] == "0.004"
+    assert Decimal(metrics["target_dust_quantity"]) == Decimal("0")
+    assert metrics["filled_quantity"] == "0.004"
+    assert metrics["unfilled_quantity"] == "0"
+    assert metrics["completion_rate"] == "1"
+    assert metrics["arrival_bid"] == "95000"
+    assert metrics["arrival_ask"] == "95001"
+    assert metrics["arrival_mid"] == "95000.5"
+    assert metrics["execution_vwap"] == "95010"
+    assert Decimal(metrics["slippage_bps"]) > Decimal("0")
+    assert metrics["requested_duration_seconds"] == 300
+    assert metrics["actual_duration_seconds"] == "0"
+    assert metrics["max_reserved_exposure"] == "0.004"
+    assert metrics["overfill_quantity"] == "0"
 
 
 @pytest.mark.asyncio
@@ -252,6 +312,10 @@ async def test_response_child_and_exposure_decimal_fields_are_strings_after_run_
     assert response.status_code == 200
     body = response.json()
     for field in [
+        "raw_required_quantity",
+        "required_quantity",
+        "target_dust_quantity",
+        "unfilled_quantity",
         "confirmed_filled_quantity",
         "live_open_quantity",
         "pending_submit_quantity",

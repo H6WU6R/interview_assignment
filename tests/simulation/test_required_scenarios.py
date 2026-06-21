@@ -12,6 +12,7 @@ from execution.engine import (
     CREATE_TIMEOUT_ORDER_NOT_FOUND,
     CREATE_TIMEOUT_PENDING_RECONCILIATION,
     CREATE_TIMEOUT_RECONCILED,
+    DEADLINE_CANCEL_REMAINDER,
     PRICE_OUTSIDE_RANGE,
     STREAM_HEALTH_DEGRADED_RECONCILED,
 )
@@ -42,6 +43,7 @@ def request(
     lower: Decimal = Decimal("49000"),
     upper: Decimal = Decimal("51000"),
     duration: int = 100,
+    deadline_policy: DeadlinePolicy = DeadlinePolicy.CANCEL_REMAINDER,
     parameters: ExecutionParameters | None = None,
 ) -> ExecutionRequest:
     return ExecutionRequest(
@@ -52,7 +54,7 @@ def request(
         target_price_lower=lower,
         target_price_upper=upper,
         target_duration_seconds=duration,
-        deadline_policy=DeadlinePolicy.CANCEL_REMAINDER,
+        deadline_policy=deadline_policy,
         parameters=parameters or ExecutionParameters(),
     )
 
@@ -184,6 +186,13 @@ async def test_t4a_create_timeout_reconciles_to_open_order_without_new_client_or
     assert reconciled.exposure.live_open_quantity == reconciled.required_quantity
     assert_exposure_safe(reconciled)
 
+    await simulator.push_fill(first_client_order_id, reconciled.required_quantity, Decimal("50000.00"))
+    completed = await service.reconcile_execution(execution.execution_id)
+
+    assert completed.status is ExecutionStatus.COMPLETED
+    assert completed.summary is not None
+    assert completed.summary.metrics["unknown_orders_reconciled"] == 1
+
 
 async def test_t4b_create_timeout_not_found_releases_unknown_exposure_before_safe_retry() -> None:
     _, simulator, service = await simulator_service()
@@ -243,21 +252,54 @@ async def test_t5_twap_carry_forward_deficit_includes_previous_unfilled_quantity
     assert_exposure_safe(execution)
 
 
-async def test_t6_twap_tail_quantity_handles_legal_remainder_without_rounding_up() -> None:
+async def test_t5b_twap_does_not_submit_before_first_absolute_slice_boundary() -> None:
+    clock, simulator, service = await simulator_service()
+    execution = await service.create_execution(
+        request(
+            algorithm=Algorithm.TWAP,
+            target_position=Decimal("1.000"),
+            duration=100,
+            parameters=ExecutionParameters(number_of_slices=10),
+        )
+    )
+
+    clock.advance(9)
+    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    before_boundary = await service.run_once(execution.execution_id)
+
+    assert before_boundary.child_orders == []
+    assert before_boundary.status is ExecutionStatus.RUNNING
+
+    clock.advance(1)
+    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    at_boundary = await service.run_once(execution.execution_id)
+
+    assert at_boundary.child_orders[0].submitted_quantity == Decimal("0.100")
+    assert at_boundary.status is ExecutionStatus.RUNNING
+    assert_exposure_safe(at_boundary)
+
+
+async def test_t6_tail_quantity_records_dust_and_never_rounds_up() -> None:
     clock, simulator, service = await simulator_service()
     execution = await service.create_execution(
         request(
             algorithm=Algorithm.TWAP,
             target_position=Decimal("0.0025"),
             duration=10,
+            deadline_policy=DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE,
         )
     )
+
+    assert execution.raw_required_quantity == Decimal("0.0025")
+    assert execution.required_quantity == Decimal("0.002")
+    assert execution.target_dust_quantity == Decimal("0.0005")
 
     clock.advance(10)
     await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
     execution = await service.run_once(execution.execution_id)
 
     assert execution.child_orders[0].submitted_quantity == Decimal("0.002")
+    assert execution.child_orders[0].submitted_quantity < execution.raw_required_quantity
 
     await simulator.push_fill(
         execution.child_orders[0].client_order_id,
@@ -268,24 +310,71 @@ async def test_t6_twap_tail_quantity_handles_legal_remainder_without_rounding_up
     execution = await service.run_once(execution.execution_id)
 
     assert execution.exposure.confirmed_filled_quantity == Decimal("0.002")
-    assert execution.required_quantity == Decimal("0.0025")
+    assert execution.required_quantity == Decimal("0.002")
     assert len(execution.child_orders) == 1
-    assert execution.status is ExecutionStatus.RUNNING
+    assert execution.status is ExecutionStatus.COMPLETED
     assert_exposure_safe(execution)
 
 
-async def test_t7_price_outside_range_submits_no_invalid_order_and_reports_reason() -> None:
-    _, _, service = await simulator_service()
+async def test_t7_price_outside_range_waits_then_expires_without_invalid_order() -> None:
+    clock, simulator, service = await simulator_service()
     execution = await service.create_execution(
-        request(lower=Decimal("49000"), upper=Decimal("49999"))
+        request(lower=Decimal("49000"), upper=Decimal("49999"), duration=10)
     )
 
-    execution = await service.run_once(execution.execution_id)
+    before_deadline = await service.run_once(execution.execution_id)
 
-    assert execution.child_orders == []
-    assert execution.status is ExecutionStatus.EXPIRED
-    assert execution.final_reason == PRICE_OUTSIDE_RANGE
-    assert execution.status is not ExecutionStatus.COMPLETED
+    assert before_deadline.child_orders == []
+    assert before_deadline.status is ExecutionStatus.RUNNING
+    assert before_deadline.final_reason == "WAITING_FOR_PRICE_RANGE"
+
+    clock.advance(10)
+    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    expired = await service.run_once(execution.execution_id)
+
+    assert expired.child_orders == []
+    assert expired.status is ExecutionStatus.EXPIRED
+    assert expired.final_reason == PRICE_OUTSIDE_RANGE
+    assert expired.summary is not None
+    assert expired.summary.metrics["price_bound_violations"] == 1
+    assert expired.summary.metrics["unfilled_quantity"] == "0.01"
+
+
+async def test_t7b_cancel_remainder_deadline_terminalizes_unfilled_and_partial_results() -> None:
+    clock, simulator, service = await simulator_service()
+    unfilled = await service.create_execution(request(duration=1))
+    unfilled = await service.run_once(unfilled.execution_id)
+
+    clock.advance(1)
+    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    terminal_unfilled = await service.run_once(unfilled.execution_id)
+
+    assert unfilled.child_orders[0].status is ChildOrderStatus.OPEN
+    assert terminal_unfilled.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert terminal_unfilled.status is ExecutionStatus.EXPIRED
+    assert terminal_unfilled.final_reason == DEADLINE_CANCEL_REMAINDER
+    assert terminal_unfilled.exposure.reserved_exposure == Decimal("0")
+    assert terminal_unfilled.summary is not None
+    assert_exposure_safe(terminal_unfilled)
+
+    partial = await service.create_execution(request(duration=1))
+    partial = await service.run_once(partial.execution_id)
+    await simulator.push_fill(
+        partial.child_orders[0].client_order_id,
+        Decimal("0.004"),
+        partial.child_orders[0].price,
+    )
+
+    clock.advance(1)
+    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    terminal_partial = await service.run_once(partial.execution_id)
+
+    assert terminal_partial.status is ExecutionStatus.PARTIALLY_COMPLETED
+    assert terminal_partial.final_reason == DEADLINE_CANCEL_REMAINDER
+    assert terminal_partial.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert terminal_partial.exposure.reserved_exposure == Decimal("0")
+    assert terminal_partial.summary is not None
+    assert_exposure_safe(terminal_partial)
 
 
 async def test_t8_stream_disconnect_pauses_submit_reconciles_then_resumes() -> None:
@@ -354,6 +443,20 @@ async def test_t9_duplicate_fill_event_does_not_double_count_cumulative_fill() -
     assert execution.exposure.confirmed_filled_quantity == Decimal("0.003")
     assert execution.child_orders[0].confirmed_filled_quantity == Decimal("0.003")
     assert_exposure_safe(execution)
+
+    second_reconcile = await service.reconcile_execution(execution.execution_id)
+
+    assert second_reconcile.exposure.confirmed_filled_quantity == Decimal("0.003")
+    assert second_reconcile.metric_counts["duplicate_events_ignored"] == 2
+
+    await simulator.push_fill(client_order_id, Decimal("0.007"), execution.child_orders[0].price)
+    completed = await service.reconcile_execution(execution.execution_id)
+
+    assert completed.status is ExecutionStatus.COMPLETED
+    assert completed.summary is not None
+    assert completed.summary.metrics["duplicate_events_ignored"] == 2
+    assert completed.summary.metrics["filled_quantity"] == "0.01"
+    assert completed.summary.metrics["overfill_quantity"] == "0"
 
 
 async def test_t10_cross_zero_position_uses_target_minus_current_absolute_quantity() -> None:

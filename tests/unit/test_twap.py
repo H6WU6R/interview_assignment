@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 
 from algorithms.twap import (
+    effective_slice_elapsed,
     safe_child_quantity,
     scheduled_cumulative_quantity,
     scheduled_deficit,
@@ -58,6 +59,53 @@ def test_scheduled_cumulative_rejects_negative_total_trade_quantity() -> None:
             total_trade_quantity=Decimal("-1.0"),
             elapsed_time=Decimal("30"),
             total_duration=Decimal("120"),
+        )
+
+
+def test_effective_slice_elapsed_uses_absolute_slice_boundaries() -> None:
+    assert effective_slice_elapsed(
+        elapsed_time=Decimal("0"),
+        total_duration=Decimal("100"),
+        number_of_slices=10,
+    ) == Decimal("0")
+    assert effective_slice_elapsed(
+        elapsed_time=Decimal("9.999"),
+        total_duration=Decimal("100"),
+        number_of_slices=10,
+    ) == Decimal("0")
+    assert effective_slice_elapsed(
+        elapsed_time=Decimal("10"),
+        total_duration=Decimal("100"),
+        number_of_slices=10,
+    ) == Decimal("10")
+    assert effective_slice_elapsed(
+        elapsed_time=Decimal("19.999"),
+        total_duration=Decimal("100"),
+        number_of_slices=10,
+    ) == Decimal("10")
+    assert effective_slice_elapsed(
+        elapsed_time=Decimal("100"),
+        total_duration=Decimal("100"),
+        number_of_slices=10,
+    ) == Decimal("100")
+
+
+@pytest.mark.parametrize("total_duration", [Decimal("0"), Decimal("-1")])
+def test_effective_slice_elapsed_rejects_non_positive_duration(total_duration: Decimal) -> None:
+    with pytest.raises(ValueError):
+        effective_slice_elapsed(
+            elapsed_time=Decimal("1"),
+            total_duration=total_duration,
+            number_of_slices=10,
+        )
+
+
+def test_effective_slice_elapsed_rejects_non_positive_slice_count() -> None:
+    with pytest.raises(ValueError):
+        effective_slice_elapsed(
+            elapsed_time=Decimal("1"),
+            total_duration=Decimal("100"),
+            number_of_slices=0,
         )
 
 

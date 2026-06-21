@@ -5,7 +5,7 @@ from pathlib import Path
 from execution.models import ExecutionStatus, Side
 from observability.artifacts import write_execution_artifacts
 from observability.logging import sanitize_log_payload, to_jsonable
-from observability.summary import execution_vwap, summary_metrics
+from observability.summary import execution_vwap, overfill_quantity, summary_metrics
 
 
 def test_sanitize_log_payload_removes_sensitive_fields() -> None:
@@ -165,19 +165,66 @@ def test_execution_vwap_uses_decimal_weighted_average() -> None:
     assert execution_vwap(fills) == Decimal("107.5")
 
 
+def test_overfill_quantity_reports_only_amount_above_required() -> None:
+    assert overfill_quantity(Decimal("0.011"), Decimal("0.010")) == Decimal("0.001")
+    assert overfill_quantity(Decimal("0.009"), Decimal("0.010")) == Decimal("0")
+
+
 def test_summary_metrics_include_side_aware_slippage() -> None:
     metrics = summary_metrics(
         final_status=ExecutionStatus.COMPLETED,
         side=Side.BUY,
+        raw_required_quantity=Decimal("0.010"),
         required_quantity=Decimal("0.010"),
+        target_dust_quantity=Decimal("0"),
         filled_quantity=Decimal("0.005"),
-        arrival_mid=Decimal("100"),
+        arrival_bid=Decimal("99"),
+        arrival_ask=Decimal("101"),
         vwap=Decimal("101"),
+        requested_duration_seconds=300,
+        actual_duration_seconds=Decimal("120"),
+        price_bound_violations=0,
+        duplicate_events_ignored=0,
+        unknown_orders_reconciled=0,
+        max_reserved_exposure=Decimal("0.010"),
     )
 
     assert metrics["completion_rate"] == "0.5"
     assert metrics["slippage_bps"] == "100"
     assert metrics["final_status"] == "COMPLETED"
+
+
+def test_summary_metrics_include_pdf_required_quantity_price_and_safety_fields() -> None:
+    metrics = summary_metrics(
+        final_status=ExecutionStatus.PARTIALLY_COMPLETED,
+        side=Side.BUY,
+        raw_required_quantity=Decimal("0.0105"),
+        required_quantity=Decimal("0.010"),
+        target_dust_quantity=Decimal("0.0005"),
+        filled_quantity=Decimal("0.004"),
+        arrival_bid=Decimal("50000"),
+        arrival_ask=Decimal("50002"),
+        vwap=Decimal("50001"),
+        requested_duration_seconds=300,
+        actual_duration_seconds=Decimal("300"),
+        price_bound_violations=2,
+        duplicate_events_ignored=1,
+        unknown_orders_reconciled=1,
+        max_reserved_exposure=Decimal("0.010"),
+    )
+
+    assert metrics["raw_required_quantity"] == "0.0105"
+    assert metrics["required_quantity"] == "0.01"
+    assert metrics["target_dust_quantity"] == "0.0005"
+    assert metrics["filled_quantity"] == "0.004"
+    assert metrics["unfilled_quantity"] == "0.006"
+    assert metrics["completion_rate"] == "0.4"
+    assert metrics["arrival_mid"] == "50001"
+    assert metrics["price_bound_violations"] == 2
+    assert metrics["duplicate_events_ignored"] == 1
+    assert metrics["unknown_orders_reconciled"] == 1
+    assert metrics["max_reserved_exposure"] == "0.01"
+    assert metrics["overfill_quantity"] == "0"
 
 
 def test_write_execution_artifacts_creates_required_files(tmp_path) -> None:

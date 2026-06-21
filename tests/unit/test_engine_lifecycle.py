@@ -35,6 +35,7 @@ def execution_request(
     lower: Decimal = Decimal("94000"),
     upper: Decimal = Decimal("97000"),
     duration: int = 100,
+    deadline_policy: DeadlinePolicy = DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE,
     parameters: ExecutionParameters | None = None,
 ) -> ExecutionRequest:
     return ExecutionRequest(
@@ -45,7 +46,7 @@ def execution_request(
         target_price_lower=lower,
         target_price_upper=upper,
         target_duration_seconds=duration,
-        deadline_policy=DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE,
+        deadline_policy=deadline_policy,
         parameters=parameters or ExecutionParameters(),
     )
 
@@ -107,6 +108,18 @@ async def test_chase_run_once_submits_one_safe_child() -> None:
     ]
 
 
+async def test_no_action_summary_duration_uses_execution_start_not_clock_origin() -> None:
+    clock = ManualClock()
+    clock.advance(10)
+    service, _, _ = await fresh_service(clock=clock, position=Decimal("0.010"))
+
+    execution = await service.create_execution(execution_request())
+
+    assert execution.status is ExecutionStatus.COMPLETED
+    assert execution.summary is not None
+    assert execution.summary.metrics["actual_duration_seconds"] == "0"
+
+
 async def test_aggressive_deadline_submits_non_post_only_marketable_limit() -> None:
     class RecordingSimulator(DeterministicSimulator):
         submissions: list[OrderRequest]
@@ -158,6 +171,63 @@ async def test_aggressive_deadline_does_not_cancel_its_own_final_attempt() -> No
     assert len(second_run.child_orders) == 1
     assert second_run.child_orders[0].client_order_id == final_attempt.child_orders[0].client_order_id
     assert second_run.child_orders[0].status is ChildOrderStatus.OPEN
+
+
+async def test_aggressive_deadline_terminalizes_after_final_attempt_timeout() -> None:
+    clock = ManualClock()
+    params = ExecutionParameters(child_order_timeout_seconds=1)
+    service, simulator, _ = await fresh_service(clock=clock)
+    execution = await service.create_execution(
+        execution_request(duration=1, upper=Decimal("95001.00"), parameters=params)
+    )
+    await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+    final_attempt = await service.run_once(execution.execution_id)
+
+    clock.advance(1)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=30)
+    terminal = await service.run_once(execution.execution_id)
+
+    assert len(final_attempt.child_orders) == 2
+    assert final_attempt.child_orders[1].price == Decimal("95001.00")
+    assert final_attempt.child_orders[1].status is ChildOrderStatus.OPEN
+    assert len(terminal.child_orders) == 2
+    assert terminal.child_orders[1].status is ChildOrderStatus.CANCELLED
+    assert terminal.status is ExecutionStatus.EXPIRED
+    assert terminal.final_reason == "DEADLINE_AGGRESSIVE_ATTEMPTED"
+    assert terminal.exposure.reserved_exposure == Decimal("0")
+    assert terminal.summary is not None
+
+
+async def test_aggressive_deadline_terminalizes_partial_after_final_attempt_timeout() -> None:
+    clock = ManualClock()
+    params = ExecutionParameters(child_order_timeout_seconds=1)
+    service, simulator, _ = await fresh_service(clock=clock)
+    execution = await service.create_execution(
+        execution_request(duration=1, upper=Decimal("95001.00"), parameters=params)
+    )
+    await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+    final_attempt = await service.run_once(execution.execution_id)
+    await simulator.push_fill(
+        final_attempt.child_orders[1].client_order_id,
+        Decimal("0.004"),
+        final_attempt.child_orders[1].price,
+    )
+
+    clock.advance(1)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=30)
+    terminal = await service.run_once(execution.execution_id)
+
+    assert len(terminal.child_orders) == 2
+    assert terminal.child_orders[1].status is ChildOrderStatus.CANCELLED
+    assert terminal.status is ExecutionStatus.PARTIALLY_COMPLETED
+    assert terminal.final_reason == "DEADLINE_AGGRESSIVE_ATTEMPTED"
+    assert terminal.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert terminal.exposure.reserved_exposure == Decimal("0")
+    assert terminal.summary is not None
 
 
 async def test_aggressive_deadline_cancels_passive_child_before_marketable_replacement() -> None:
@@ -519,6 +589,24 @@ async def test_cancelling_run_once_reconciles_existing_fill_without_replacement(
     assert snapshot.exposure.live_open_quantity == Decimal("0.006")
 
 
+async def test_cancelling_run_once_reports_completed_when_target_fills() -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+    prefix = make_client_order_prefix(execution.execution_id)
+    simulator.script_cancel_reconcile_open(prefix)
+    await service.cancel_execution(execution.execution_id)
+    await simulator.push_fill(opened.child_orders[0].client_order_id, Decimal("0.010"), Decimal("95000.00"))
+
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert snapshot.status is ExecutionStatus.COMPLETED
+    assert snapshot.final_reason == "TARGET_QUANTITY_FILLED"
+    assert snapshot.exposure.confirmed_filled_quantity == Decimal("0.010")
+    assert snapshot.exposure.reserved_exposure == Decimal("0")
+    assert snapshot.summary is not None
+
+
 async def test_chase_reprice_waits_for_min_interval_and_threshold() -> None:
     clock = ManualClock()
     params = ExecutionParameters(reprice_threshold_bps=Decimal("2.0"), minimum_reprice_interval_ms=500)
@@ -575,18 +663,163 @@ async def test_twap_uses_absolute_schedule_and_carries_forward_unfilled_deficit(
     assert carried_forward.child_orders[1].submitted_quantity == Decimal("0.600")
 
 
-async def test_price_outside_range_rejects_before_submit_without_fake_completion() -> None:
-    service, simulator, _ = await fresh_service()
-    execution = await service.create_execution(execution_request(upper=Decimal("94999")))
+async def test_price_outside_range_does_not_submit_before_deadline() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(execution_request(upper=Decimal("94999"), duration=5))
     prefix = make_client_order_prefix(execution.execution_id)
 
-    snapshot = await service.run_once(execution.execution_id)
+    waiting = await service.run_once(execution.execution_id)
     reconciliation = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
 
-    assert snapshot.status is ExecutionStatus.EXPIRED
-    assert snapshot.final_reason == "PRICE_OUTSIDE_RANGE"
-    assert snapshot.child_orders == []
+    assert waiting.status is ExecutionStatus.RUNNING
+    assert waiting.final_reason == "WAITING_FOR_PRICE_RANGE"
+    assert waiting.child_orders == []
     assert reconciliation.orders == []
+
+    clock.advance(5)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+    expired = await service.run_once(execution.execution_id)
+
+    assert expired.status is ExecutionStatus.EXPIRED
+    assert expired.final_reason == "PRICE_OUTSIDE_RANGE"
+    assert expired.child_orders == []
+    assert expired.summary is not None
+
+
+async def test_price_outside_range_after_partial_fill_terminalizes_partially_completed() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(execution_request(upper=Decimal("95000.00"), duration=5))
+    opened = await service.run_once(execution.execution_id)
+
+    await simulator.push_fill(opened.child_orders[0].client_order_id, Decimal("0.004"), Decimal("95000.00"))
+    await simulator.cancel_order(SYMBOL, opened.child_orders[0].client_order_id)
+    clock.advance(5)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+    partial = await service.run_once(execution.execution_id)
+
+    assert partial.status is ExecutionStatus.PARTIALLY_COMPLETED
+    assert partial.final_reason == "PRICE_OUTSIDE_RANGE"
+    assert partial.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert partial.summary is not None
+
+
+async def test_cancel_remainder_deadline_cancels_open_child_and_terminalizes() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(
+        execution_request(duration=1, deadline_policy=DeadlinePolicy.CANCEL_REMAINDER)
+    )
+    opened = await service.run_once(execution.execution_id)
+
+    clock.advance(1)
+    await simulator.push_market_data(
+        SYMBOL,
+        Decimal("95000.00"),
+        Decimal("95001.00"),
+        exchange_event_time=30,
+    )
+    terminal = await service.run_once(execution.execution_id)
+
+    assert opened.child_orders[0].status is ChildOrderStatus.OPEN
+    assert terminal.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert terminal.status is ExecutionStatus.EXPIRED
+    assert terminal.final_reason == "DEADLINE_CANCEL_REMAINDER"
+    assert terminal.exposure.reserved_exposure == Decimal("0")
+    assert terminal.summary is not None
+
+
+async def test_cancel_remainder_deadline_does_not_submit_when_first_run_is_after_deadline() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(
+        execution_request(duration=1, deadline_policy=DeadlinePolicy.CANCEL_REMAINDER)
+    )
+    prefix = make_client_order_prefix(execution.execution_id)
+
+    clock.advance(2)
+    terminal = await service.run_once(execution.execution_id)
+    reconciliation = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
+
+    assert terminal.status is ExecutionStatus.EXPIRED
+    assert terminal.final_reason == "DEADLINE_CANCEL_REMAINDER"
+    assert terminal.child_orders == []
+    assert terminal.exposure.reserved_exposure == Decimal("0")
+    assert terminal.summary is not None
+    assert reconciliation.orders == []
+
+
+async def test_price_outside_range_deadline_terminalizes_without_requiring_fresh_quote() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(
+        execution_request(
+            upper=Decimal("94999"),
+            duration=1,
+            deadline_policy=DeadlinePolicy.CANCEL_REMAINDER,
+        )
+    )
+
+    waiting = await service.run_once(execution.execution_id)
+    clock.advance(2)
+    terminal = await service.run_once(execution.execution_id)
+
+    assert waiting.status is ExecutionStatus.RUNNING
+    assert waiting.final_reason == "WAITING_FOR_PRICE_RANGE"
+    assert terminal.status is ExecutionStatus.EXPIRED
+    assert terminal.final_reason == "PRICE_OUTSIDE_RANGE"
+    assert terminal.child_orders == []
+    assert terminal.exposure.reserved_exposure == Decimal("0")
+    assert terminal.summary is not None
+
+
+async def test_cancel_remainder_deadline_reports_partially_completed_after_fill() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(
+        execution_request(duration=1, deadline_policy=DeadlinePolicy.CANCEL_REMAINDER)
+    )
+    opened = await service.run_once(execution.execution_id)
+    await simulator.push_fill(
+        opened.child_orders[0].client_order_id,
+        Decimal("0.004"),
+        Decimal("95000.00"),
+    )
+
+    clock.advance(1)
+    await simulator.push_market_data(
+        SYMBOL,
+        Decimal("95000.00"),
+        Decimal("95001.00"),
+        exchange_event_time=30,
+    )
+    terminal = await service.run_once(execution.execution_id)
+
+    assert terminal.status is ExecutionStatus.PARTIALLY_COMPLETED
+    assert terminal.final_reason == "DEADLINE_CANCEL_REMAINDER"
+    assert terminal.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert terminal.summary is not None
+
+
+async def test_cancel_remainder_deadline_reports_completed_after_full_fill_during_cancel() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(
+        execution_request(duration=1, deadline_policy=DeadlinePolicy.CANCEL_REMAINDER)
+    )
+    opened = await service.run_once(execution.execution_id)
+    prefix = make_client_order_prefix(execution.execution_id)
+    simulator.script_fill_during_cancel(prefix, Decimal("0.010"))
+
+    clock.advance(1)
+    await simulator.push_market_data(
+        SYMBOL,
+        Decimal("95000.00"),
+        Decimal("95001.00"),
+        exchange_event_time=30,
+    )
+    terminal = await service.run_once(execution.execution_id)
+
+    assert opened.child_orders[0].status is ChildOrderStatus.OPEN
+    assert terminal.status is ExecutionStatus.COMPLETED
+    assert terminal.final_reason == "TARGET_QUANTITY_FILLED"
+    assert terminal.exposure.confirmed_filled_quantity == Decimal("0.010")
+    assert terminal.exposure.reserved_exposure == Decimal("0")
+    assert terminal.summary is not None
 
 
 async def test_post_only_unsupported_rejects_before_submit() -> None:
@@ -670,3 +903,37 @@ async def test_duplicate_fill_reconciliation_does_not_double_count_confirmed_fil
 
     assert first_reconcile.exposure.confirmed_filled_quantity == Decimal("0.004")
     assert second_reconcile.exposure.confirmed_filled_quantity == Decimal("0.004")
+
+
+async def test_summary_vwap_uses_actual_fill_price_not_child_limit_price() -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request(target_position=Decimal("0.004")))
+    opened = await service.run_once(execution.execution_id)
+    await simulator.push_fill(opened.child_orders[0].client_order_id, Decimal("0.004"), Decimal("95010.00"))
+
+    completed = await service.reconcile_execution(execution.execution_id)
+
+    assert completed.status is ExecutionStatus.COMPLETED
+    assert completed.summary is not None
+    assert completed.summary.metrics["execution_vwap"] == "95010"
+    expected_slippage = (Decimal("95010.00") - Decimal("95000.50")) / Decimal("95000.50") * Decimal("10000")
+    assert Decimal(completed.summary.metrics["slippage_bps"]) == expected_slippage
+
+
+async def test_summary_vwap_uses_each_actual_fill_price_for_multiple_fills() -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    opened = await service.run_once(execution.execution_id)
+    await simulator.push_fill(opened.child_orders[0].client_order_id, Decimal("0.002"), Decimal("95000.00"))
+    await simulator.push_fill(opened.child_orders[0].client_order_id, Decimal("0.004"), Decimal("95010.00"))
+
+    completed = await service.reconcile_execution(execution.execution_id)
+
+    expected_vwap = (
+        Decimal("95000.00") * Decimal("0.002")
+        + Decimal("95010.00") * Decimal("0.004")
+    ) / Decimal("0.006")
+    assert completed.status is ExecutionStatus.COMPLETED
+    assert completed.summary is not None
+    assert Decimal(completed.summary.metrics["execution_vwap"]) == expected_vwap
+    assert completed.summary.metrics["duplicate_events_ignored"] == 0

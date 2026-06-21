@@ -214,9 +214,13 @@ record Binance transaction time T and event time E when available
 
 The Binance adapter normalizes venue-specific order statuses into the internal child-order state model while preserving the raw Binance status in logs. For example, `FILLED` maps to `FILLED`, `CANCELED` maps to `CANCELLED`, `REJECTED` maps to `REJECTED`, and `EXPIRED` or `EXPIRED_IN_MATCH` releases live open exposure and maps to a terminal child state with `raw_status` and `terminal_reason` retained for audit.
 
+Order-state source-of-truth priority is explicit. A create-order ACK confirms request acceptance only, not final execution truth. Confirmed fills and final order state come from user-data stream events or explicit REST reconciliation. REST query results repair gaps after timeout, disconnect, or ambiguous state, but normal order/fill truth is driven by the private stream.
+
 Signed Binance requests use an adjusted timestamp based on the latest server-time offset and include a configured `recvWindow`, defaulting to 5000 ms or less. If server-time drift or timestamp rejection is detected, the adapter refreshes the offset before retrying eligible non-mutating reads.
 
 REST requests use bounded timeouts. Non-order-mutating reads may use bounded retry and backoff. Order-mutating create requests are never blindly retried without idempotency reconciliation by `clientOrderId`.
+
+The compact implementation does not rely on Binance `reduceOnly` for correctness. If `reduceOnly` is later used, it must only be applied to pure position-reduction orders that do not cross zero. Cross-zero or position-increasing executions must rely on the target-position invariant instead.
 
 The Binance adapter tracks venue rate-limit headers and configured `exchangeInfo` limits. HTTP 429 triggers backoff and suppresses new optional REST work. HTTP 418 is treated as a hard venue-ban condition: the adapter stops new exchange actions, marks stream/REST health as failed, and returns a clear failure reason.
 
@@ -304,6 +308,8 @@ POST /executions/{execution_id}/cancel
 
 `POST /executions/{execution_id}/cancel` requests cancellation by moving a running execution into `CANCELLING`. The engine cancels active exposure, continues accepting fills that arrive during cancellation, reconciles orders and fills, and returns `CANCELLED` or `PARTIALLY_COMPLETED` depending on confirmed fills.
 
+`POST /executions/{execution_id}/cancel` is idempotent. Repeated cancel requests for an execution already in `CANCELLING` or a terminal state return the current state and do not create additional exchange actions.
+
 On graceful shutdown, the service rejects new execution requests, stops creating new child orders, requests cancellation for active execution-scoped orders, reconciles final fills when possible, and writes a terminal or interrupted summary. This is best-effort because the compact version does not include durable database persistence.
 
 Small CLI/demo scripts will call the API or engine for repeatable demos:
@@ -367,6 +373,8 @@ final status and reason
 Completion rate is computed on absolute required trade quantity. Slippage bps is side-aware: buy slippage compares execution VWAP above arrival mid; sell slippage compares arrival mid above execution VWAP.
 
 Structured logs are JSONL and append-only per execution. They include UTC wall-clock timestamp and monotonic elapsed time, making them suitable for the PDF report and live debugging. The goal is that every reported summary metric can be traced to raw child order, fill, cancel, timeout, or reconciliation events.
+
+Structured logs must never include API keys, secret keys, signatures, listenKeys, or raw authenticated request payloads. Logs retain `clientOrderId`, venue `orderId`, timestamps, quantities, prices, normalized statuses, raw statuses, and reconciliation outcomes.
 
 ## Testing Strategy And Acceptance Criteria
 
@@ -444,7 +452,10 @@ exchange error classification for terminal, retryable, unknown, and stream-healt
 graceful shutdown cancels/reconciles active execution-scoped orders when possible
 child_order_timeout_seconds moves stale child orders into pending cancel and recomputes safe remaining quantity
 venue-status normalization preserves raw Binance status and terminal reason
+source-of-truth priority: create ACK cannot mark fills or terminal order truth without stream event or reconciliation
 external_position_drift warning when account position does not match execution-scoped fills
+cancel endpoint idempotency for CANCELLING and terminal executions
+log sanitization prevents secrets, signatures, listenKeys, and raw authenticated payloads
 terminal state cannot return to RUNNING
 AGGRESSIVE_WITHIN_RANGE bounded by price range
 CANCEL_REMAINDER cancels and reports remaining quantity
@@ -463,6 +474,7 @@ duplicate events are counted once
 create timeout never generates a second clientOrderId before reconciliation
 clientOrderId format satisfies Binance allowed-character and 36-character limits
 signed Binance requests use server-time offset and configured recvWindow
+logs are sanitized and contain no secrets or signed payload material
 TWAP uses absolute monotonic schedule times
 logs and summaries are generated for demo executions
 all required scenarios produce reproducible logs and execution summaries linked to execution_id and clientOrderId
@@ -548,6 +560,7 @@ These are implementation hygiene requirements rather than separate design goals:
 ```text
 Serialize Decimal values to strings before Binance REST calls.
 Keep clientOrderId short enough after execution ID shortening.
+Do not rely on reduceOnly for target-position correctness; only consider it later for pure reduction orders that do not cross zero.
 Make the stale quote threshold configurable and covered by tests.
 Route every state transition through state_machine.py rather than ad hoc assignments.
 Ensure reconciliation cannot absorb unrelated manual or external orders.

@@ -187,8 +187,10 @@ Binance responsibilities:
 
 ```text
 load exchangeInfo for BTCUSDT rules
+load exchangeInfo rateLimits for REQUEST_WEIGHT and ORDERS controls
 query current one-way position
 reject unsupported hedge mode by default
+maintain server-time offset for signed requests
 subscribe to bookTicker or equivalent best bid/ask stream
 subscribe to user-data stream for order and fill events
 renew listenKey before expiry
@@ -204,7 +206,27 @@ detect stale market data and private stream health
 record Binance transaction time T and event time E when available
 ```
 
+Signed Binance requests use an adjusted timestamp based on the latest server-time offset and include a configured `recvWindow`, defaulting to 5000 ms or less. If server-time drift or timestamp rejection is detected, the adapter refreshes the offset before retrying eligible non-mutating reads.
+
 REST requests use bounded timeouts. Non-order-mutating reads may use bounded retry and backoff. Order-mutating create requests are never blindly retried without idempotency reconciliation by `clientOrderId`.
+
+The Binance adapter tracks venue rate-limit headers and configured `exchangeInfo` limits. HTTP 429 triggers backoff and suppresses new optional REST work. HTTP 418 is treated as a hard venue-ban condition: the adapter stops new exchange actions, marks stream/REST health as failed, and returns a clear failure reason.
+
+Exchange/API errors are classified before they reach the engine:
+
+```text
+terminal reject:
+  invalid parameters, unsupported mode, price/quantity filter failure, or clear exchange rejection
+
+retryable read failure:
+  transient GET/query failure, service unavailable, or retryable non-mutating timeout
+
+unknown order-mutating failure:
+  create/cancel/order mutation with unknown exchange outcome; exposure remains reserved until reconciliation
+
+stream health failure:
+  market-data or user stream disconnect/staleness requiring pause and reconciliation
+```
 
 When Binance event timestamps are available, the adapter records both transaction time `T` and event time `E`. The engine does not rely on cross-stream arrival order for correctness; `E` is used for ordering diagnostics and audit timelines.
 
@@ -270,6 +292,8 @@ POST /executions/{execution_id}/cancel
 `GET /executions/{execution_id}` returns current execution state, `status_reason` or `final_reason`, child order summaries, cumulative fills, open and unknown exposure, elapsed time, completion rate, and final metrics if terminal.
 
 `POST /executions/{execution_id}/cancel` requests cancellation by moving a running execution into `CANCELLING`. The engine cancels active exposure, continues accepting fills that arrive during cancellation, reconciles orders and fills, and returns `CANCELLED` or `PARTIALLY_COMPLETED` depending on confirmed fills.
+
+On graceful shutdown, the service rejects new execution requests, stops creating new child orders, requests cancellation for active execution-scoped orders, reconciles final fills when possible, and writes a terminal or interrupted summary. This is best-effort because the compact version does not include durable database persistence.
 
 Small CLI/demo scripts will call the API or engine for repeatable demos:
 
@@ -399,6 +423,10 @@ unknown order exposure counted as reserved exposure
 execution-scoped reconciliation by clientOrderId prefix
 duplicate fill handling by exchange trade ID or monotonic cumulative executed quantity
 filled-during-cancel treated as valid terminal reconciliation
+signed request timestamp/recvWindow construction
+rate-limit 429 backoff and 418 hard-stop classification
+exchange error classification for terminal, retryable, unknown, and stream-health failures
+graceful shutdown cancels/reconciles active execution-scoped orders when possible
 terminal state cannot return to RUNNING
 AGGRESSIVE_WITHIN_RANGE bounded by price range
 CANCEL_REMAINDER cancels and reports remaining quantity
@@ -415,6 +443,7 @@ no test allows confirmed fills + reserved exposure to exceed target quantity
 duplicate events are counted once
 create timeout never generates a second clientOrderId before reconciliation
 clientOrderId format satisfies Binance allowed-character and 36-character limits
+signed Binance requests use server-time offset and configured recvWindow
 TWAP uses absolute monotonic schedule times
 logs and summaries are generated for demo executions
 all required scenarios produce reproducible logs and execution summaries linked to execution_id and clientOrderId

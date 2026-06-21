@@ -77,6 +77,7 @@ src/risk/validation.py
 src/observability/__init__.py
 src/observability/logging.py
 src/observability/summary.py
+src/observability/artifacts.py
   Sanitized JSONL logs, CSV/JSON summaries, metrics.
 
 scripts/run_api.py
@@ -170,6 +171,8 @@ Expected: FAIL with `ModuleNotFoundError` for at least one of `api`, `algorithms
 Replace the dependency section with:
 
 ```toml
+requires-python = ">=3.11"
+
 dependencies = [
     "fastapi>=0.115.0",
     "httpx>=0.27.0",
@@ -275,6 +278,7 @@ from decimal import Decimal
 
 from execution.models import (
     Algorithm,
+    ChildOrderStatus,
     DeadlinePolicy,
     Environment,
     ExecutionParameters,
@@ -336,6 +340,7 @@ def test_terminal_statuses_are_terminal() -> None:
     assert ExecutionStatus.CANCELLED.is_terminal
     assert ExecutionStatus.FAILED.is_terminal
     assert not ExecutionStatus.RUNNING.is_terminal
+    assert not ChildOrderStatus.UNKNOWN.is_terminal
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -426,7 +431,6 @@ class ChildOrderStatus(StrEnum):
             ChildOrderStatus.CANCELLED,
             ChildOrderStatus.FILLED,
             ChildOrderStatus.REJECTED,
-            ChildOrderStatus.UNKNOWN,
         }
 
 
@@ -623,6 +627,14 @@ def test_child_pending_cancel_can_fill_or_cancel() -> None:
 def test_child_open_cannot_move_to_unknown() -> None:
     with pytest.raises(InvalidStateTransition):
         transition_child(ChildOrderStatus.OPEN, ChildOrderStatus.UNKNOWN)
+
+
+def test_child_unknown_can_be_reconciled_to_exchange_truth() -> None:
+    assert transition_child(ChildOrderStatus.UNKNOWN, ChildOrderStatus.OPEN) is ChildOrderStatus.OPEN
+    assert transition_child(ChildOrderStatus.UNKNOWN, ChildOrderStatus.PARTIALLY_FILLED) is ChildOrderStatus.PARTIALLY_FILLED
+    assert transition_child(ChildOrderStatus.UNKNOWN, ChildOrderStatus.FILLED) is ChildOrderStatus.FILLED
+    assert transition_child(ChildOrderStatus.UNKNOWN, ChildOrderStatus.CANCELLED) is ChildOrderStatus.CANCELLED
+    assert transition_child(ChildOrderStatus.UNKNOWN, ChildOrderStatus.REJECTED) is ChildOrderStatus.REJECTED
 ```
 
 - [ ] **Step 2: Write failing client order ID tests**
@@ -753,7 +765,13 @@ CHILD_TRANSITIONS: dict[ChildOrderStatus, set[ChildOrderStatus]] = {
     ChildOrderStatus.CANCELLED: set(),
     ChildOrderStatus.FILLED: set(),
     ChildOrderStatus.REJECTED: set(),
-    ChildOrderStatus.UNKNOWN: set(),
+    ChildOrderStatus.UNKNOWN: {
+        ChildOrderStatus.OPEN,
+        ChildOrderStatus.PARTIALLY_FILLED,
+        ChildOrderStatus.FILLED,
+        ChildOrderStatus.CANCELLED,
+        ChildOrderStatus.REJECTED,
+    },
 }
 
 
@@ -1030,9 +1048,9 @@ def slippage_bps(side: Side, arrival_mid: Decimal, execution_vwap: Decimal) -> D
     if arrival_mid == Decimal("0"):
         return Decimal("0")
     if side is Side.BUY:
-        return (execution_vwap / arrival_mid - Decimal("1")) * Decimal("10000")
+        return (execution_vwap - arrival_mid) / arrival_mid * Decimal("10000")
     if side is Side.SELL:
-        return (arrival_mid / execution_vwap - Decimal("1")) * Decimal("10000")
+        return (arrival_mid - execution_vwap) / arrival_mid * Decimal("10000")
     return Decimal("0")
 ```
 
@@ -1189,6 +1207,10 @@ from collections.abc import AsyncIterator
 from execution.models import MarketSnapshot, OrderRequest, PositionSnapshot, SymbolRules
 
 
+class NoFreshMarketData(RuntimeError):
+    pass
+
+
 class ExchangeAdapter(ABC):
     @abstractmethod
     async def get_symbol_rules(self, symbol: str) -> SymbolRules:
@@ -1243,13 +1265,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from exchanges.base import ExchangeAdapter
+from exchanges.base import ExchangeAdapter, NoFreshMarketData
 from execution.clock import Clock, ManualClock
 from execution.models import MarketSnapshot, OrderRequest, PositionSnapshot, SymbolRules
-
-
-class NoFreshMarketData(RuntimeError):
-    pass
 
 
 @dataclass
@@ -1351,6 +1369,7 @@ git commit -m "feat: add exchange adapter and simulator market data"
 **Files:**
 - Create: `src/observability/logging.py`
 - Create: `src/observability/summary.py`
+- Create: `src/observability/artifacts.py`
 - Test: `tests/unit/test_observability.py`
 
 - [ ] **Step 1: Write failing observability tests**
@@ -1363,6 +1382,7 @@ from decimal import Decimal
 from execution.models import ExecutionStatus, Side
 from observability.logging import sanitize_log_payload
 from observability.summary import execution_vwap, summary_metrics
+from observability.artifacts import write_execution_artifacts
 
 
 def test_sanitize_log_payload_removes_sensitive_fields() -> None:
@@ -1404,6 +1424,26 @@ def test_summary_metrics_include_side_aware_slippage() -> None:
     assert metrics["completion_rate"] == "0.5"
     assert metrics["slippage_bps"] == "100"
     assert metrics["final_status"] == "COMPLETED"
+
+
+def test_write_execution_artifacts_creates_required_files(tmp_path) -> None:
+    output_dir = write_execution_artifacts(
+        root=tmp_path,
+        execution_id="exec_test",
+        request_snapshot={"symbol": "BTCUSDT"},
+        log_events=[{"execution_id": "exec_test", "client_order_id": "ce_test_1"}],
+        summary={"execution_id": "exec_test", "final_status": "PARTIALLY_COMPLETED"},
+        child_orders=[{"client_order_id": "ce_test_1", "status": "CANCELLED"}],
+        fills=[{"client_order_id": "ce_test_1", "trade_id": "t1"}],
+        timeline=[{"event": "cancel_fill_race"}],
+    )
+
+    assert (output_dir / "request_snapshot.json").exists()
+    assert (output_dir / "execution_log.jsonl").exists()
+    assert (output_dir / "execution_summary.json").exists()
+    assert (output_dir / "child_orders.csv").exists()
+    assert (output_dir / "fills.csv").exists()
+    assert (output_dir / "timeline.csv").exists()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1500,7 +1540,60 @@ def summary_metrics(
     }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 5: Implement artifact writer**
+
+Create `src/observability/artifacts.py`:
+
+```python
+from __future__ import annotations
+
+import csv
+import json
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import Any
+
+from observability.logging import append_jsonl, sanitize_log_payload
+
+
+def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.write_text(json.dumps(sanitize_log_payload(payload), indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _write_csv(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
+    rows = list(rows)
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_execution_artifacts(
+    root: Path,
+    execution_id: str,
+    request_snapshot: Mapping[str, Any],
+    log_events: Iterable[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    child_orders: Iterable[Mapping[str, Any]],
+    fills: Iterable[Mapping[str, Any]],
+    timeline: Iterable[Mapping[str, Any]],
+) -> Path:
+    output_dir = root / execution_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(output_dir / "request_snapshot.json", request_snapshot)
+    for event in log_events:
+        append_jsonl(output_dir / "execution_log.jsonl", event)
+    _write_json(output_dir / "execution_summary.json", summary)
+    _write_csv(output_dir / "child_orders.csv", child_orders)
+    _write_csv(output_dir / "fills.csv", fills)
+    _write_csv(output_dir / "timeline.csv", timeline)
+    return output_dir
+```
+
+- [ ] **Step 6: Run tests to verify they pass**
 
 Run:
 
@@ -1510,10 +1603,10 @@ uv run pytest tests/unit/test_observability.py -v
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/observability/logging.py src/observability/summary.py tests/unit/test_observability.py
+git add src/observability/logging.py src/observability/summary.py src/observability/artifacts.py tests/unit/test_observability.py
 git commit -m "feat: add sanitized execution observability"
 ```
 
@@ -1591,7 +1684,7 @@ async def test_scripted_fill_during_cancel_keeps_partial_fill_exposure() -> None
 
     child = await simulator.cancel_order("BTCUSDT", "ce_exec_1")
 
-    assert child.status is ChildOrderStatus.PARTIALLY_FILLED
+    assert child.status is ChildOrderStatus.PENDING_CANCEL
     assert child.confirmed_filled_quantity == Decimal("0.004")
 
 
@@ -1707,8 +1800,19 @@ Replace the order methods with:
         fill_prefix = self._matching_prefix(client_order_id, self._fill_during_cancel)
         if fill_prefix is not None:
             cumulative = self._fill_during_cancel[fill_prefix]
-            await self.push_fill(client_order_id, trade_id=f"race-{client_order_id}", cumulative=cumulative, price=child.price)
-            return self._orders[client_order_id]
+            child.confirmed_filled_quantity = cumulative
+            child.status = ChildOrderStatus.PENDING_CANCEL
+            fill = Fill(
+                client_order_id=client_order_id,
+                trade_id=f"race-{client_order_id}",
+                cumulative_filled_quantity=cumulative,
+                last_filled_quantity=cumulative,
+                last_fill_price=child.price,
+                event_time_ms=None,
+                transaction_time_ms=None,
+            )
+            await self._user_event_queue.put(SimulatorOrderEvent(client_order_id, ChildOrderStatus.PENDING_CANCEL, fill=fill))
+            return child
         child.status = ChildOrderStatus.CANCELLED
         child.terminal_reason = "CANCELLED_BY_ENGINE"
         await self._user_event_queue.put(SimulatorOrderEvent(client_order_id, ChildOrderStatus.CANCELLED))
@@ -2788,6 +2892,28 @@ def test_cancel_terminal_execution_is_idempotent() -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "COMPLETED"
+
+
+def test_api_rejects_json_float_decimal_fields() -> None:
+    app = create_app(simulator_position="0")
+    client = TestClient(app)
+
+    response = client.post(
+        "/executions",
+        json={
+            "environment": "simulation",
+            "symbol": "BTCUSDT",
+            "algorithm": "CHASE",
+            "target_position": 0.010,
+            "target_price_lower": "94000",
+            "target_price_upper": "97000",
+            "target_duration_seconds": 300,
+            "deadline_policy": "CANCEL_REMAINDER",
+            "parameters": {},
+        },
+    )
+
+    assert response.status_code == 422
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2821,6 +2947,14 @@ class ParametersIn(BaseModel):
     child_order_timeout_seconds: int = 20
     repricing_mode: RepricingMode = RepricingMode.ADVERSE_ONLY
 
+    @field_validator("reprice_threshold_bps", mode="before")
+    @classmethod
+    def decimal_parameter_must_be_string(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("decimal parameters must be JSON strings")
+        Decimal(value)
+        return value
+
     def to_domain(self) -> ExecutionParameters:
         return ExecutionParameters(
             reprice_threshold_bps=Decimal(self.reprice_threshold_bps),
@@ -2842,9 +2976,11 @@ class ExecutionRequestIn(BaseModel):
     deadline_policy: DeadlinePolicy
     parameters: ParametersIn = Field(default_factory=ParametersIn)
 
-    @field_validator("target_position", "target_price_lower", "target_price_upper")
+    @field_validator("target_position", "target_price_lower", "target_price_upper", mode="before")
     @classmethod
-    def decimal_string(cls, value: str) -> str:
+    def decimal_string(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("decimal fields must be JSON strings")
         Decimal(value)
         return value
 
@@ -2972,6 +3108,8 @@ Create `tests/simulation/test_required_scenarios.py`:
 
 ```python
 from decimal import Decimal
+import subprocess
+import sys
 
 import pytest
 
@@ -3014,9 +3152,13 @@ async def test_t1_normal_chase_produces_terminal_or_running_state_with_no_overfi
     service = ExecutionService(adapter=simulator, clock=clock)
 
     execution = await service.create_execution(make_request(Algorithm.CHASE))
+    execution = await service.run_once(execution.execution_id)
 
-    assert execution.status in {ExecutionStatus.RUNNING, ExecutionStatus.COMPLETED, ExecutionStatus.PARTIALLY_COMPLETED}
+    assert execution.status is ExecutionStatus.RUNNING
     assert execution.required_quantity == Decimal("0.010")
+    assert len(execution.child_orders) == 1
+    assert execution.child_orders[0].price == Decimal("100")
+    assert execution.exposure.reserved_exposure <= execution.required_quantity
 
 
 async def test_t7_price_outside_range_does_not_complete_falsely() -> None:
@@ -3027,8 +3169,9 @@ async def test_t7_price_outside_range_does_not_complete_falsely() -> None:
 
     execution = await service.create_execution(make_request(Algorithm.CHASE))
 
-    assert execution.status in {ExecutionStatus.RUNNING, ExecutionStatus.PARTIALLY_COMPLETED, ExecutionStatus.EXPIRED}
-    assert execution.final_reason != "COMPLETED_WITHOUT_PRICE_CHECK"
+    assert execution.status is ExecutionStatus.EXPIRED
+    assert execution.final_reason == "PRICE_OUTSIDE_RANGE"
+    assert execution.child_orders == []
 
 
 async def test_t10_cross_zero_position_computes_required_quantity() -> None:
@@ -3040,6 +3183,28 @@ async def test_t10_cross_zero_position_computes_required_quantity() -> None:
     execution = await service.create_execution(make_request(Algorithm.CHASE, target=Decimal("0.005")))
 
     assert execution.required_quantity == Decimal("0.008")
+
+
+def test_cancel_race_demo_writes_required_artifacts(tmp_path) -> None:
+    output_root = tmp_path / "outputs"
+
+    result = subprocess.run(
+        [sys.executable, "scripts/run_sim_cancel_race.py", "--output-dir", str(output_root)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    execution_dirs = list(output_root.iterdir())
+    assert len(execution_dirs) == 1
+    output_dir = execution_dirs[0]
+    assert (output_dir / "request_snapshot.json").exists()
+    assert (output_dir / "execution_log.jsonl").exists()
+    assert (output_dir / "execution_summary.json").exists()
+    assert (output_dir / "child_orders.csv").exists()
+    assert (output_dir / "fills.csv").exists()
+    assert (output_dir / "timeline.csv").exists()
 ```
 
 - [ ] **Step 2: Run scenario tests and record current failures**
@@ -3160,36 +3325,85 @@ if __name__ == "__main__":
 Create `scripts/run_sim_cancel_race.py`:
 
 ```python
+import argparse
 import asyncio
 from decimal import Decimal
+from pathlib import Path
 
 from execution.clock import ManualClock
 from execution.models import Algorithm, DeadlinePolicy, Environment, ExecutionRequest
 from execution.service import ExecutionService
 from exchanges.simulator import DeterministicSimulator
+from observability.artifacts import write_execution_artifacts
 
 
 async def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
+    args = parser.parse_args()
+
     print("SIMULATOR DEMO: Cancel/fill race")
     clock = ManualClock()
     simulator = DeterministicSimulator(clock=clock, position=Decimal("0"))
     simulator.script_fill_during_cancel(client_order_prefix="ce_", fill_quantity=Decimal("0.004"))
     await simulator.push_market_data("BTCUSDT", Decimal("100"), Decimal("101"))
     service = ExecutionService(adapter=simulator, clock=clock)
-    execution = await service.create_execution(
-        ExecutionRequest(
-            environment=Environment.SIMULATION,
-            symbol="BTCUSDT",
-            algorithm=Algorithm.CHASE,
-            target_position=Decimal("0.010"),
-            target_price_lower=Decimal("90"),
-            target_price_upper=Decimal("110"),
-            target_duration_seconds=30,
-            deadline_policy=DeadlinePolicy.CANCEL_REMAINDER,
-        )
+    request = ExecutionRequest(
+        environment=Environment.SIMULATION,
+        symbol="BTCUSDT",
+        algorithm=Algorithm.CHASE,
+        target_position=Decimal("0.010"),
+        target_price_lower=Decimal("90"),
+        target_price_upper=Decimal("110"),
+        target_duration_seconds=30,
+        deadline_policy=DeadlinePolicy.CANCEL_REMAINDER,
     )
-    await service.cancel_execution(execution.execution_id)
-    print(await service.get_execution(execution.execution_id))
+    execution = await service.create_execution(request)
+    execution = await service.run_once(execution.execution_id)
+    execution = await service.cancel_execution(execution.execution_id)
+    write_execution_artifacts(
+        root=args.output_dir,
+        execution_id=execution.execution_id,
+        request_snapshot={
+            "symbol": request.symbol,
+            "algorithm": request.algorithm.value,
+            "target_position": str(request.target_position),
+        },
+        log_events=[
+            {
+                "execution_id": execution.execution_id,
+                "event": "cancel_fill_race",
+                "client_order_id": child.client_order_id,
+                "status": child.status.value,
+            }
+            for child in execution.child_orders
+        ],
+        summary={
+            "execution_id": execution.execution_id,
+            "final_status": execution.status.value,
+            "final_reason": execution.final_reason,
+        },
+        child_orders=[
+            {
+                "child_order_id": child.child_order_id,
+                "client_order_id": child.client_order_id,
+                "status": child.status.value,
+                "submitted_quantity": str(child.submitted_quantity),
+                "filled_quantity": str(child.confirmed_filled_quantity),
+            }
+            for child in execution.child_orders
+        ],
+        fills=[
+            {
+                "client_order_id": child.client_order_id,
+                "filled_quantity": str(child.confirmed_filled_quantity),
+            }
+            for child in execution.child_orders
+            if child.confirmed_filled_quantity > Decimal("0")
+        ],
+        timeline=[{"event": "submit_then_cancel", "monotonic_time": str(clock.monotonic())}],
+    )
+    print(execution)
 
 
 if __name__ == "__main__":
@@ -3243,11 +3457,64 @@ Run:
 
 ```bash
 uv run python scripts/run_sim_chase.py
+uv run python scripts/run_sim_cancel_race.py --output-dir outputs
 ```
 
-Expected: stdout begins with `SIMULATOR DEMO: Chase`.
+Expected:
 
-- [ ] **Step 7: Commit**
+```text
+run_sim_chase.py stdout begins with SIMULATOR DEMO: Chase.
+run_sim_cancel_race.py stdout begins with SIMULATOR DEMO: Cancel/fill race.
+outputs/<execution_id>/ contains request_snapshot.json, execution_log.jsonl, execution_summary.json, child_orders.csv, fills.csv, and timeline.csv.
+```
+
+- [ ] **Step 7: Confirm final required scenario assertions before commit**
+
+Before committing Task 14, ensure `tests/simulation/test_required_scenarios.py` or follow-up simulation tests cover these final assertions:
+
+```text
+T1 Normal Chase:
+  child order is submitted at best bid for buy or best ask for sell;
+  no price-bound violation is recorded;
+  reserved exposure never exceeds required quantity.
+
+T2 Chase Reprice:
+  exactly one cancel-and-replace occurs when threshold and minimum interval are both satisfied;
+  no replacement occurs before minimum_reprice_interval_ms.
+
+T3 Partial Fill + Cancel Race:
+  fill during pending cancel increases parent confirmed fills;
+  replacement quantity is no larger than safe remaining quantity;
+  no overfill occurs.
+
+T4 Create Timeout:
+  timed-out create becomes UNKNOWN exposure;
+  no second clientOrderId is created before reconciliation.
+
+T5 TWAP Carry-forward:
+  later scheduled deficit includes prior unfilled quantity;
+  safe_child_quantity subtracts live, pending-cancel, and unknown exposure.
+
+T6 TWAP Tail Quantity:
+  final small executable remainder is attempted if it passes min quantity and min notional;
+  non-executable dust is reported rather than rounded upward.
+
+T7 Price Outside Range:
+  no child order is submitted outside bounds;
+  final status is EXPIRED, PARTIALLY_COMPLETED, or unfilled with PRICE_OUTSIDE_RANGE, never fake COMPLETED.
+
+T8 Stream Disconnect:
+  new submits pause while stream health is failed;
+  execution-scoped reconciliation runs before resuming.
+
+T9 Duplicate Fill Event:
+  duplicate trade ID or non-increasing cumulative fill does not increase parent cumulative fills twice.
+
+T10 Cross-zero Position:
+  required_trade_quantity = target_position - current_position using absolute quantity and side separately.
+```
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/execution/engine.py tests/simulation/test_required_scenarios.py scripts/run_sim_chase.py scripts/run_sim_twap.py scripts/run_sim_cancel_race.py scripts/run_sim_create_timeout.py
@@ -3271,14 +3538,20 @@ Create `tests/unit/test_binance_adapter.py`:
 import re
 from decimal import Decimal
 
+import pytest
+
 from config import Settings
+from exchanges.base import NoFreshMarketData
 from exchanges.binance_usdm import (
     BinanceUsdmAdapter,
     classify_http_status,
     normalize_order_status,
+    parse_exchange_info_rate_limits,
+    parse_symbol_rules_from_exchange_info,
     sign_params,
 )
-from execution.models import ChildOrderStatus, SymbolRules
+from execution.clock import ManualClock
+from execution.models import ChildOrderStatus, MarketSnapshot, SymbolRules
 
 
 def test_mainnet_requires_explicit_allow_flag() -> None:
@@ -3319,6 +3592,70 @@ def test_post_only_requires_gtx_support() -> None:
     adapter = BinanceUsdmAdapter(settings=Settings(environment="testnet"))
 
     assert adapter.supports_post_only(rules) is False
+
+
+def test_exchange_info_parsing_uses_filters_not_precision_fields() -> None:
+    payload = {
+        "rateLimits": [
+            {"rateLimitType": "REQUEST_WEIGHT", "interval": "MINUTE", "intervalNum": 1, "limit": 2400},
+            {"rateLimitType": "ORDERS", "interval": "MINUTE", "intervalNum": 1, "limit": 1200},
+        ],
+        "symbols": [
+            {
+                "symbol": "BTCUSDT",
+                "status": "TRADING",
+                "pricePrecision": 2,
+                "quantityPrecision": 3,
+                "timeInForce": ["GTC", "IOC", "FOK", "GTX"],
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+                    {"filterType": "LOT_SIZE", "minQty": "0.001", "stepSize": "0.001"},
+                    {"filterType": "MIN_NOTIONAL", "notional": "100"},
+                ],
+            }
+        ],
+    }
+
+    rules = parse_symbol_rules_from_exchange_info(payload, "BTCUSDT")
+    rate_limits = parse_exchange_info_rate_limits(payload)
+
+    assert rules.tick_size == Decimal("0.10")
+    assert rules.min_quantity == Decimal("0.001")
+    assert rules.quantity_step == Decimal("0.001")
+    assert rules.min_notional == Decimal("100")
+    assert rules.status == "TRADING"
+    assert "GTX" in rules.supported_time_in_force
+    assert rate_limits["REQUEST_WEIGHT"] == 2400
+    assert rate_limits["ORDERS"] == 1200
+
+
+async def test_binance_best_bid_ask_rejects_missing_crossed_and_stale_snapshot() -> None:
+    clock = ManualClock()
+    adapter = BinanceUsdmAdapter(settings=Settings(environment="testnet", stale_market_data_ms=1000), clock=clock)
+
+    with pytest.raises(NoFreshMarketData):
+        await adapter.get_best_bid_ask("BTCUSDT")
+
+    adapter._latest_market["BTCUSDT"] = MarketSnapshot(
+        symbol="BTCUSDT",
+        bid=Decimal("101"),
+        ask=Decimal("100"),
+        last_market_event_time_exchange=1,
+        last_market_event_time_local_monotonic=clock.monotonic(),
+    )
+    with pytest.raises(NoFreshMarketData):
+        await adapter.get_best_bid_ask("BTCUSDT")
+
+    adapter._latest_market["BTCUSDT"] = MarketSnapshot(
+        symbol="BTCUSDT",
+        bid=Decimal("100"),
+        ask=Decimal("101"),
+        last_market_event_time_exchange=2,
+        last_market_event_time_local_monotonic=clock.monotonic(),
+    )
+    clock.advance(2)
+    with pytest.raises(NoFreshMarketData):
+        await adapter.get_best_bid_ask("BTCUSDT")
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -3379,7 +3716,7 @@ from urllib.parse import urlencode
 import httpx
 
 from config import Settings
-from exchanges.base import ExchangeAdapter
+from exchanges.base import ExchangeAdapter, NoFreshMarketData
 from execution.clock import Clock, SystemClock
 from execution.models import ChildOrderStatus, MarketSnapshot, OrderRequest, PositionSnapshot, SymbolRules
 
@@ -3415,6 +3752,31 @@ def normalize_order_status(raw_status: str) -> ChildOrderStatus:
     return mapping[raw_status]
 
 
+def parse_symbol_rules_from_exchange_info(payload: dict, symbol: str) -> SymbolRules:
+    symbol_data = next(item for item in payload["symbols"] if item["symbol"] == symbol)
+    filters = {item["filterType"]: item for item in symbol_data["filters"]}
+    price_filter = filters["PRICE_FILTER"]
+    lot_size = filters["LOT_SIZE"]
+    min_notional = filters["MIN_NOTIONAL"]
+    return SymbolRules(
+        symbol=symbol,
+        tick_size=Decimal(price_filter["tickSize"]),
+        quantity_step=Decimal(lot_size["stepSize"]),
+        min_quantity=Decimal(lot_size["minQty"]),
+        min_notional=Decimal(min_notional.get("notional", min_notional.get("minNotional", "0"))),
+        status=symbol_data["status"],
+        supported_time_in_force=frozenset(symbol_data.get("timeInForce", [])),
+    )
+
+
+def parse_exchange_info_rate_limits(payload: dict) -> dict[str, int]:
+    return {
+        item["rateLimitType"]: int(item["limit"])
+        for item in payload.get("rateLimits", [])
+        if item.get("rateLimitType") in {"REQUEST_WEIGHT", "ORDERS"}
+    }
+
+
 class BinanceUsdmAdapter(ExchangeAdapter):
     def __init__(
         self,
@@ -3445,7 +3807,15 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         raise NotImplementedError("position query is added in the Binance integration task")
 
     async def get_best_bid_ask(self, symbol: str) -> MarketSnapshot:
-        return self._latest_market[symbol]
+        snapshot = self._latest_market.get(symbol)
+        if snapshot is None:
+            raise NoFreshMarketData(f"no fresh market data for {symbol}")
+        if snapshot.is_crossed:
+            raise NoFreshMarketData(f"crossed market data for {symbol}")
+        age_seconds = self.clock.monotonic() - snapshot.last_market_event_time_local_monotonic
+        if age_seconds * 1000 > self.settings.stale_market_data_ms:
+            raise NoFreshMarketData(f"stale market data for {symbol}: age_seconds={age_seconds}")
+        return snapshot
 
     async def stream_market_data(self) -> AsyncIterator[MarketSnapshot]:
         if False:
@@ -3513,12 +3883,14 @@ from config import Settings
 from exchanges.binance_usdm import BinanceUsdmAdapter
 
 
-pytestmark = pytest.mark.skipif(
-    not os.getenv("BINANCE_USDM_API_KEY") or not os.getenv("BINANCE_USDM_API_SECRET"),
-    reason="Binance Testnet credentials not configured",
+def has_testnet_credentials() -> bool:
+    return bool(os.getenv("BINANCE_USDM_API_KEY") and os.getenv("BINANCE_USDM_API_SECRET"))
+
+
+@pytest.mark.skipif(
+    not has_testnet_credentials(),
+    reason="Binance Testnet credentials are not configured",
 )
-
-
 async def test_testnet_exchange_info_loads_btcusdt_rules() -> None:
     adapter = BinanceUsdmAdapter(
         Settings(
@@ -3541,10 +3913,10 @@ async def test_testnet_exchange_info_loads_btcusdt_rules() -> None:
 Run:
 
 ```bash
-uv run pytest tests/integration/test_binance_testnet_contract.py -v
+uv run pytest tests/integration/test_binance_testnet_contract.py -v -rs
 ```
 
-Expected: SKIPPED with reason `Binance Testnet credentials not configured`.
+Expected: SKIPPED with reason `Binance Testnet credentials are not configured`.
 
 - [ ] **Step 3: Implement `get_symbol_rules` parsing**
 
@@ -3561,20 +3933,8 @@ In `src/exchanges/binance_usdm.py`, implement:
         response = await self.client.get(f"{self.base_url}/fapi/v1/exchangeInfo", timeout=5.0)
         response.raise_for_status()
         data = response.json()
-        symbol_data = next(item for item in data["symbols"] if item["symbol"] == symbol)
-        filters = {item["filterType"]: item for item in symbol_data["filters"]}
-        price_filter = filters["PRICE_FILTER"]
-        lot_size = filters["LOT_SIZE"]
-        min_notional = filters.get("MIN_NOTIONAL", {"notional": "5"})
-        return SymbolRules(
-            symbol=symbol,
-            tick_size=Decimal(price_filter["tickSize"]),
-            quantity_step=Decimal(lot_size["stepSize"]),
-            min_quantity=Decimal(lot_size["minQty"]),
-            min_notional=Decimal(min_notional.get("notional", min_notional.get("minNotional", "5"))),
-            status=symbol_data["status"],
-            supported_time_in_force=frozenset(symbol_data.get("timeInForce", ["GTC", "GTX"])),
-        )
+        self.rate_limits = parse_exchange_info_rate_limits(data)
+        return parse_symbol_rules_from_exchange_info(data, symbol)
 ```
 
 - [ ] **Step 4: Add clearly labeled Testnet scripts**
@@ -3618,7 +3978,7 @@ if __name__ == "__main__":
 Run:
 
 ```bash
-uv run pytest tests/integration/test_binance_testnet_contract.py -v
+uv run pytest tests/integration/test_binance_testnet_contract.py -v -rs
 ```
 
 Expected: SKIPPED when no credentials are present. If credentials are present, expected PASS loading BTCUSDT rules.
@@ -4007,6 +4367,7 @@ Keep this compact: the adapter only needs enough stream code to support Testnet 
 Extend `tests/integration/test_binance_testnet_contract.py` with a script gate check. It must not be skipped when credentials are absent, and it must prove the script refuses to run rather than falling back to simulation:
 
 ```python
+from pathlib import Path
 import subprocess
 import sys
 
@@ -4024,6 +4385,7 @@ def test_testnet_order_script_refuses_without_credentials(monkeypatch: pytest.Mo
 
     assert result.returncode != 0
     assert "never falls back to simulation" in result.stderr + result.stdout
+    assert "DeterministicSimulator" not in Path("scripts/run_testnet_chase.py").read_text(encoding="utf-8")
 ```
 
 - [ ] **Step 7: Run Binance unit and integration tests**
@@ -4032,7 +4394,7 @@ Run:
 
 ```bash
 uv run pytest tests/unit/test_binance_adapter.py tests/unit/test_binance_order_mutations.py -v
-uv run pytest tests/integration/test_binance_testnet_contract.py -v
+uv run pytest tests/integration/test_binance_testnet_contract.py -v -rs
 ```
 
 Expected:
@@ -4123,7 +4485,7 @@ export BINANCE_USDM_API_SECRET=...
 Then run:
 
 ```bash
-uv run pytest tests/integration -v
+uv run pytest tests/integration -v -rs
 ```
 
 Testnet scripts are explicitly labeled and never fall back to simulation.
@@ -4238,7 +4600,7 @@ Use the first real bug that meaningfully demonstrates execution safety. Good can
 Run:
 
 ```bash
-uv run pytest -v
+uv run pytest -v -rs
 ```
 
 Expected: PASS for unit and simulation tests; integration tests SKIPPED without credentials.
@@ -4271,7 +4633,7 @@ git commit -m "docs: add execution deliverables"
 Run these commands before declaring implementation complete:
 
 ```bash
-uv run pytest -v
+uv run pytest -v -rs
 uv run python scripts/run_sim_chase.py
 uv run python scripts/run_sim_twap.py
 uv run python scripts/run_sim_cancel_race.py
@@ -4292,6 +4654,7 @@ README explains architecture, state machines, overfill invariant, Chase/TWAP des
 AI_USAGE.md discloses AI support and validation.
 reports/report_draft.md has sections for simulator evidence, Testnet evidence, failure case, and limitations.
 reports/failure_case_log.md contains at least one real implementation failure before final submission.
+Simulator demo artifacts exist for request snapshot, JSONL log, summary JSON, child orders CSV, fills CSV, and timeline CSV.
 No logs or artifacts contain API keys, secret keys, signatures, listenKeys, or raw authenticated payloads.
 ```
 
@@ -4303,15 +4666,19 @@ Spec coverage:
 FastAPI create/query/cancel: Task 13
 Target-position required quantity and NO_ACTION: Tasks 2, 8, 12
 Parent/child state machine: Task 3
+UNKNOWN child orders are reconcilable rather than terminal: Tasks 2, 3, 11, 12, 17
 Per-execution event serialization: Task 3 and Task 18 checklist
 Decimal and side-aware rounding: Task 4
+API decimal strings reject JSON floats: Task 13
 Exposure buckets and overfill invariant: Task 11
 Chase ADVERSE_ONLY/TWO_SIDED config: Task 9 plus config in Task 1
 TWAP schedule and carry-forward math: Task 10
 child_order_timeout_seconds: Tasks 10, 11, 12, and Task 14 scenarios
 ExchangeAdapter interface: Task 5
 Deterministic simulator: Tasks 5, 7, 14
+Simulator artifact generation and smoke checks: Tasks 6, 14
 Binance adapter, signing, recvWindow, rate limits, status mapping: Tasks 15, 16, 17
+Binance exchangeInfo parsing and market-data freshness: Tasks 15, 16
 Source-of-truth priority and REST reconciliation: Tasks 11, 12, 15, 16, 17
 Log sanitization and summaries: Task 6
 External position drift assumption: Task 14/18 documentation

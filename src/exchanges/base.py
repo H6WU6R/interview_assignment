@@ -70,6 +70,9 @@ class ExchangeAdapter(ABC):
         self,
         symbol: str,
         client_order_prefix: str | None = None,
+        *,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
     ) -> ReconciliationResult:
         raise NotImplementedError
 

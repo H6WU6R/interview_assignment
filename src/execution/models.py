@@ -33,6 +33,12 @@ class Side(StrEnum):
     NO_ACTION = "NO_ACTION"
 
 
+class TimeInForce(StrEnum):
+    GTC = "GTC"
+    GTX = "GTX"
+    IOC = "IOC"
+
+
 class ExecutionStatus(StrEnum):
     CREATED = "CREATED"
     VALIDATING = "VALIDATING"
@@ -142,6 +148,7 @@ class OrderRequest:
     price: Decimal
     post_only: bool
     reduce_only: bool = False
+    time_in_force: TimeInForce | None = None
 
 
 @dataclass

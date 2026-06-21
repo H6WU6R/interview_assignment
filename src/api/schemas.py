@@ -27,9 +27,12 @@ def parse_decimal_string(value: object) -> Decimal:
     if not DECIMAL_STRING_RE.fullmatch(value):
         raise ValueError("decimal fields must be plain decimal strings")
     try:
-        return Decimal(value)
+        parsed = Decimal(value)
     except InvalidOperation as exc:
         raise ValueError("invalid decimal string") from exc
+    if not parsed.is_finite():
+        raise ValueError("decimal fields must be finite")
+    return parsed
 
 
 def decimal_to_string(value: Decimal) -> str:
@@ -48,7 +51,31 @@ class ExecutionParametersCreate(BaseModel):
     @field_validator("reprice_threshold_bps", mode="before")
     @classmethod
     def validate_reprice_threshold_bps(cls, value: object) -> Decimal:
-        return parse_decimal_string(value)
+        parsed = parse_decimal_string(value)
+        if parsed < Decimal("0"):
+            raise ValueError("reprice_threshold_bps must be greater than or equal to 0")
+        return parsed
+
+    @field_validator("minimum_reprice_interval_ms")
+    @classmethod
+    def validate_minimum_reprice_interval_ms(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("minimum_reprice_interval_ms must be greater than or equal to 0")
+        return value
+
+    @field_validator("number_of_slices")
+    @classmethod
+    def validate_number_of_slices(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("number_of_slices must be greater than 0")
+        return value
+
+    @field_validator("child_order_timeout_seconds")
+    @classmethod
+    def validate_child_order_timeout_seconds(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("child_order_timeout_seconds must be greater than 0")
+        return value
 
     def to_domain(self) -> ExecutionParameters:
         return ExecutionParameters(
@@ -78,6 +105,14 @@ class ExecutionCreateRequest(BaseModel):
     def validate_decimal_string(cls, value: object) -> Decimal:
         return parse_decimal_string(value)
 
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, value: str) -> str:
+        symbol = value.upper()
+        if symbol != "BTCUSDT":
+            raise ValueError("only BTCUSDT is supported")
+        return symbol
+
     @field_validator("target_duration_seconds")
     @classmethod
     def validate_target_duration_seconds(cls, value: int) -> int:
@@ -87,6 +122,10 @@ class ExecutionCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_price_range(self) -> ExecutionCreateRequest:
+        if self.target_price_lower <= Decimal("0"):
+            raise ValueError("target_price_lower must be greater than 0")
+        if self.target_price_upper <= Decimal("0"):
+            raise ValueError("target_price_upper must be greater than 0")
         if self.target_price_lower > self.target_price_upper:
             raise ValueError("target_price_lower must be less than or equal to target_price_upper")
         return self

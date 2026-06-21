@@ -50,6 +50,61 @@ def test_sanitize_log_payload_removes_nested_sensitive_fields() -> None:
     }
 
 
+def test_sanitize_log_payload_removes_sensitive_alias_keys() -> None:
+    payload = {
+        "binance_api_key": "binance-key",
+        "api_secret": "api-secret",
+        "listen_key": "listen-key",
+        "X-MBX-APIKEY": "header-key",
+        "clientOrderId": "ce_abc_1",
+        "orderId": 123,
+        "price": "100",
+        "quantity": "0.01",
+        "status": ExecutionStatus.RUNNING,
+    }
+
+    sanitized = sanitize_log_payload(payload)
+
+    assert sanitized == {
+        "clientOrderId": "ce_abc_1",
+        "orderId": 123,
+        "price": "100",
+        "quantity": "0.01",
+        "status": "RUNNING",
+    }
+
+
+def test_sanitize_log_payload_sanitizes_nested_auth_headers_and_signed_payloads() -> None:
+    payload = {
+        "headers": {
+            "X-MBX-APIKEY": "nested-header-key",
+            "Content-Type": "application/json",
+        },
+        "signed_request": {
+            "symbol": "BTCUSDT",
+            "signature": "signed-container-signature",
+        },
+        "authenticated request": "POST /signed",
+        "params": {
+            "timestamp": 1_782_009_600_000,
+            "signature": "nested-signature",
+            "api secret": "nested-secret",
+            "listen-key": "nested-listen-key",
+        },
+        "client_order_id": "ce_abc_1",
+        "status": "ACKED",
+    }
+
+    sanitized = sanitize_log_payload(payload)
+
+    assert sanitized == {
+        "headers": {"Content-Type": "application/json"},
+        "params": {"timestamp": 1_782_009_600_000},
+        "client_order_id": "ce_abc_1",
+        "status": "ACKED",
+    }
+
+
 def test_to_jsonable_converts_decimal_enum_datetime_and_path() -> None:
     payload = {
         "quantity": Decimal("0.010"),
@@ -160,3 +215,71 @@ def test_write_execution_artifacts_creates_empty_execution_log(tmp_path) -> None
     execution_log = output_dir / "execution_log.jsonl"
     assert execution_log.exists()
     assert execution_log.read_text(encoding="utf-8") == ""
+
+
+def test_write_execution_artifacts_sanitizes_secret_aliases_in_outputs(tmp_path) -> None:
+    output_dir = write_execution_artifacts(
+        root=tmp_path,
+        execution_id="exec_secret_aliases",
+        request_snapshot={
+            "symbol": "BTCUSDT",
+            "binance_api_key": "request-api-key",
+            "authenticated_request": {"signature": "request-signature"},
+            "target_position": Decimal("0.010"),
+        },
+        log_events=[
+            {
+                "execution_id": "exec_secret_aliases",
+                "headers": {"X-MBX-APIKEY": "log-header-key"},
+                "client_order_id": "ce_secret_1",
+                "signed_payload": {"api_secret": "log-secret"},
+            }
+        ],
+        summary={"execution_id": "exec_secret_aliases", "status": "COMPLETED"},
+        child_orders=[
+            {
+                "client_order_id": "ce_secret_1",
+                "api_secret": "child-secret",
+                "status": "CANCELLED",
+            }
+        ],
+        fills=[
+            {
+                "client_order_id": "ce_secret_1",
+                "signature": "fill-signature",
+                "price": Decimal("100"),
+            }
+        ],
+        timeline=[
+            {
+                "event": "reconcile",
+                "listen_key": "timeline-listen-key",
+                "signed request": "timeline-signed-request",
+            }
+        ],
+    )
+
+    output_text = "\n".join(
+        [
+            (output_dir / "request_snapshot.json").read_text(encoding="utf-8"),
+            (output_dir / "execution_log.jsonl").read_text(encoding="utf-8"),
+            (output_dir / "execution_summary.json").read_text(encoding="utf-8"),
+            (output_dir / "child_orders.csv").read_text(encoding="utf-8"),
+            (output_dir / "fills.csv").read_text(encoding="utf-8"),
+            (output_dir / "timeline.csv").read_text(encoding="utf-8"),
+        ]
+    )
+
+    for secret in [
+        "request-api-key",
+        "request-signature",
+        "log-header-key",
+        "log-secret",
+        "child-secret",
+        "fill-signature",
+        "timeline-listen-key",
+        "timeline-signed-request",
+    ]:
+        assert secret not in output_text
+    assert "ce_secret_1" in output_text
+    assert "BTCUSDT" in output_text

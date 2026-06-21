@@ -8,16 +8,20 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-SENSITIVE_KEYS = {
-    "api_key",
-    "apiKey",
-    "secret_key",
-    "secretKey",
+SENSITIVE_KEY_CONCEPTS = (
+    "apikey",
+    "mbxapikey",
+    "secret",
     "signature",
-    "listenKey",
-    "raw_authenticated_request",
-    "rawAuthenticatedRequest",
-}
+    "listenkey",
+    "rawauthenticatedrequest",
+    "authenticatedrequest",
+    "signedrequest",
+    "signedpayload",
+    "signedparams",
+)
+
+_KEY_NORMALIZATION_TABLE = str.maketrans("", "", "_- ")
 
 
 def to_jsonable(value: Any) -> Any:
@@ -39,10 +43,15 @@ def to_jsonable(value: Any) -> Any:
 def sanitize_log_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     sanitized: dict[str, Any] = {}
     for key, value in payload.items():
-        if key in SENSITIVE_KEYS:
+        if _is_sensitive_key(key):
             continue
         sanitized[key] = _sanitize_value(value)
     return sanitized
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    normalized = str(key).lower().translate(_KEY_NORMALIZATION_TABLE)
+    return any(concept in normalized for concept in SENSITIVE_KEY_CONCEPTS)
 
 
 def _sanitize_value(value: Any) -> Any:

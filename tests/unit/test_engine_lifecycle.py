@@ -107,6 +107,92 @@ async def test_chase_run_once_submits_one_safe_child() -> None:
     ]
 
 
+async def test_aggressive_deadline_submits_non_post_only_marketable_limit() -> None:
+    class RecordingSimulator(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            return await super().submit_limit_order(order_request)
+
+    clock = ManualClock()
+    simulator = RecordingSimulator(clock=clock)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(simulator, clock=clock)
+    execution = await service.create_execution(
+        execution_request(duration=1, upper=Decimal("95001.00"))
+    )
+    clock.advance(1)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert len(snapshot.child_orders) == 1
+    assert snapshot.child_orders[0].status is ChildOrderStatus.OPEN
+    assert snapshot.child_orders[0].price == Decimal("95001.00")
+    assert len(simulator.submissions) == 1
+    assert simulator.submissions[0].client_order_id == snapshot.child_orders[0].client_order_id
+    assert simulator.submissions[0].price == Decimal("95001.00")
+    assert simulator.submissions[0].post_only is False
+
+
+async def test_aggressive_deadline_does_not_cancel_its_own_final_attempt() -> None:
+    clock = ManualClock()
+    params = ExecutionParameters(child_order_timeout_seconds=100)
+    service, simulator, _ = await fresh_service(clock=clock)
+    execution = await service.create_execution(
+        execution_request(duration=1, upper=Decimal("95001.00"), parameters=params)
+    )
+    clock.advance(1)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+
+    final_attempt = await service.run_once(execution.execution_id)
+    second_run = await service.run_once(execution.execution_id)
+
+    assert len(final_attempt.child_orders) == 1
+    assert final_attempt.child_orders[0].price == Decimal("95001.00")
+    assert len(second_run.child_orders) == 1
+    assert second_run.child_orders[0].client_order_id == final_attempt.child_orders[0].client_order_id
+    assert second_run.child_orders[0].status is ChildOrderStatus.OPEN
+
+
+async def test_aggressive_deadline_rejects_buy_when_marketable_price_exceeds_upper_bound() -> None:
+    class RecordingSimulator(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            return await super().submit_limit_order(order_request)
+
+    clock = ManualClock()
+    simulator = RecordingSimulator(clock=clock)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(simulator, clock=clock)
+    execution = await service.create_execution(
+        execution_request(duration=1, upper=Decimal("95000.90"))
+    )
+    prefix = make_client_order_prefix(execution.execution_id)
+    clock.advance(1)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+
+    snapshot = await service.run_once(execution.execution_id)
+    reconciliation = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
+
+    assert snapshot.status is ExecutionStatus.EXPIRED
+    assert snapshot.final_reason == "PRICE_OUTSIDE_RANGE"
+    assert snapshot.child_orders == []
+    assert simulator.submissions == []
+    assert reconciliation.orders == []
+
+
 async def test_create_timeout_discoverable_reserves_unknown_until_reconcile_maps_live_open() -> None:
     service, simulator, _ = await fresh_service()
     execution = await service.create_execution(execution_request())
@@ -287,6 +373,51 @@ async def test_adapter_level_cancel_timeout_keeps_pending_cancel_exposure_until_
     assert cancelled.exposure.reserved_exposure == Decimal("0.010")
 
 
+async def test_child_order_timeout_cancels_stale_child_and_replaces_remaining_quantity() -> None:
+    clock = ManualClock()
+    params = ExecutionParameters(child_order_timeout_seconds=1)
+    service, simulator, _ = await fresh_service(clock=clock)
+    execution = await service.create_execution(execution_request(parameters=params))
+    first = await service.run_once(execution.execution_id)
+    clock.advance(1.001)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+
+    replaced = await service.run_once(execution.execution_id)
+
+    assert len(first.child_orders) == 1
+    assert len(replaced.child_orders) == 2
+    assert replaced.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert replaced.child_orders[1].status is ChildOrderStatus.OPEN
+    assert replaced.child_orders[1].submitted_quantity == Decimal("0.010")
+    assert replaced.child_orders[1].client_order_id != first.child_orders[0].client_order_id
+    assert replaced.exposure.live_open_quantity == Decimal("0.010")
+    assert replaced.exposure.reserved_exposure == Decimal("0.010")
+
+
+async def test_child_order_timeout_fill_during_cancel_reduces_replacement_size() -> None:
+    clock = ManualClock()
+    params = ExecutionParameters(child_order_timeout_seconds=1)
+    service, simulator, _ = await fresh_service(clock=clock)
+    execution = await service.create_execution(execution_request(parameters=params))
+    first = await service.run_once(execution.execution_id)
+    prefix = make_client_order_prefix(execution.execution_id)
+    simulator.script_fill_during_cancel(prefix, Decimal("0.004"))
+    clock.advance(1.001)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+
+    replaced = await service.run_once(execution.execution_id)
+
+    assert len(first.child_orders) == 1
+    assert len(replaced.child_orders) == 2
+    assert replaced.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert replaced.child_orders[0].confirmed_filled_quantity == Decimal("0.004")
+    assert replaced.child_orders[1].status is ChildOrderStatus.OPEN
+    assert replaced.child_orders[1].submitted_quantity == Decimal("0.006")
+    assert replaced.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert replaced.exposure.live_open_quantity == Decimal("0.006")
+    assert replaced.exposure.confirmed_filled_quantity + replaced.exposure.reserved_exposure <= Decimal("0.010")
+
+
 async def test_fill_during_cancel_reduces_replacement_size_without_overfill() -> None:
     clock = ManualClock()
     service, simulator, _ = await fresh_service(clock=clock)
@@ -386,6 +517,7 @@ async def test_twap_uses_absolute_schedule_and_carries_forward_unfilled_deficit(
             lower=Decimal("90"),
             upper=Decimal("110"),
             duration=100,
+            parameters=ExecutionParameters(child_order_timeout_seconds=1000),
         )
     )
     clock.advance(30)

@@ -15,6 +15,7 @@ from execution.models import (
     Algorithm,
     ChildOrder,
     ChildOrderStatus,
+    DeadlinePolicy,
     ExecutionRequest,
     ExecutionStatus,
     ExecutionSummary,
@@ -154,6 +155,8 @@ class ExecutionRecord:
     last_child_sequence: int = 0
     started_monotonic: Decimal = Decimal("0")
     last_reprice_monotonic: Decimal | None = None
+    child_submitted_monotonic: dict[str, Decimal] = field(default_factory=dict)
+    aggressive_child_client_order_ids: set[str] = field(default_factory=set)
 
     @property
     def exposure(self) -> Exposure:
@@ -261,6 +264,19 @@ class ExecutionEngine:
                 self._complete_locked(record, TARGET_QUANTITY_FILLED)
                 return self._snapshot(record)
 
+            if self._should_cancel_for_aggressive_deadline(record):
+                await self._cancel_passive_children_for_aggressive_deadline_locked(record)
+                await self._reconcile_locked(record)
+                if self._target_filled(record):
+                    self._complete_locked(record, TARGET_QUANTITY_FILLED)
+                    return self._snapshot(record)
+
+            if await self._cancel_timed_out_children_locked(record):
+                await self._reconcile_locked(record)
+                if self._target_filled(record):
+                    self._complete_locked(record, TARGET_QUANTITY_FILLED)
+                    return self._snapshot(record)
+
             if record.exposure.reserved_exposure > Decimal("0"):
                 if record.request.algorithm is Algorithm.CHASE:
                     await self._maybe_reprice_chase_locked(record)
@@ -313,6 +329,7 @@ class ExecutionEngine:
         tracker.check_can_submit(quantity)
         record.last_child_sequence += 1
         sequence = record.last_child_sequence
+        submitted_at = self._now_decimal()
         child = ChildOrder(
             child_order_id=ids.child_order_id(sequence),
             client_order_id=ids.make_client_order_id(record.execution_id, sequence),
@@ -322,6 +339,9 @@ class ExecutionEngine:
             price=price,
         )
         record.child_orders.append(child)
+        record.child_submitted_monotonic[child.client_order_id] = submitted_at
+        if not post_only:
+            record.aggressive_child_client_order_ids.add(child.client_order_id)
         tracker.reserve_pending_submit(quantity)
         order_request = OrderRequest(
             execution_id=record.execution_id,
@@ -351,6 +371,8 @@ class ExecutionEngine:
         except Exception:
             tracker.release_pending_submit(quantity)
             record.child_orders.remove(child)
+            record.child_submitted_monotonic.pop(child.client_order_id, None)
+            record.aggressive_child_client_order_ids.discard(child.client_order_id)
             raise
 
         tracker.release_pending_submit(quantity)
@@ -365,41 +387,66 @@ class ExecutionEngine:
             tracker.reserve_unknown_create(child.remaining_quantity)
         return child
 
-    async def _cancel_active_children_locked(self, record: ExecutionRecord) -> None:
-        tracker = self._require_exposure_tracker(record)
+    async def _cancel_active_children_locked(self, record: ExecutionRecord) -> bool:
+        cancelled_any = False
         for child in list(record.child_orders):
-            if child.status not in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
+            cancelled_any = await self._cancel_child_locked(record, child) or cancelled_any
+        return cancelled_any
+
+    async def _cancel_passive_children_for_aggressive_deadline_locked(
+        self,
+        record: ExecutionRecord,
+    ) -> bool:
+        cancelled_any = False
+        for child in list(record.child_orders):
+            if not self._needs_aggressive_deadline_cancel(record, child):
                 continue
+            cancelled_any = await self._cancel_child_locked(record, child) or cancelled_any
+        return cancelled_any
 
-            remaining_before_cancel = child.remaining_quantity
-            if remaining_before_cancel <= Decimal("0"):
+    async def _cancel_timed_out_children_locked(self, record: ExecutionRecord) -> bool:
+        cancelled_any = False
+        for child in list(record.child_orders):
+            if not self._child_order_timed_out(record, child):
                 continue
+            cancelled_any = await self._cancel_child_locked(record, child) or cancelled_any
+        return cancelled_any
 
-            tracker.mark_pending_cancel(remaining_before_cancel)
-            self._set_child_status(child, ChildOrderStatus.PENDING_CANCEL)
-            try:
-                cancelled = await self._adapter.cancel_order(record.request.symbol, child.client_order_id)
-            except OrderCancelTimeout as exc:
-                child.terminal_reason = str(exc)
-                continue
-            except Exception as exc:
-                tracker.release_pending_cancel(remaining_before_cancel)
-                tracker.reserve_live_open(remaining_before_cancel)
-                child.terminal_reason = str(exc)
-                self._set_child_status(child, ChildOrderStatus.OPEN)
-                continue
+    async def _cancel_child_locked(self, record: ExecutionRecord, child: ChildOrder) -> bool:
+        tracker = self._require_exposure_tracker(record)
+        if child.status not in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
+            return False
 
-            self._copy_exchange_child(child, cancelled)
-            self._set_child_status(child, cancelled.status)
+        remaining_before_cancel = child.remaining_quantity
+        if remaining_before_cancel <= Decimal("0"):
+            return False
 
-            if child.confirmed_filled_quantity > Decimal("0"):
-                self._apply_order_fill_locked(record, child, trade_id=None)
+        tracker.mark_pending_cancel(remaining_before_cancel)
+        self._set_child_status(child, ChildOrderStatus.PENDING_CANCEL)
+        try:
+            cancelled = await self._adapter.cancel_order(record.request.symbol, child.client_order_id)
+        except OrderCancelTimeout as exc:
+            child.terminal_reason = str(exc)
+            return True
+        except Exception as exc:
+            tracker.release_pending_cancel(remaining_before_cancel)
+            tracker.reserve_live_open(remaining_before_cancel)
+            child.terminal_reason = str(exc)
+            self._set_child_status(child, ChildOrderStatus.OPEN)
+            return False
 
-            if child.status in {ChildOrderStatus.CANCELLED, ChildOrderStatus.FILLED}:
-                tracker.release_pending_cancel(remaining_before_cancel)
-            elif child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
-                tracker.release_pending_cancel(remaining_before_cancel)
-                tracker.reserve_live_open(child.remaining_quantity)
+        self._copy_exchange_child(child, cancelled)
+        self._set_child_status(child, cancelled.status)
+
+        if child.confirmed_filled_quantity > Decimal("0"):
+            self._apply_order_fill_locked(record, child, trade_id=None)
+
+        if child.status in {ChildOrderStatus.CANCELLED, ChildOrderStatus.FILLED}:
+            tracker.release_pending_cancel(remaining_before_cancel)
+        elif child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
+            tracker.release_pending_cancel(remaining_before_cancel)
+            tracker.reserve_live_open(child.remaining_quantity)
+        return True
 
     async def _reconcile_locked(self, record: ExecutionRecord) -> None:
         tracker = record.exposure_tracker
@@ -502,7 +549,8 @@ class ExecutionEngine:
         tracker = self._require_exposure_tracker(record)
         market = await self._adapter.get_best_bid_ask(record.request.symbol)
         rules = await self._adapter.get_symbol_rules(record.request.symbol)
-        post_only = True
+        use_aggressive_deadline = self._use_aggressive_deadline_price(record)
+        post_only = not use_aggressive_deadline
 
         if record.request.algorithm is Algorithm.TWAP:
             elapsed = self._now_decimal() - record.started_monotonic
@@ -520,7 +568,10 @@ class ExecutionEngine:
         if quantity <= Decimal("0"):
             return None
 
-        price = self._rounded_passive_price(record.side, market, rules)
+        if use_aggressive_deadline:
+            price = self._rounded_aggressive_price(record.side, market, rules)
+        else:
+            price = self._rounded_passive_price(record.side, market, rules)
         try:
             validate_child_order_safety(
                 quantity=quantity,
@@ -539,6 +590,20 @@ class ExecutionEngine:
 
         return quantity, price, post_only
 
+    def _use_aggressive_deadline_price(self, record: ExecutionRecord) -> bool:
+        return (
+            record.request.deadline_policy is DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE
+            and self._deadline_reached(record)
+        )
+
+    def _should_cancel_for_aggressive_deadline(self, record: ExecutionRecord) -> bool:
+        if not self._use_aggressive_deadline_price(record):
+            return False
+        return any(
+            self._needs_aggressive_deadline_cancel(record, child)
+            for child in record.child_orders
+        )
+
     def _rounded_passive_price(
         self,
         side: Side,
@@ -547,6 +612,34 @@ class ExecutionEngine:
     ) -> Decimal:
         desired = chase_desired_price(side, market.bid, market.ask, passive=True)
         return round_price(desired, rules.tick_size, side, passive=True)
+
+    def _rounded_aggressive_price(
+        self,
+        side: Side,
+        market: MarketSnapshot,
+        rules: SymbolRules,
+    ) -> Decimal:
+        desired = chase_desired_price(side, market.bid, market.ask, passive=False)
+        return round_price(desired, rules.tick_size, side, passive=False)
+
+    def _child_order_timed_out(self, record: ExecutionRecord, child: ChildOrder) -> bool:
+        if child.status not in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
+            return False
+        timeout = Decimal(str(record.request.parameters.child_order_timeout_seconds))
+        submitted_at = record.child_submitted_monotonic.get(child.client_order_id)
+        if submitted_at is None:
+            submitted_at = record.started_monotonic
+        return self._now_decimal() - submitted_at > timeout
+
+    def _needs_aggressive_deadline_cancel(self, record: ExecutionRecord, child: ChildOrder) -> bool:
+        return (
+            child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}
+            and child.client_order_id not in record.aggressive_child_client_order_ids
+        )
+
+    def _deadline_reached(self, record: ExecutionRecord) -> bool:
+        elapsed = self._now_decimal() - record.started_monotonic
+        return elapsed >= Decimal(str(record.request.target_duration_seconds))
 
     def _expire_for_validation_locked(self, record: ExecutionRecord, exc: ValidationError) -> None:
         reason = str(exc)
@@ -559,7 +652,12 @@ class ExecutionEngine:
         else:
             record.final_reason = ORDER_SAFETY_REJECTED
         if record.status is ExecutionStatus.RUNNING:
-            record.status = transition_execution(record.status, ExecutionStatus.EXPIRED)
+            target_status = (
+                ExecutionStatus.PARTIALLY_COMPLETED
+                if record.exposure.confirmed_filled_quantity > Decimal("0")
+                else ExecutionStatus.EXPIRED
+            )
+            record.status = transition_execution(record.status, target_status)
             record.summary = self._summary(record)
 
     def _complete_locked(self, record: ExecutionRecord, reason: str) -> None:

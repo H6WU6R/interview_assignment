@@ -11,6 +11,7 @@ from execution.clock import ManualClock
 from execution.engine import (
     CREATE_TIMEOUT_ORDER_NOT_FOUND,
     CREATE_TIMEOUT_PENDING_RECONCILIATION,
+    CREATE_TIMEOUT_RECONCILED,
     PRICE_OUTSIDE_RANGE,
     STREAM_HEALTH_DEGRADED_RECONCILED,
 )
@@ -177,6 +178,8 @@ async def test_t4a_create_timeout_reconciles_to_open_order_without_new_client_or
 
     assert [child.client_order_id for child in reconciled.child_orders] == [first_client_order_id]
     assert reconciled.child_orders[0].status is ChildOrderStatus.OPEN
+    assert reconciled.child_orders[0].terminal_reason is None
+    assert reconciled.final_reason == CREATE_TIMEOUT_RECONCILED
     assert reconciled.exposure.unknown_order_quantity == Decimal("0")
     assert reconciled.exposure.live_open_quantity == reconciled.required_quantity
     assert_exposure_safe(reconciled)
@@ -435,6 +438,43 @@ def test_cancel_race_script_writes_required_artifacts(tmp_path: Path) -> None:
         "price",
     } <= set(child_rows[0])
     assert "client_order_id" in fill_rows[0]
+
+
+def test_create_timeout_script_writes_default_artifacts_with_resolved_reason() -> None:
+    result = subprocess.run(
+        ["uv", "run", "python", "scripts/run_sim_create_timeout.py"],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    artifact_line = next(
+        line for line in result.stdout.splitlines() if line.startswith("artifact_dir=")
+    )
+    artifact_dir = Path(artifact_line.split("=", 1)[1])
+
+    assert artifact_dir.exists()
+    assert {
+        "request_snapshot.json",
+        "execution_log.jsonl",
+        "execution_summary.json",
+        "child_orders.csv",
+        "fills.csv",
+        "timeline.csv",
+    } <= {path.name for path in artifact_dir.iterdir()}
+
+    summary = json.loads((artifact_dir / "execution_summary.json").read_text())
+    assert summary["final_reason"] == CREATE_TIMEOUT_RECONCILED
+    assert summary["exposure"]["unknown_order_quantity"] == "0"
+    assert summary["exposure"]["live_open_quantity"] == "0.010"
+
+    log_events = [
+        json.loads(line)
+        for line in (artifact_dir / "execution_log.jsonl").read_text().splitlines()
+    ]
+    assert any(event["event"] == "create_timeout_unknown" for event in log_events)
+    assert any(event["event"] == "reconciled_original_open" for event in log_events)
 
 
 def test_simulator_demo_scripts_run_successfully_for_chase_and_cancel_race(tmp_path: Path) -> None:

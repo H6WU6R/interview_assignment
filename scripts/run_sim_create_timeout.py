@@ -23,8 +23,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=None,
-        help="Optional directory under which execution artifacts are written.",
+        default=Path("/tmp/calais-sim-create-timeout"),
+        help="Directory under which execution artifacts are written.",
     )
     return parser.parse_args()
 
@@ -64,14 +64,13 @@ async def main() -> None:
     print(f"unknown_after_reconcile={reconciled.exposure.unknown_order_quantity}")
     print(f"live_open_after_reconcile={reconciled.exposure.live_open_quantity}")
 
-    if args.output_dir is not None:
-        artifact_dir = write_artifacts(
-            args.output_dir,
-            reconciled,
-            log_events=events,
-            fills=simulator._fills,
-        )
-        print(f"artifact_dir={artifact_dir}")
+    artifact_dir = write_artifacts(
+        args.output_dir,
+        reconciled,
+        log_events=events,
+        fills=simulator._fills,
+    )
+    print(f"artifact_dir={artifact_dir}")
 
 
 if __name__ == "__main__":

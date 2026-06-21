@@ -34,6 +34,7 @@ from risk.validation import ValidationError, check_exposure_invariant, validate_
 NO_ACTION_TARGET_ALREADY_REACHED = "NO_ACTION_TARGET_ALREADY_REACHED"
 CANCEL_REQUESTED = "CANCEL_REQUESTED"
 CREATE_TIMEOUT_PENDING_RECONCILIATION = "CREATE_TIMEOUT_PENDING_RECONCILIATION"
+CREATE_TIMEOUT_RECONCILED = "CREATE_TIMEOUT_RECONCILED"
 CREATE_TIMEOUT_ORDER_NOT_FOUND = "CREATE_TIMEOUT_ORDER_NOT_FOUND"
 PRICE_OUTSIDE_RANGE = "PRICE_OUTSIDE_RANGE"
 POST_ONLY_CROSSES = "POST_ONLY_CROSSES"
@@ -434,9 +435,18 @@ class ExecutionEngine:
                 if child.status is ChildOrderStatus.UNKNOWN and child.client_order_id not in exchange_client_ids:
                     self._set_child_status(child, ChildOrderStatus.REJECTED)
                     child.terminal_reason = CREATE_TIMEOUT_ORDER_NOT_FOUND
+                    record.final_reason = CREATE_TIMEOUT_ORDER_NOT_FOUND
             tracker.clear_unknown_create()
 
         self._refresh_reserved_exposure_locked(record)
+        if (
+            record.final_reason == CREATE_TIMEOUT_PENDING_RECONCILIATION
+            and record.exposure.unknown_order_quantity == Decimal("0")
+        ):
+            record.final_reason = CREATE_TIMEOUT_RECONCILED
+            for child in record.child_orders:
+                if child.terminal_reason == CREATE_TIMEOUT_PENDING_RECONCILIATION:
+                    child.terminal_reason = None
 
     async def _maybe_reprice_chase_locked(self, record: ExecutionRecord) -> None:
         active_child = self._first_active_child(record)

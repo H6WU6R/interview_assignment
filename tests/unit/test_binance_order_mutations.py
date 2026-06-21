@@ -159,6 +159,19 @@ async def test_signed_request_timeout_maps_by_mutation_kind() -> None:
         await read_adapter._signed_request("GET", ORDER_QUERY_PATH, {})
 
 
+async def test_signed_request_http_408_maps_mutations_to_ambiguous_outcome() -> None:
+    create_adapter = authed_adapter(RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"})))
+    cancel_adapter = authed_adapter(RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"})))
+    read_adapter = authed_adapter(RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"})))
+
+    with pytest.raises(UnknownCreateOutcome):
+        await create_adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+    with pytest.raises(PendingCancelOutcome):
+        await cancel_adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
+    with pytest.raises(RetryableReadFailure):
+        await read_adapter._signed_request("GET", ORDER_QUERY_PATH, {})
+
+
 async def test_signed_request_uses_api_key_header_and_signed_params_without_secret() -> None:
     client = RecordingClient(FakeResponse(200, {"ok": True}))
     adapter = authed_adapter(client)
@@ -231,6 +244,18 @@ async def test_submit_cancel_and_query_use_order_endpoint_and_orig_client_id() -
     ]
     assert client.calls[1]["params"]["origClientOrderId"] == "ce_abcdef123456_1"
     assert client.calls[2]["params"]["origClientOrderId"] == "ce_abcdef123456_1"
+
+
+async def test_query_order_not_found_returns_none_for_create_timeout_reconciliation() -> None:
+    client = RecordingClient(FakeResponse(400, {"code": -2013, "msg": "Order does not exist."}))
+    adapter = authed_adapter(client)
+
+    order = await adapter.get_order_by_client_order_id("BTCUSDT", "ce_abcdef123456_1")
+
+    assert order is None
+    assert client.calls[0]["method"] == "GET"
+    assert client.calls[0]["url"].endswith("/fapi/v1/order")
+    assert client.calls[0]["params"]["origClientOrderId"] == "ce_abcdef123456_1"
 
 
 async def test_reconciliation_requires_prefix_filters_manual_orders_and_joins_trades_by_order_id() -> None:
@@ -352,6 +377,29 @@ def test_stream_parsers_preserve_exchange_timestamps() -> None:
     assert event["raw"]["o"]["x"] == "TRADE"
 
 
+def test_market_stream_url_uses_requested_symbol_and_public_route() -> None:
+    adapter = BinanceUsdmAdapter(settings=Settings(environment=Environment.TESTNET))
+
+    adapter.set_market_stream_symbol("ETHUSDT")
+
+    assert adapter._market_stream_symbol == "ETHUSDT"
+    assert adapter.market_stream_url("ETHUSDT") == (
+        "wss://fstream.binancefuture.com/public/ws/ethusdt@bookTicker"
+    )
+
+
+def test_testnet_runner_normalizes_symbol_for_rest_and_stream_usage() -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.normalize_symbol("ethusdt") == "ETHUSDT"
+
+
 def test_testnet_scripts_refuse_without_credentials_and_never_fallback_to_simulator() -> None:
     script = Path("scripts/run_testnet_chase.py")
     env = os.environ.copy()
@@ -389,3 +437,16 @@ def test_testnet_scripts_require_confirm_before_network_work_with_fake_credentia
 
     assert result.returncode != 0
     assert "--confirm-send-orders" in result.stderr
+
+
+def test_testnet_runner_exposes_symbol_and_slice_arguments() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/run_testnet_twap.py", "--help"],
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "--symbol" in result.stdout
+    assert "--number-of-slices" in result.stdout

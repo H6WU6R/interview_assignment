@@ -14,6 +14,7 @@ from execution.ids import make_client_order_prefix
 from execution.models import (
     Algorithm,
     DeadlinePolicy,
+    ExecutionParameters,
     ExecutionRequest,
     ExecutionStatus,
 )
@@ -24,11 +25,13 @@ from observability.logging import to_jsonable
 
 def parse_args(algorithm: Algorithm) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=f"Run a real Binance USD-M testnet {algorithm.value} execution.")
+    parser.add_argument("--symbol", default="BTCUSDT", help="USD-M symbol to trade, default BTCUSDT.")
     parser.add_argument("--confirm-send-orders", action="store_true", help="Required before live testnet order sends.")
     parser.add_argument("--target-position", help="Explicit Decimal target position, e.g. 0.001.")
     parser.add_argument("--target-price-lower", help="Explicit Decimal lower price bound.")
     parser.add_argument("--target-price-upper", help="Explicit Decimal upper price bound.")
     parser.add_argument("--duration-seconds", type=int, default=60, help="Execution target duration in seconds.")
+    parser.add_argument("--number-of-slices", type=int, default=5, help="TWAP slice count.")
     parser.add_argument("--max-runtime-seconds", type=float, default=30.0, help="Maximum runner runtime.")
     parser.add_argument("--poll-interval-seconds", type=float, default=1.0, help="Delay between engine ticks.")
     parser.add_argument("--market-timeout-seconds", type=float, default=10.0, help="Fresh market snapshot timeout.")
@@ -56,6 +59,7 @@ async def run(algorithm: Algorithm) -> Path:
     target_position = _required_decimal(args.target_position, "--target-position")
     lower = _required_decimal(args.target_price_lower, "--target-price-lower")
     upper = _required_decimal(args.target_price_upper, "--target-price-upper")
+    symbol = normalize_symbol(args.symbol)
 
     adapter = BinanceUsdmAdapter(
         Settings(
@@ -64,6 +68,7 @@ async def run(algorithm: Algorithm) -> Path:
             binance_api_secret=api_secret,
         )
     )
+    adapter.set_market_stream_symbol(symbol)
     service = ExecutionService(adapter, clock=adapter.clock)
     events: list[dict[str, Any]] = []
 
@@ -72,13 +77,14 @@ async def run(algorithm: Algorithm) -> Path:
 
     request = ExecutionRequest(
         environment=adapter.settings.environment,
-        symbol="BTCUSDT",
+        symbol=symbol,
         algorithm=algorithm,
         target_position=target_position,
         target_price_lower=lower,
         target_price_upper=upper,
         target_duration_seconds=args.duration_seconds,
         deadline_policy=DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE,
+        parameters=ExecutionParameters(number_of_slices=args.number_of_slices),
     )
     execution = await service.create_execution(request)
     events.append({"event": "execution_created", "execution": _record_summary(execution)})
@@ -105,7 +111,7 @@ async def run(algorithm: Algorithm) -> Path:
         events.append({"event": "final_reconcile", "execution": _record_summary(latest)})
 
     prefix = make_client_order_prefix(execution.execution_id)
-    reconciliation = await adapter.reconcile_orders_and_fills("BTCUSDT", client_order_prefix=prefix)
+    reconciliation = await adapter.reconcile_orders_and_fills(symbol, client_order_prefix=prefix)
 
     artifact_dir = write_execution_artifacts(
         root=args.output_dir,
@@ -129,6 +135,13 @@ async def _wait_for_market_snapshot(adapter: BinanceUsdmAdapter, *, timeout_seco
         return await asyncio.wait_for(anext(stream), timeout=timeout_seconds)
     finally:
         await stream.aclose()
+
+
+def normalize_symbol(symbol: str) -> str:
+    normalized = symbol.strip().upper()
+    if not normalized:
+        raise SystemExit("--symbol must not be empty.")
+    return normalized
 
 
 def _required_decimal(value: str | None, label: str) -> Decimal:

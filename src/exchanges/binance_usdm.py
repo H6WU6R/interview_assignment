@@ -120,6 +120,8 @@ def sign_params(params: dict[str, str], secret: str) -> dict[str, str]:
 
 
 def classify_http_status(status_code: int) -> str:
+    if status_code == 408:
+        return "REQUEST_TIMEOUT_AMBIGUOUS"
     if status_code == 429:
         return "RATE_LIMIT_BACKOFF"
     if status_code == 418:
@@ -187,6 +189,7 @@ class BinanceUsdmAdapter(ExchangeAdapter):
     server_time_offset_ms: int = 0
     rate_limits: dict[str, int] = field(default_factory=dict)
     _latest_market: dict[str, MarketSnapshot] = field(default_factory=dict)
+    _market_stream_symbol: str = "BTCUSDT"
 
     def __post_init__(self) -> None:
         self.base_url = self._select_base_url()
@@ -259,6 +262,12 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         status = classify_http_status(response.status_code)
         if status == "OK":
             return response.json()
+        if response.status_code == 408:
+            if mutation_kind is MutationKind.CREATE:
+                raise UnknownCreateOutcome(classify_mutation_timeout(MutationKind.CREATE))
+            if mutation_kind is MutationKind.CANCEL:
+                raise PendingCancelOutcome(classify_mutation_timeout(MutationKind.CANCEL))
+            raise RetryableReadFailure("SIGNED_READ_TIMEOUT")
         if response.status_code == 429:
             raise RetryableReadFailure("RATE_LIMIT_BACKOFF")
         if response.status_code == 418:
@@ -286,7 +295,7 @@ class BinanceUsdmAdapter(ExchangeAdapter):
 
     def stream_market_data(self) -> AsyncIterator[MarketSnapshot]:
         async def events() -> AsyncIterator[MarketSnapshot]:
-            url = f"{self.public_ws_base_url}/ws/btcusdt@bookTicker"
+            url = self.market_stream_url(self._market_stream_symbol)
             async with websockets.connect(url) as websocket:
                 async for raw_message in websocket:
                     payload = json.loads(raw_message)
@@ -295,6 +304,12 @@ class BinanceUsdmAdapter(ExchangeAdapter):
                     yield snapshot
 
         return events()
+
+    def set_market_stream_symbol(self, symbol: str) -> None:
+        self._market_stream_symbol = symbol.upper()
+
+    def market_stream_url(self, symbol: str) -> str:
+        return f"{self.public_ws_base_url}/ws/{symbol.lower()}@bookTicker"
 
     async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
         rules = await self.get_symbol_rules(order_request.symbol)
@@ -324,12 +339,17 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         )
         return parse_order(raw)
 
-    async def get_order_by_client_order_id(self, symbol: str, client_order_id: str) -> ChildOrder:
-        raw = await self._signed_request(
-            "GET",
-            ORDER_QUERY_PATH,
-            {"symbol": symbol, "origClientOrderId": client_order_id},
-        )
+    async def get_order_by_client_order_id(self, symbol: str, client_order_id: str) -> ChildOrder | None:
+        try:
+            raw = await self._signed_request(
+                "GET",
+                ORDER_QUERY_PATH,
+                {"symbol": symbol, "origClientOrderId": client_order_id},
+            )
+        except ExchangeTerminalReject as exc:
+            if _is_order_not_found_reason(str(exc)):
+                return None
+            raise
         return parse_order(raw)
 
     async def get_position(self, symbol: str) -> PositionSnapshot:
@@ -578,3 +598,7 @@ def _terminal_reject_reason(response: Any) -> str:
         if message is not None:
             return str(message)
     return f"BINANCE_HTTP_{response.status_code}"
+
+
+def _is_order_not_found_reason(reason: str) -> bool:
+    return "BINANCE_-2013" in reason or "Order does not exist" in reason

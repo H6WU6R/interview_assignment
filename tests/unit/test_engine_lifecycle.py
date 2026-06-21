@@ -169,6 +169,96 @@ async def test_adapter_level_create_timeout_reserves_unknown_exposure() -> None:
     assert snapshot.exposure.reserved_exposure == snapshot.required_quantity
 
 
+async def test_exact_create_timeout_lookup_maps_found_order_to_live_open() -> None:
+    class ExactLookupAdapter(DeterministicSimulator):
+        stored_order: ChildOrder | None = None
+        lookup_client_order_ids: list[str]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.lookup_client_order_ids = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.stored_order = self._create_open_order(order_request)
+            raise OrderCreateTimeout(f"ambiguous create for {order_request.client_order_id}")
+
+        async def get_order_by_client_order_id(
+            self,
+            symbol: str,
+            client_order_id: str,
+        ) -> ChildOrder | None:
+            self.lookup_client_order_ids.append(client_order_id)
+            return self.stored_order
+
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+        ) -> ReconciliationResult:
+            return ReconciliationResult(orders=[], fills=[])
+
+    clock = ManualClock()
+    adapter = ExactLookupAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    timed_out = await service.run_once(execution.execution_id)
+    reconciled = await service.reconcile_execution(execution.execution_id)
+
+    assert timed_out.child_orders[0].status is ChildOrderStatus.UNKNOWN
+    assert adapter.lookup_client_order_ids == [timed_out.child_orders[0].client_order_id]
+    assert reconciled.child_orders[0].status is ChildOrderStatus.OPEN
+    assert reconciled.exposure.unknown_order_quantity == Decimal("0")
+    assert reconciled.exposure.live_open_quantity == Decimal("0.010")
+    assert reconciled.final_reason == "CREATE_TIMEOUT_RECONCILED"
+
+
+async def test_exact_create_timeout_lookup_not_found_clears_unknown_without_broad_warning() -> None:
+    class ExactNotFoundAdapter(DeterministicSimulator):
+        lookup_client_order_ids: list[str]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.lookup_client_order_ids = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            raise OrderCreateTimeout(f"ambiguous create for {order_request.client_order_id}")
+
+        async def get_order_by_client_order_id(
+            self,
+            symbol: str,
+            client_order_id: str,
+        ) -> ChildOrder | None:
+            self.lookup_client_order_ids.append(client_order_id)
+            return None
+
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+        ) -> ReconciliationResult:
+            return ReconciliationResult(orders=[], fills=[])
+
+    clock = ManualClock()
+    adapter = ExactNotFoundAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    timed_out = await service.run_once(execution.execution_id)
+    reconciled = await service.reconcile_execution(execution.execution_id)
+    retried = await service.run_once(execution.execution_id)
+
+    assert timed_out.child_orders[0].status is ChildOrderStatus.UNKNOWN
+    assert adapter.lookup_client_order_ids == [timed_out.child_orders[0].client_order_id]
+    assert reconciled.child_orders[0].status is ChildOrderStatus.REJECTED
+    assert reconciled.child_orders[0].terminal_reason == "CREATE_TIMEOUT_ORDER_NOT_FOUND"
+    assert reconciled.exposure.unknown_order_quantity == Decimal("0")
+    assert len(retried.child_orders) == 2
+    assert retried.child_orders[1].client_order_id != retried.child_orders[0].client_order_id
+
+
 async def test_adapter_level_cancel_timeout_keeps_pending_cancel_exposure_until_reconcile() -> None:
     class CancelTimeoutAdapter(DeterministicSimulator):
         async def cancel_order(self, symbol: str, client_order_id: str) -> ChildOrder:

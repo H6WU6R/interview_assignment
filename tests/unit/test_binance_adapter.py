@@ -126,6 +126,7 @@ def test_signed_params_requires_secret() -> None:
 
 def test_classify_http_status_identifies_backoff_and_ban() -> None:
     assert classify_http_status(200) == "OK"
+    assert classify_http_status(408) == "REQUEST_TIMEOUT_AMBIGUOUS"
     assert classify_http_status(429) == "RATE_LIMIT_BACKOFF"
     assert classify_http_status(418) == "VENUE_BAN_HARD_STOP"
     assert classify_http_status(503) == "RETRYABLE_READ_OR_UNKNOWN_MUTATION"

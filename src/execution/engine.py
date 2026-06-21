@@ -433,6 +433,8 @@ class ExecutionEngine:
                 child.confirmed_filled_quantity = fill.cumulative_filled_quantity
             self._apply_order_fill_locked(record, child, trade_id=fill.trade_id)
 
+        await self._reconcile_unknown_children_exact_locked(record)
+
         if CREATE_TIMEOUT_ORDER_NOT_FOUND in result.warnings:
             for child in record.child_orders:
                 if child.status is ChildOrderStatus.UNKNOWN and child.client_order_id not in exchange_client_ids:
@@ -450,6 +452,26 @@ class ExecutionEngine:
             for child in record.child_orders:
                 if child.terminal_reason == CREATE_TIMEOUT_PENDING_RECONCILIATION:
                     child.terminal_reason = None
+
+    async def _reconcile_unknown_children_exact_locked(self, record: ExecutionRecord) -> None:
+        for child in list(record.child_orders):
+            if child.status is not ChildOrderStatus.UNKNOWN:
+                continue
+
+            exchange_child = await self._adapter.get_order_by_client_order_id(
+                record.request.symbol,
+                child.client_order_id,
+            )
+            if exchange_child is None:
+                self._set_child_status(child, ChildOrderStatus.REJECTED)
+                child.terminal_reason = CREATE_TIMEOUT_ORDER_NOT_FOUND
+                record.final_reason = CREATE_TIMEOUT_ORDER_NOT_FOUND
+                continue
+
+            self._copy_exchange_child(child, exchange_child)
+            self._set_child_status(child, getattr(exchange_child, "status", child.status))
+            if child.confirmed_filled_quantity > Decimal("0"):
+                self._apply_order_fill_locked(record, child, trade_id=None)
 
     async def _maybe_reprice_chase_locked(self, record: ExecutionRecord) -> None:
         active_child = self._first_active_child(record)

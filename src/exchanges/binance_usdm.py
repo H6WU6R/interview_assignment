@@ -100,6 +100,10 @@ def build_new_order_params(order_request: OrderRequest, rules: SymbolRules) -> d
         if "GTX" not in rules.supported_time_in_force:
             raise ExchangeTerminalReject("POST_ONLY_GTX_UNSUPPORTED")
         time_in_force = "GTX"
+    elif order_request.time_in_force is not None:
+        time_in_force = order_request.time_in_force.value
+        if time_in_force not in rules.supported_time_in_force:
+            raise ExchangeTerminalReject(f"{time_in_force}_TIME_IN_FORCE_UNSUPPORTED")
     else:
         time_in_force = "GTC"
 
@@ -189,6 +193,10 @@ class BinanceUsdmAdapter(ExchangeAdapter):
     clock: Clock = field(default_factory=SystemClock)
     server_time_offset_ms: int = 0
     rate_limits: dict[str, int] = field(default_factory=dict)
+    market_stream_healthy: bool = False
+    user_stream_healthy: bool = False
+    latest_listen_key: str | None = None
+    last_stream_error: str | None = None
     _latest_market: dict[str, MarketSnapshot] = field(default_factory=dict)
     _market_stream_symbol: str = "BTCUSDT"
 
@@ -253,7 +261,7 @@ class BinanceUsdmAdapter(ExchangeAdapter):
                     headers=headers,
                     timeout=timeout,
                 )
-        except httpx.TimeoutException as exc:
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
             if mutation_kind is MutationKind.CREATE:
                 raise UnknownCreateOutcome(classify_mutation_timeout(MutationKind.CREATE)) from exc
             if mutation_kind is MutationKind.CANCEL:
@@ -262,7 +270,8 @@ class BinanceUsdmAdapter(ExchangeAdapter):
 
         status = classify_http_status(response.status_code)
         if status == "OK":
-            return response.json()
+            return _json_payload_or_conservative_failure(response, mutation_kind)
+
         if response.status_code == 408:
             if mutation_kind is MutationKind.CREATE:
                 raise UnknownCreateOutcome(classify_mutation_timeout(MutationKind.CREATE))
@@ -273,14 +282,20 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             raise RetryableReadFailure("RATE_LIMIT_BACKOFF")
         if response.status_code == 418:
             raise RuntimeError("VENUE_BAN_HARD_STOP")
+
+        error_payload = _json_payload_or_conservative_failure(response, mutation_kind)
         if 500 <= response.status_code <= 599:
-            if mutation_kind is MutationKind.CREATE:
-                raise UnknownCreateOutcome("UNKNOWN_CREATE_OUTCOME")
-            if mutation_kind is MutationKind.CANCEL:
-                raise PendingCancelOutcome("PENDING_CANCEL_OUTCOME")
+            if mutation_kind is not None:
+                reason = _terminal_reject_reason(response.status_code, error_payload)
+                if _is_specific_terminal_5xx_reject(reason):
+                    raise ExchangeTerminalReject(reason)
+                if mutation_kind is MutationKind.CREATE:
+                    raise UnknownCreateOutcome("UNKNOWN_CREATE_OUTCOME")
+                if mutation_kind is MutationKind.CANCEL:
+                    raise PendingCancelOutcome("PENDING_CANCEL_OUTCOME")
             raise RetryableReadFailure("RETRYABLE_READ_FAILURE")
         if 400 <= response.status_code <= 499:
-            reason = _terminal_reject_reason(response)
+            reason = _terminal_reject_reason(response.status_code, error_payload)
             if mutation_kind is MutationKind.CREATE and _is_retryable_order_reject_reason(reason):
                 raise OrderRejected(reason)
             raise ExchangeTerminalReject(reason)
@@ -300,12 +315,20 @@ class BinanceUsdmAdapter(ExchangeAdapter):
     def stream_market_data(self) -> AsyncIterator[MarketSnapshot]:
         async def events() -> AsyncIterator[MarketSnapshot]:
             url = self.market_stream_url(self._market_stream_symbol)
-            async with websockets.connect(url) as websocket:
-                async for raw_message in websocket:
-                    payload = json.loads(raw_message)
-                    snapshot = self.parse_book_ticker(payload)
-                    self._latest_market[snapshot.symbol] = snapshot
-                    yield snapshot
+            self.market_stream_healthy = False
+            try:
+                async with websockets.connect(url) as websocket:
+                    self.market_stream_healthy = True
+                    async for raw_message in websocket:
+                        payload = json.loads(raw_message)
+                        snapshot = self.parse_book_ticker(payload)
+                        self._latest_market[snapshot.symbol] = snapshot
+                        yield snapshot
+            except Exception as exc:
+                self.last_stream_error = f"market_stream:{type(exc).__name__}:{exc}"
+                raise
+            finally:
+                self.market_stream_healthy = False
 
         return events()
 
@@ -388,11 +411,19 @@ class BinanceUsdmAdapter(ExchangeAdapter):
 
     def stream_user_events(self) -> AsyncIterator[object]:
         async def events() -> AsyncIterator[object]:
-            listen_key = await self.create_listen_key()
-            url = f"{self.private_ws_base_url}/ws/{listen_key}"
-            async with websockets.connect(url) as websocket:
-                async for raw_message in websocket:
-                    yield self.parse_user_event(json.loads(raw_message))
+            self.user_stream_healthy = False
+            try:
+                listen_key = await self.create_listen_key()
+                url = f"{self.private_ws_base_url}/ws/{listen_key}"
+                async with websockets.connect(url) as websocket:
+                    self.user_stream_healthy = True
+                    async for raw_message in websocket:
+                        yield self.parse_user_event(json.loads(raw_message))
+            except Exception as exc:
+                self.last_stream_error = f"user_stream:{type(exc).__name__}:{exc}"
+                raise
+            finally:
+                self.user_stream_healthy = False
 
         return events()
 
@@ -401,7 +432,8 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         listen_key = response.get("listenKey")
         if not listen_key:
             raise StreamHealthFailure("LISTEN_KEY_MISSING")
-        return str(listen_key)
+        self.latest_listen_key = str(listen_key)
+        return self.latest_listen_key
 
     async def renew_listen_key(self, listen_key: str) -> None:
         await self._api_key_request("PUT", LISTEN_KEY_PATH, params={"listenKey": listen_key})
@@ -454,11 +486,19 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         self,
         symbol: str,
         client_order_prefix: str | None = None,
+        *,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
     ) -> ReconciliationResult:
         _require_execution_prefix(client_order_prefix)
         open_orders_raw = await self._signed_request("GET", OPEN_ORDERS_PATH, {"symbol": symbol})
-        all_orders_raw = await self._signed_request("GET", ALL_ORDERS_PATH, {"symbol": symbol, "limit": 100})
-        trades_raw = await self._signed_request("GET", USER_TRADES_PATH, {"symbol": symbol, "limit": 100})
+        historical_params = _historical_reconciliation_params(
+            symbol,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
+        all_orders_raw = await self._signed_request("GET", ALL_ORDERS_PATH, historical_params)
+        trades_raw = await self._signed_request("GET", USER_TRADES_PATH, historical_params)
 
         orders_by_client_id: dict[str, ChildOrder] = {}
         order_id_to_client_id: dict[str, str] = {}
@@ -491,7 +531,7 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         return ReconciliationResult(orders=list(orders_by_client_id.values()), fills=fills)
 
     async def health_check_streams(self) -> bool:
-        return True
+        return self.market_stream_healthy and self.user_stream_healthy
 
     def _select_base_url(self) -> str:
         if self.settings.environment == Environment.MAINNET and self.settings.can_trade_mainnet:
@@ -589,11 +629,21 @@ def _stream_data(message: Mapping[str, Any]) -> Mapping[str, Any]:
     return data
 
 
-def _terminal_reject_reason(response: Any) -> str:
+def _json_payload_or_conservative_failure(
+    response: Any,
+    mutation_kind: MutationKind | None,
+) -> Any:
     try:
-        payload = response.json()
-    except Exception:
-        return f"BINANCE_HTTP_{response.status_code}"
+        return response.json()
+    except ValueError as exc:
+        if mutation_kind is MutationKind.CREATE:
+            raise UnknownCreateOutcome("UNKNOWN_CREATE_OUTCOME_INVALID_JSON") from exc
+        if mutation_kind is MutationKind.CANCEL:
+            raise PendingCancelOutcome("PENDING_CANCEL_OUTCOME_INVALID_JSON") from exc
+        raise RetryableReadFailure("SIGNED_READ_INVALID_JSON") from exc
+
+
+def _terminal_reject_reason(status_code: int, payload: Any) -> str:
     if isinstance(payload, Mapping):
         code = payload.get("code")
         message = payload.get("msg")
@@ -601,7 +651,30 @@ def _terminal_reject_reason(response: Any) -> str:
             return f"BINANCE_{code}:{message}"
         if message is not None:
             return str(message)
-    return f"BINANCE_HTTP_{response.status_code}"
+    return f"BINANCE_HTTP_{status_code}"
+
+
+def _is_specific_terminal_5xx_reject(reason: str) -> bool:
+    match = re.match(r"^BINANCE_(-?\d+):", reason)
+    if match is None:
+        return False
+    code = int(match.group(1))
+    ambiguous_server_codes = {-1000, -1001, -1006, -1007}
+    return code not in ambiguous_server_codes
+
+
+def _historical_reconciliation_params(
+    symbol: str,
+    *,
+    start_time_ms: int | None,
+    end_time_ms: int | None,
+) -> dict[str, int | str]:
+    params: dict[str, int | str] = {"symbol": symbol, "limit": 1000}
+    if start_time_ms is not None:
+        params["startTime"] = start_time_ms
+    if end_time_ms is not None:
+        params["endTime"] = end_time_ms
+    return params
 
 
 def _is_order_not_found_reason(reason: str) -> bool:

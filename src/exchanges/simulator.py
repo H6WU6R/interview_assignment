@@ -19,6 +19,7 @@ from execution.models import (
     ReconciliationResult,
     Side,
     SymbolRules,
+    TimeInForce,
 )
 from execution.state_machine import transition_child
 
@@ -72,7 +73,7 @@ class DeterministicSimulator(ExchangeAdapter):
             min_quantity=Decimal("0.001"),
             min_notional=Decimal("5"),
             status="TRADING",
-            supported_time_in_force=frozenset({"GTC", "GTX"}),
+            supported_time_in_force=frozenset({"GTC", "GTX", "IOC"}),
         )
 
     def set_symbol_rules(self, rules: SymbolRules) -> None:
@@ -118,7 +119,7 @@ class DeterministicSimulator(ExchangeAdapter):
 
     async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
         snapshot = await self.get_best_bid_ask(order_request.symbol)
-        await self._validate_post_only(order_request, snapshot)
+        await self._validate_order_time_in_force(order_request, snapshot)
 
         if prefix := self._pop_matching_prefix(
             self._create_timeout_not_found_prefixes,
@@ -203,6 +204,10 @@ class DeterministicSimulator(ExchangeAdapter):
         target = self._open_status_for(order)
         if order.status != target:
             order.status = transition_child(order.status, target)
+        if order.side is Side.BUY:
+            self.position += fill_quantity
+        elif order.side is Side.SELL:
+            self.position -= fill_quantity
 
         self._trade_sequence += 1
         fill = Fill(
@@ -225,6 +230,13 @@ class DeterministicSimulator(ExchangeAdapter):
         )
         return fill
 
+    def inject_reconciliation_fill(self, fill: Fill) -> Fill:
+        if fill.last_filled_quantity <= Decimal("0"):
+            raise ValueError("fill quantity must be positive")
+        self._order_by_client_order_id(fill.client_order_id)
+        self._fills.append(fill)
+        return fill
+
     def stream_user_events(self) -> AsyncIterator[object]:
         async def events() -> AsyncIterator[object]:
             while True:
@@ -236,6 +248,9 @@ class DeterministicSimulator(ExchangeAdapter):
         self,
         symbol: str,
         client_order_prefix: str | None = None,
+        *,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
     ) -> ReconciliationResult:
         self._reject_broad_client_order_prefix(client_order_prefix)
 
@@ -250,6 +265,11 @@ class DeterministicSimulator(ExchangeAdapter):
             for fill in self._fills
             if self._client_order_id_matches(fill.client_order_id, client_order_prefix)
             and self._order_by_client_order_id(fill.client_order_id).symbol == symbol
+            and self._fill_in_time_window(
+                fill,
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+            )
         ]
         warnings = []
         if (
@@ -283,18 +303,29 @@ class DeterministicSimulator(ExchangeAdapter):
     def set_stream_health(self, *, user_stream_healthy: bool) -> None:
         self._user_stream_healthy = user_stream_healthy
 
-    async def _validate_post_only(
+    async def _validate_order_time_in_force(
         self,
         order_request: OrderRequest,
         snapshot: MarketSnapshot,
     ) -> None:
+        rules = await self.get_symbol_rules(order_request.symbol)
+        if order_request.post_only:
+            if "GTX" not in rules.supported_time_in_force:
+                raise SimulatorOrderRejected(
+                    f"{order_request.symbol} does not support GTX/post-only time in force"
+                )
+            requested_time_in_force = TimeInForce.GTX.value
+        elif order_request.time_in_force is not None:
+            requested_time_in_force = order_request.time_in_force.value
+        else:
+            requested_time_in_force = TimeInForce.GTC.value
+
+        if requested_time_in_force not in rules.supported_time_in_force:
+            raise SimulatorOrderRejected(
+                f"{order_request.symbol} does not support {requested_time_in_force} time in force"
+            )
         if not order_request.post_only:
             return
-        rules = await self.get_symbol_rules(order_request.symbol)
-        if "GTX" not in rules.supported_time_in_force:
-            raise SimulatorOrderRejected(
-                f"{order_request.symbol} does not support GTX/post-only time in force"
-            )
         if order_request.side == Side.BUY and order_request.price >= snapshot.ask:
             raise SimulatorOrderRejected("post-only order would cross the current ask")
         if order_request.side == Side.SELL and order_request.price <= snapshot.bid:
@@ -355,11 +386,27 @@ class DeterministicSimulator(ExchangeAdapter):
             return True
         return client_order_id.startswith(client_order_prefix)
 
+    def _fill_in_time_window(
+        self,
+        fill: Fill,
+        *,
+        start_time_ms: int | None,
+        end_time_ms: int | None,
+    ) -> bool:
+        event_time_ms = fill.event_time_ms
+        if event_time_ms is None:
+            return True
+        if start_time_ms is not None and event_time_ms < start_time_ms:
+            return False
+        if end_time_ms is not None and event_time_ms > end_time_ms:
+            return False
+        return True
+
     def _clock_time_ms(self) -> int:
         return int(self.clock.utc_now().timestamp() * 1000)
 
     def _reject_broad_client_order_prefix(self, client_order_prefix: str | None) -> None:
-        if client_order_prefix is not None and not EXECUTION_CLIENT_ORDER_PREFIX_RE.fullmatch(
+        if client_order_prefix is None or not EXECUTION_CLIENT_ORDER_PREFIX_RE.fullmatch(
             client_order_prefix
         ):
             raise ValueError(

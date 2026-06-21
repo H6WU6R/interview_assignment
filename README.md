@@ -92,10 +92,11 @@ curl -s -X POST http://127.0.0.1:8000/executions \
 Then progress and inspect the execution:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/executions/<execution_id>/run-once
-curl -s http://127.0.0.1:8000/executions/<execution_id>
-curl -s -X POST http://127.0.0.1:8000/executions/<execution_id>/reconcile
-curl -s -X POST http://127.0.0.1:8000/executions/<execution_id>/cancel
+EXECUTION_ID=exec_replace_me
+curl -s -X POST "http://127.0.0.1:8000/executions/$EXECUTION_ID/run-once"
+curl -s "http://127.0.0.1:8000/executions/$EXECUTION_ID"
+curl -s -X POST "http://127.0.0.1:8000/executions/$EXECUTION_ID/reconcile"
+curl -s -X POST "http://127.0.0.1:8000/executions/$EXECUTION_ID/cancel"
 ```
 
 The response includes status, final reason, required quantity, exposure buckets, child orders, original request, and summary metrics when terminal.

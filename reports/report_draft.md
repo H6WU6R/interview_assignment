@@ -17,7 +17,7 @@ The engine is the correctness boundary. Algorithms do not mutate execution state
 
 ## Lifecycle
 
-An execution starts in `CREATED`, validates the current position and requested target, then moves to `RUNNING` if a trade is required. Each `run_once` call reconciles known exchange state, checks stream health, evaluates active reserved exposure, and only then computes new child demand. Cancels move the execution to `CANCELLING`, attempt to cancel active children, and rely on reconciliation before terminal state.
+An execution starts in `CREATED`, validates the current position and requested target, then moves to `RUNNING` if a trade is required. A normal `run_once` call checks stream health, evaluates active reserved exposure, and computes new child demand only after safety checks. UNKNOWN create outcomes block progress until explicit reconciliation resolves the original child. Cancels move the execution to `CANCELLING`, attempt to cancel active children, and use reconciliation to keep fills and reserved exposure accurate.
 
 State changes are guarded by `execution/state_machine.py`. Engine helpers perform transitions instead of assigning arbitrary statuses.
 

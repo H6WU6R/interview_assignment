@@ -161,6 +161,12 @@ class ExecutionRecord:
         return self.exposure_tracker.exposure
 
 
+class UnknownExecution(LookupError):
+    def __init__(self, execution_id: str) -> None:
+        super().__init__(f"unknown execution: {execution_id}")
+        self.execution_id = execution_id
+
+
 class ExecutionEngine:
     def __init__(self, adapter: ExchangeAdapter, clock: Clock | None = None) -> None:
         self._adapter = adapter
@@ -203,8 +209,7 @@ class ExecutionEngine:
         return await actor.apply(start)
 
     async def get_execution(self, execution_id: str) -> ExecutionRecord:
-        record = self._records[execution_id]
-        actor = self._actors[execution_id]
+        record, actor = self._lookup_execution(execution_id)
 
         async def read() -> ExecutionRecord:
             return self._snapshot(record)
@@ -212,8 +217,7 @@ class ExecutionEngine:
         return await actor.apply(read)
 
     async def cancel_execution(self, execution_id: str) -> ExecutionRecord:
-        record = self._records[execution_id]
-        actor = self._actors[execution_id]
+        record, actor = self._lookup_execution(execution_id)
 
         async def cancel() -> ExecutionRecord:
             if record.status.is_terminal or record.status is ExecutionStatus.CANCELLING:
@@ -228,8 +232,7 @@ class ExecutionEngine:
         return await actor.apply(cancel)
 
     async def run_once(self, execution_id: str) -> ExecutionRecord:
-        record = self._records[execution_id]
-        actor = self._actors[execution_id]
+        record, actor = self._lookup_execution(execution_id)
 
         async def run() -> ExecutionRecord:
             if record.status.is_terminal:
@@ -279,8 +282,7 @@ class ExecutionEngine:
         return await actor.apply(run)
 
     async def reconcile_execution(self, execution_id: str) -> ExecutionRecord:
-        record = self._records[execution_id]
-        actor = self._actors[execution_id]
+        record, actor = self._lookup_execution(execution_id)
 
         async def reconcile() -> ExecutionRecord:
             await self._reconcile_locked(record)
@@ -290,6 +292,13 @@ class ExecutionEngine:
             return self._snapshot(record)
 
         return await actor.apply(reconcile)
+
+    def _lookup_execution(self, execution_id: str) -> tuple[ExecutionRecord, ExecutionEventActor]:
+        record = self._records.get(execution_id)
+        actor = self._actors.get(execution_id)
+        if record is None or actor is None:
+            raise UnknownExecution(execution_id)
+        return record, actor
 
     async def _submit_child_locked(
         self,

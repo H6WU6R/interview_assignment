@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal, InvalidOperation
+from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -115,6 +117,26 @@ class ChildOrderResponse(BaseModel):
     terminal_reason: str | None
 
 
+class ExecutionParametersResponse(BaseModel):
+    reprice_threshold_bps: str
+    minimum_reprice_interval_ms: int
+    number_of_slices: int
+    child_order_timeout_seconds: int
+    repricing_mode: str
+
+
+class ExecutionRequestResponse(BaseModel):
+    environment: str
+    symbol: str
+    algorithm: str
+    target_position: str
+    target_price_lower: str
+    target_price_upper: str
+    target_duration_seconds: int
+    deadline_policy: str
+    parameters: ExecutionParametersResponse
+
+
 class ExecutionResponse(BaseModel):
     execution_id: str
     status: str
@@ -129,10 +151,17 @@ class ExecutionResponse(BaseModel):
     unknown_order_quantity: str
     reserved_exposure: str
     child_orders: list[ChildOrderResponse]
+    request: ExecutionRequestResponse
+    summary_final_status: str | None
+    summary_final_reason: str | None
+    summary_metrics: dict[str, Any] | None
+    started_monotonic: str | None
+    last_reprice_monotonic: str | None
 
 
 def execution_response(record: ExecutionRecord) -> ExecutionResponse:
     exposure = record.exposure
+    summary = record.summary
     return ExecutionResponse(
         execution_id=record.execution_id,
         status=record.status.value,
@@ -160,4 +189,56 @@ def execution_response(record: ExecutionRecord) -> ExecutionResponse:
             )
             for child in record.child_orders
         ],
+        request=request_response(record),
+        summary_final_status=summary.final_status.value if summary is not None else None,
+        summary_final_reason=summary.final_reason if summary is not None else None,
+        summary_metrics=json_safe(summary.metrics) if summary is not None else None,
+        started_monotonic=started_monotonic(record),
+        last_reprice_monotonic=(
+            decimal_to_string(record.last_reprice_monotonic)
+            if record.last_reprice_monotonic is not None
+            else None
+        ),
     )
+
+
+def request_response(record: ExecutionRecord) -> ExecutionRequestResponse:
+    request = record.request
+    parameters = request.parameters
+    return ExecutionRequestResponse(
+        environment=request.environment.value,
+        symbol=request.symbol,
+        algorithm=request.algorithm.value,
+        target_position=decimal_to_string(request.target_position),
+        target_price_lower=decimal_to_string(request.target_price_lower),
+        target_price_upper=decimal_to_string(request.target_price_upper),
+        target_duration_seconds=request.target_duration_seconds,
+        deadline_policy=request.deadline_policy.value,
+        parameters=ExecutionParametersResponse(
+            reprice_threshold_bps=decimal_to_string(parameters.reprice_threshold_bps),
+            minimum_reprice_interval_ms=parameters.minimum_reprice_interval_ms,
+            number_of_slices=parameters.number_of_slices,
+            child_order_timeout_seconds=parameters.child_order_timeout_seconds,
+            repricing_mode=parameters.repricing_mode.value,
+        ),
+    )
+
+
+def started_monotonic(record: ExecutionRecord) -> str | None:
+    if record.exposure_tracker is None and not record.child_orders:
+        return None
+    return decimal_to_string(record.started_monotonic)
+
+
+def json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return decimal_to_string(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    return value

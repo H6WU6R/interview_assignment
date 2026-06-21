@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from api.schemas import ExecutionCreateRequest, ExecutionResponse, execution_response
 from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
-from execution.engine import ExecutionRecord
+from execution.engine import ExecutionRecord, UnknownExecution
 from execution.service import ExecutionService
 
 
@@ -52,5 +52,5 @@ def create_app(simulator_position: str = "0") -> FastAPI:
 async def _get_or_404(operation, execution_id: str) -> ExecutionRecord:
     try:
         return await operation(execution_id)
-    except KeyError as exc:
+    except UnknownExecution as exc:
         raise HTTPException(status_code=404, detail="execution not found") from exc

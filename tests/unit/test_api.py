@@ -60,6 +60,34 @@ async def test_create_execution_no_action_completes() -> None:
     assert body["required_quantity"] == "0"
     assert body["initial_position"] == "0.010"
     assert body["side"] == "NO_ACTION"
+    assert body["request"] == {
+        "environment": "simulation",
+        "symbol": SYMBOL,
+        "algorithm": "CHASE",
+        "target_position": "0.010",
+        "target_price_lower": "94000",
+        "target_price_upper": "97000",
+        "target_duration_seconds": 300,
+        "deadline_policy": "AGGRESSIVE_WITHIN_RANGE",
+        "parameters": {
+            "reprice_threshold_bps": "2.0",
+            "minimum_reprice_interval_ms": 500,
+            "number_of_slices": 10,
+            "child_order_timeout_seconds": 20,
+            "repricing_mode": "ADVERSE_ONLY",
+        },
+    }
+    assert body["summary_final_status"] == "COMPLETED"
+    assert body["summary_final_reason"] == "NO_ACTION_TARGET_ALREADY_REACHED"
+    assert body["summary_metrics"] == {
+        "initial_position": "0.010",
+        "target_position": "0.010",
+        "required_quantity": "0",
+        "side": "NO_ACTION",
+        "child_order_count": 0,
+    }
+    assert body["started_monotonic"] is None
+    assert body["last_reprice_monotonic"] is None
 
 
 @pytest.mark.asyncio
@@ -153,6 +181,20 @@ async def test_unknown_execution_id_returns_404(method: str, path: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_internal_key_error_is_not_converted_to_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = create_app()
+
+    async def raise_key_error(execution_id: str) -> None:
+        raise KeyError("internal state bug")
+
+    monkeypatch.setattr(app.state.service, "get_execution", raise_key_error)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        with pytest.raises(KeyError, match="internal state bug"):
+            await client.get("/executions/anything")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
     [
@@ -222,3 +264,12 @@ async def test_response_child_and_exposure_decimal_fields_are_strings_after_run_
     child = body["child_orders"][0]
     for field in ["submitted_quantity", "filled_quantity", "remaining_quantity", "price"]:
         assert isinstance(child[field], str)
+    assert body["request"]["target_position"] == "0.010"
+    assert body["request"]["target_price_lower"] == "94000"
+    assert body["request"]["target_price_upper"] == "97000"
+    assert body["request"]["parameters"]["reprice_threshold_bps"] == "2.0"
+    assert body["summary_final_status"] is None
+    assert body["summary_final_reason"] is None
+    assert body["summary_metrics"] is None
+    assert body["started_monotonic"] == "0.0"
+    assert body["last_reprice_monotonic"] is None

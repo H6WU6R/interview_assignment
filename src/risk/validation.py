@@ -27,6 +27,8 @@ def validate_price_bounds(side: Side, price: Decimal, lower: Decimal, upper: Dec
 
 
 def _is_multiple(value: Decimal, step: Decimal) -> bool:
+    if step <= Decimal("0"):
+        raise ValidationError(f"step must be positive: {step}")
     return value % step == Decimal("0")
 
 
@@ -41,6 +43,10 @@ def validate_order_shape(
 ) -> None:
     if rules.status != "TRADING":
         raise ValidationError(f"symbol {rules.symbol} is not trading: status={rules.status}")
+    if rules.quantity_step <= Decimal("0"):
+        raise ValidationError(f"quantity step must be positive: {rules.quantity_step}")
+    if rules.tick_size <= Decimal("0"):
+        raise ValidationError(f"tick size must be positive: {rules.tick_size}")
     if not _is_multiple(quantity, rules.quantity_step):
         raise ValidationError(f"quantity step violation: {quantity} not multiple of {rules.quantity_step}")
     if not _is_multiple(price, rules.tick_size):
@@ -50,6 +56,21 @@ def validate_order_shape(
     if post_only and side is Side.SELL and price <= best_bid:
         raise ValidationError(f"post-only sell would cross bid: price={price} bid={best_bid}")
     validate_quantity(quantity, price, rules)
+
+
+def validate_child_order_safety(
+    quantity: Decimal,
+    price: Decimal,
+    side: Side,
+    rules: SymbolRules,
+    best_bid: Decimal,
+    best_ask: Decimal,
+    post_only: bool,
+    lower: Decimal,
+    upper: Decimal,
+) -> None:
+    validate_price_bounds(side, price, lower, upper)
+    validate_order_shape(quantity, price, side, rules, best_bid, best_ask, post_only)
 
 
 def check_exposure_invariant(

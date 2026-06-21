@@ -39,6 +39,9 @@ def should_reprice(
     if side is Side.NO_ACTION or elapsed_since_last_reprice_ms < min_interval_ms:
         return ChaseDecision.WAIT
 
+    if active_order_price <= Decimal("0"):
+        return ChaseDecision.WAIT
+
     if reprice_difference_bps(desired_price, active_order_price) < threshold_bps:
         return ChaseDecision.WAIT
 

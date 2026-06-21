@@ -169,3 +169,33 @@ def test_non_positive_active_order_price_waits_without_division_crash() -> None:
         )
         is ChaseDecision.WAIT
     )
+
+
+def test_negative_active_order_price_waits_with_zero_threshold_in_adverse_only() -> None:
+    assert (
+        should_reprice(
+            Side.BUY,
+            active_order_price=Decimal("-100"),
+            desired_price=Decimal("100"),
+            threshold_bps=Decimal("0"),
+            min_interval_ms=500,
+            elapsed_since_last_reprice_ms=500,
+            repricing_mode=RepricingMode.ADVERSE_ONLY,
+        )
+        is ChaseDecision.WAIT
+    )
+
+
+def test_negative_active_order_price_waits_with_zero_threshold_in_two_sided() -> None:
+    assert (
+        should_reprice(
+            Side.BUY,
+            active_order_price=Decimal("-100"),
+            desired_price=Decimal("100"),
+            threshold_bps=Decimal("0"),
+            min_interval_ms=500,
+            elapsed_since_last_reprice_ms=500,
+            repricing_mode=RepricingMode.TWO_SIDED,
+        )
+        is ChaseDecision.WAIT
+    )

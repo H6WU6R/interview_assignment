@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from typing import Any
 
 from algorithms.chase import ChaseDecision, chase_desired_price, should_reprice
@@ -68,6 +68,11 @@ STREAM_HEALTH_DEGRADED_RECONCILED = "STREAM_HEALTH_DEGRADED_RECONCILED"
 MARKET_DATA_STALE_RECONCILED = "MARKET_DATA_STALE_RECONCILED"
 TARGET_QUANTITY_FILLED = "TARGET_QUANTITY_FILLED"
 UNTRADEABLE_TARGET_DUST = "UNTRADEABLE_TARGET_DUST"
+RETRYABLE_ORDER_REJECT_BACKOFF = "RETRYABLE_ORDER_REJECT_BACKOFF"
+RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE = "RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE"
+RETRYABLE_ORDER_REJECT_LIMIT_REACHED = "RETRYABLE_ORDER_REJECT_LIMIT_REACHED"
+
+RETRYABLE_ORDER_REJECT_BACKOFF_SECONDS = Decimal("1")
 
 
 @dataclass
@@ -193,6 +198,12 @@ class ExecutionRecord:
     fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
     child_submitted_monotonic: dict[str, Decimal] = field(default_factory=dict)
     aggressive_child_client_order_ids: set[str] = field(default_factory=set)
+    consecutive_retryable_order_rejects: int = 0
+    last_retryable_order_reject_monotonic: Decimal | None = None
+    last_retryable_order_reject_price: Decimal | None = None
+    last_retryable_order_reject_bid: Decimal | None = None
+    last_retryable_order_reject_ask: Decimal | None = None
+    last_retryable_order_reject_reason: str | None = None
 
     @property
     def exposure(self) -> Exposure:
@@ -215,12 +226,12 @@ class ExecutionEngine:
         self._actors: dict[str, ExecutionEventActor] = {}
 
     async def create_execution(self, request: ExecutionRequest) -> ExecutionRecord:
-        started_monotonic = self._now_decimal()
         position = await self._adapter.get_position(request.symbol)
         side, raw_required_quantity = required_trade(
             target_position=request.target_position,
             current_position=position.position,
         )
+        rules: SymbolRules | None = None
         if raw_required_quantity == Decimal("0"):
             required_quantity = Decimal("0")
             target_dust_quantity = Decimal("0")
@@ -238,7 +249,6 @@ class ExecutionEngine:
             initial_position=position,
             raw_required_quantity=raw_required_quantity,
             target_dust_quantity=target_dust_quantity,
-            started_monotonic=started_monotonic,
         )
         actor = ExecutionEventActor(execution_id)
         self._records[execution_id] = record
@@ -246,18 +256,25 @@ class ExecutionEngine:
 
         async def start() -> ExecutionRecord:
             record.status = transition_execution(record.status, ExecutionStatus.VALIDATING)
-            if side is Side.NO_ACTION or required_quantity == Decimal("0"):
+            if (
+                side is Side.NO_ACTION
+                or required_quantity == Decimal("0")
+                or self._target_cannot_meet_min_quantity_or_buy_min_notional(record, rules)
+            ):
                 record.status = transition_execution(record.status, ExecutionStatus.COMPLETED)
                 record.final_reason = (
                     NO_ACTION_TARGET_ALREADY_REACHED
                     if raw_required_quantity == Decimal("0")
                     else UNTRADEABLE_TARGET_DUST
                 )
-                record.completed_monotonic = self._now_decimal()
+                completed_monotonic = self._now_decimal()
+                record.started_monotonic = completed_monotonic
+                record.completed_monotonic = completed_monotonic
                 record.summary = self._summary(record)
                 return self._snapshot(record)
 
             record.exposure_tracker = ExposureTracker(required_quantity)
+            record.started_monotonic = self._now_decimal()
             record.status = transition_execution(record.status, ExecutionStatus.RUNNING)
             return self._snapshot(record)
 
@@ -368,10 +385,17 @@ class ExecutionEngine:
             if demand is None:
                 return self._snapshot(record)
 
-            quantity, price, post_only = demand
+            quantity, price, post_only, market_bid, market_ask = demand
             if quantity > Decimal("0"):
                 try:
-                    await self._submit_child_locked(record, quantity, price, post_only=post_only)
+                    await self._submit_child_locked(
+                        record,
+                        quantity,
+                        price,
+                        post_only=post_only,
+                        market_bid=market_bid,
+                        market_ask=market_ask,
+                    )
                 except NoFreshMarketData:
                     record.final_reason = MARKET_DATA_STALE_RECONCILED
                     await self._reconcile_locked(record)
@@ -414,6 +438,30 @@ class ExecutionEngine:
             raise UnknownExecution(execution_id)
         return record, actor
 
+    def _target_cannot_meet_min_quantity_or_buy_min_notional(
+        self,
+        record: ExecutionRecord,
+        rules: SymbolRules | None,
+    ) -> bool:
+        if rules is None:
+            return False
+        if record.required_quantity < rules.min_quantity:
+            return True
+
+        if record.side is not Side.BUY:
+            return False
+
+        if rules.tick_size <= Decimal("0"):
+            return False
+
+        highest_legal_buy_price = round_price(
+            record.request.target_price_upper,
+            rules.tick_size,
+            Side.BUY,
+            passive=True,
+        )
+        return record.required_quantity * highest_legal_buy_price < rules.min_notional
+
     async def _submit_child_locked(
         self,
         record: ExecutionRecord,
@@ -421,6 +469,8 @@ class ExecutionEngine:
         price: Decimal,
         *,
         post_only: bool,
+        market_bid: Decimal,
+        market_ask: Decimal,
     ) -> ChildOrder:
         tracker = self._require_exposure_tracker(record)
         tracker.check_can_submit(quantity)
@@ -472,6 +522,17 @@ class ExecutionEngine:
             self._increment_metric(record, "rejections")
             if isinstance(exc, TerminalOrderRejected):
                 self._fail_locked(record, f"{TERMINAL_ORDER_REJECTED}: {exc}")
+            elif post_only:
+                self._record_retryable_order_reject_locked(
+                    record,
+                    price,
+                    bid=market_bid,
+                    ask=market_ask,
+                    reason=str(exc),
+                )
+                self._terminalize_retryable_order_reject_limit_locked(record)
+            else:
+                self._fail_locked(record, f"{TERMINAL_ORDER_REJECTED}: {exc}")
             self._assert_exposure_invariant_locked(record)
             return child
         except Exception:
@@ -497,6 +558,8 @@ class ExecutionEngine:
             tracker.reserve_live_open(child.remaining_quantity)
         elif child.status is ChildOrderStatus.UNKNOWN:
             tracker.reserve_unknown_create(child.remaining_quantity)
+        if child.status not in {ChildOrderStatus.UNKNOWN, ChildOrderStatus.REJECTED}:
+            self._reset_retryable_order_reject_gate_locked(record)
         self._record_max_reserved_exposure(record)
         self._assert_exposure_invariant_locked(record)
         return child
@@ -641,6 +704,8 @@ class ExecutionEngine:
             self._set_child_status(child, exchange_order.status)
             if was_unknown and child.status is not ChildOrderStatus.UNKNOWN:
                 self._increment_metric(record, "unknown_orders_reconciled")
+                if self._reconciled_unknown_child_resets_retryable_reject_gate(child):
+                    self._reset_retryable_order_reject_gate_locked(record)
 
         await self._reconcile_unknown_children_exact_locked(record)
 
@@ -692,6 +757,8 @@ class ExecutionEngine:
                     fill_price=child.price,
                 )
             self._increment_metric(record, "unknown_orders_reconciled")
+            if self._reconciled_unknown_child_resets_retryable_reject_gate(child):
+                self._reset_retryable_order_reject_gate_locked(record)
 
     async def _maybe_reprice_chase_locked(self, record: ExecutionRecord) -> None:
         active_child = self._first_active_child(record)
@@ -718,7 +785,7 @@ class ExecutionEngine:
     async def _build_child_demand_locked(
         self,
         record: ExecutionRecord,
-    ) -> tuple[Decimal, Decimal, bool] | None:
+    ) -> tuple[Decimal, Decimal, bool, Decimal, Decimal] | None:
         tracker = self._require_exposure_tracker(record)
         market = await self._adapter.get_best_bid_ask(record.request.symbol)
         if record.arrival_bid is None:
@@ -792,9 +859,67 @@ class ExecutionEngine:
             self._expire_for_validation_locked(record, exc)
             return None
 
+        if post_only and self._retryable_order_reject_gate_blocks(record, price, market.bid, market.ask):
+            return None
+
         if record.final_reason == WAITING_FOR_PRICE_RANGE:
             record.final_reason = None
-        return quantity, price, post_only
+        if record.final_reason in {
+            RETRYABLE_ORDER_REJECT_BACKOFF,
+            RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE,
+        }:
+            record.final_reason = None
+        return quantity, price, post_only, market.bid, market.ask
+
+    def _retryable_order_reject_gate_blocks(
+        self,
+        record: ExecutionRecord,
+        passive_price: Decimal,
+        bid: Decimal,
+        ask: Decimal,
+    ) -> bool:
+        if record.consecutive_retryable_order_rejects <= 0:
+            return False
+
+        now = self._now_decimal()
+        last_reject_monotonic = record.last_retryable_order_reject_monotonic
+        if (
+            last_reject_monotonic is not None
+            and now - last_reject_monotonic < RETRYABLE_ORDER_REJECT_BACKOFF_SECONDS
+        ):
+            record.final_reason = RETRYABLE_ORDER_REJECT_BACKOFF
+            self._increment_metric(record, "retryable_order_reject_backoff_blocks")
+            return True
+
+        if (
+            passive_price == record.last_retryable_order_reject_price
+            and self._retryable_reject_crossing_quote(record, bid=bid, ask=ask)
+            == self._last_retryable_reject_crossing_quote(record)
+        ):
+            record.final_reason = RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE
+            self._increment_metric(record, "retryable_order_reject_same_price_blocks")
+            return True
+
+        if record.final_reason in {
+            RETRYABLE_ORDER_REJECT_BACKOFF,
+            RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE,
+        }:
+            record.final_reason = None
+        return False
+
+    def _retryable_reject_crossing_quote(
+        self,
+        record: ExecutionRecord,
+        *,
+        bid: Decimal,
+        ask: Decimal,
+    ) -> Decimal:
+        return ask if record.side is Side.BUY else bid
+
+    def _last_retryable_reject_crossing_quote(self, record: ExecutionRecord) -> Decimal | None:
+        if record.side is Side.BUY:
+            return record.last_retryable_order_reject_ask
+        return record.last_retryable_order_reject_bid
 
     def _is_price_outside_range_error(self, exc: ValidationError) -> bool:
         reason = str(exc)
@@ -928,6 +1053,25 @@ class ExecutionEngine:
         record.completed_monotonic = self._now_decimal()
         record.summary = self._summary(record)
 
+    def _terminalize_retryable_order_reject_limit_locked(self, record: ExecutionRecord) -> None:
+        if record.status is not ExecutionStatus.RUNNING:
+            return
+        retry_limit = record.request.parameters.max_post_only_reject_retries
+        if record.consecutive_retryable_order_rejects < retry_limit:
+            return
+        if record.exposure.reserved_exposure > Decimal("0"):
+            return
+
+        target_status = (
+            ExecutionStatus.PARTIALLY_COMPLETED
+            if record.exposure.confirmed_filled_quantity > Decimal("0")
+            else ExecutionStatus.EXPIRED
+        )
+        record.status = transition_execution(record.status, target_status)
+        record.final_reason = RETRYABLE_ORDER_REJECT_LIMIT_REACHED
+        record.completed_monotonic = self._now_decimal()
+        record.summary = self._summary(record)
+
     def _terminalize_manual_cancel_if_clear_locked(self, record: ExecutionRecord) -> None:
         if record.status is not ExecutionStatus.CANCELLING:
             return
@@ -959,6 +1103,48 @@ class ExecutionEngine:
 
     def _increment_metric(self, record: ExecutionRecord, name: str) -> None:
         record.metric_counts[name] = record.metric_counts.get(name, 0) + 1
+
+    def _record_retryable_order_reject_locked(
+        self,
+        record: ExecutionRecord,
+        price: Decimal,
+        *,
+        bid: Decimal,
+        ask: Decimal,
+        reason: str,
+    ) -> None:
+        record.consecutive_retryable_order_rejects += 1
+        record.last_retryable_order_reject_monotonic = self._now_decimal()
+        record.last_retryable_order_reject_price = price
+        record.last_retryable_order_reject_bid = bid
+        record.last_retryable_order_reject_ask = ask
+        record.last_retryable_order_reject_reason = reason
+        self._increment_metric(record, "retryable_order_rejections")
+
+    def _reset_retryable_order_reject_gate_locked(self, record: ExecutionRecord) -> None:
+        record.consecutive_retryable_order_rejects = 0
+        record.last_retryable_order_reject_monotonic = None
+        record.last_retryable_order_reject_price = None
+        record.last_retryable_order_reject_bid = None
+        record.last_retryable_order_reject_ask = None
+        record.last_retryable_order_reject_reason = None
+        if record.final_reason in {
+            RETRYABLE_ORDER_REJECT_BACKOFF,
+            RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE,
+        }:
+            record.final_reason = None
+
+    def _reconciled_unknown_child_resets_retryable_reject_gate(self, child: ChildOrder) -> bool:
+        if child.status in {
+            ChildOrderStatus.OPEN,
+            ChildOrderStatus.PARTIALLY_FILLED,
+            ChildOrderStatus.FILLED,
+        }:
+            return True
+        return (
+            child.status is ChildOrderStatus.CANCELLED
+            and child.confirmed_filled_quantity > Decimal("0")
+        )
 
     def _record_max_reserved_exposure(self, record: ExecutionRecord) -> None:
         if record.exposure.reserved_exposure > record.max_reserved_exposure:
@@ -1127,9 +1313,128 @@ class ExecutionEngine:
                 "orders_submitted": record.metric_counts.get("orders_submitted", 0),
                 "cancels_requested": record.metric_counts.get("cancels_requested", 0),
                 "rejections": record.metric_counts.get("rejections", 0),
+                "retryable_order_rejections": record.metric_counts.get("retryable_order_rejections", 0),
+                "retryable_order_reject_streak": record.consecutive_retryable_order_rejects,
+                "retryable_order_reject_limit": record.request.parameters.max_post_only_reject_retries,
+                "retryable_order_reject_backoff_seconds": RETRYABLE_ORDER_REJECT_BACKOFF_SECONDS,
+                "retryable_order_reject_backoff_blocks": record.metric_counts.get(
+                    "retryable_order_reject_backoff_blocks",
+                    0,
+                ),
+                "retryable_order_reject_same_price_blocks": record.metric_counts.get(
+                    "retryable_order_reject_same_price_blocks",
+                    0,
+                ),
+                "twap_slice_ledger": self._twap_slice_ledger(record),
             }
         )
         return metrics
+
+    def _twap_slice_ledger(self, record: ExecutionRecord) -> list[dict[str, Any]]:
+        if (
+            record.request.algorithm is not Algorithm.TWAP
+            or record.side is Side.NO_ACTION
+            or record.required_quantity <= Decimal("0")
+        ):
+            return []
+
+        number_of_slices = record.request.parameters.number_of_slices
+        if number_of_slices <= 0:
+            return []
+
+        total_duration = Decimal(str(record.request.target_duration_seconds))
+        slice_duration = total_duration / Decimal(number_of_slices)
+        rows = [
+            self._empty_twap_slice_ledger_row(
+                record,
+                slice_index=slice_index,
+                slice_duration=slice_duration,
+                number_of_slices=number_of_slices,
+            )
+            for slice_index in range(1, number_of_slices + 1)
+        ]
+
+        for child in record.child_orders:
+            slice_index = self._twap_child_slice_index(
+                record,
+                child,
+                number_of_slices=number_of_slices,
+                slice_duration=slice_duration,
+            )
+            row = rows[slice_index - 1]
+            row["submitted_quantity"] += child.submitted_quantity
+            row["filled_quantity"] += child.confirmed_filled_quantity
+            if child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
+                row["open_quantity"] += child.remaining_quantity
+            if child.status is ChildOrderStatus.CANCELLED:
+                row["cancelled_quantity"] += child.remaining_quantity
+            row["child_order_ids"].append(child.child_order_id)
+            row["client_order_ids"].append(child.client_order_id)
+
+        cumulative_filled = Decimal("0")
+        for row in rows:
+            cumulative_filled += row["filled_quantity"]
+            row["unfilled_quantity"] = max(
+                row["planned_slice_quantity"] - row["filled_quantity"],
+                Decimal("0"),
+            )
+            row["schedule_deficit"] = max(
+                row["planned_cumulative_quantity"] - cumulative_filled,
+                Decimal("0"),
+            )
+        return rows
+
+    def _empty_twap_slice_ledger_row(
+        self,
+        record: ExecutionRecord,
+        *,
+        slice_index: int,
+        slice_duration: Decimal,
+        number_of_slices: int,
+    ) -> dict[str, Any]:
+        previous_planned_cumulative = (
+            record.required_quantity * Decimal(slice_index - 1) / Decimal(number_of_slices)
+        )
+        planned_cumulative = record.required_quantity * Decimal(slice_index) / Decimal(number_of_slices)
+        return {
+            "execution_id": record.execution_id,
+            "slice_index": slice_index,
+            "slice_start_seconds": slice_duration * Decimal(slice_index - 1),
+            "slice_end_seconds": slice_duration * Decimal(slice_index),
+            "planned_cumulative_quantity": planned_cumulative,
+            "planned_slice_quantity": planned_cumulative - previous_planned_cumulative,
+            "submitted_quantity": Decimal("0"),
+            "open_quantity": Decimal("0"),
+            "filled_quantity": Decimal("0"),
+            "cancelled_quantity": Decimal("0"),
+            "unfilled_quantity": Decimal("0"),
+            "schedule_deficit": Decimal("0"),
+            "child_order_ids": [],
+            "client_order_ids": [],
+        }
+
+    def _twap_child_slice_index(
+        self,
+        record: ExecutionRecord,
+        child: ChildOrder,
+        *,
+        number_of_slices: int,
+        slice_duration: Decimal,
+    ) -> int:
+        submitted_at = record.child_submitted_monotonic.get(child.client_order_id)
+        if submitted_at is None or slice_duration <= Decimal("0"):
+            return number_of_slices
+
+        elapsed = submitted_at - record.started_monotonic
+        if elapsed <= Decimal("0"):
+            return 1
+
+        slice_index = int((elapsed / slice_duration).to_integral_value(rounding=ROUND_CEILING))
+        if slice_index < 1:
+            return 1
+        if slice_index > number_of_slices:
+            return number_of_slices
+        return slice_index
 
     def _snapshot(self, record: ExecutionRecord) -> ExecutionRecord:
         return deepcopy(record)

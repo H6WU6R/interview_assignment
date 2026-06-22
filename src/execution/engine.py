@@ -206,6 +206,7 @@ class ExecutionRecord:
     fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
     trade_fill_vwap_inputs: dict[str, tuple[Decimal, Decimal]] = field(default_factory=dict)
     trade_fill_sort_keys: dict[str, tuple[int, int, str]] = field(default_factory=dict)
+    child_authoritative_fill_quantities: dict[str, Decimal] = field(default_factory=dict)
     anonymous_fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
     maker_filled_quantity: Decimal = Decimal("0")
     taker_filled_quantity: Decimal = Decimal("0")
@@ -1323,6 +1324,20 @@ class ExecutionEngine:
                 record.seen_fill_trade_ids.add(trade_id)
                 self._record_ignored_fill_trade_id_locked(record, trade_id)
             return
+
+        child_trade_quantity = record.child_authoritative_fill_quantities.get(
+            child.client_order_id,
+            Decimal("0"),
+        )
+        if child_trade_quantity + trade_delta > child.confirmed_filled_quantity:
+            if trade_id is not None:
+                record.seen_fill_trade_ids.add(trade_id)
+                self._record_ignored_fill_trade_id_locked(record, trade_id)
+            return
+
+        record.child_authoritative_fill_quantities[child.client_order_id] = (
+            child_trade_quantity + trade_delta
+        )
 
         if trade_id is not None:
             record.seen_fill_trade_ids.add(trade_id)

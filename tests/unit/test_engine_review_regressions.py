@@ -216,6 +216,55 @@ async def test_split_batch_out_of_order_actual_trade_repairs_vwap_without_exposu
     assert after_duplicate.metric_counts["duplicate_events_ignored"] == 1
 
 
+async def test_unique_lower_cumulative_trade_does_not_overcount_authoritative_metrics() -> None:
+    service, _simulator, _clock = await fresh_service()
+    execution = await service.create_execution(execution_request(target_position=Decimal("0.003")))
+    opened = await service.run_once(execution.execution_id)
+    child = opened.child_orders[0]
+
+    first_fill = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="trade-real",
+        cumulative_filled_quantity=Decimal("0.003"),
+        last_filled_quantity=Decimal("0.003"),
+        last_fill_price=Decimal("95000"),
+        event_time_ms=10,
+        transaction_time_ms=10,
+        is_maker=True,
+    )
+    after_first = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[first_fill]),
+    )
+
+    assert after_first.exposure.confirmed_filled_quantity == Decimal("0.003")
+    assert after_first.summary is not None
+    assert after_first.summary.metrics["execution_vwap"] == "95000"
+    assert after_first.summary.metrics["maker_filled_quantity"] == Decimal("0.003")
+
+    stale_lower_fill = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="trade-stale-lower",
+        cumulative_filled_quantity=Decimal("0.002"),
+        last_filled_quantity=Decimal("0.002"),
+        last_fill_price=Decimal("96000"),
+        event_time_ms=20,
+        transaction_time_ms=20,
+        is_maker=True,
+    )
+    after_stale = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[stale_lower_fill]),
+    )
+
+    assert after_stale.exposure.confirmed_filled_quantity == Decimal("0.003")
+    assert after_stale.child_orders[0].confirmed_filled_quantity == Decimal("0.003")
+    assert after_stale.summary is not None
+    assert after_stale.summary.metrics["execution_vwap"] == "95000"
+    assert after_stale.summary.metrics["maker_filled_quantity"] == Decimal("0.003")
+    assert after_stale.metric_counts["duplicate_events_ignored"] == 1
+
+
 async def test_snapshot_then_older_actual_trade_repairs_provisional_summary() -> None:
     service, _simulator, _clock = await fresh_service()
     execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))

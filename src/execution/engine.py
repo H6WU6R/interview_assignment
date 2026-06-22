@@ -1317,12 +1317,6 @@ class ExecutionEngine:
         if not authoritative_trade:
             return
 
-        if incoming_cumulative < previous_child_cumulative:
-            if trade_id is not None:
-                record.seen_fill_trade_ids.add(trade_id)
-                self._record_ignored_fill_trade_id_locked(record, trade_id)
-            return
-
         trade_delta = fill_quantity_delta if fill_quantity_delta is not None else child_delta
         if trade_delta <= Decimal("0"):
             if trade_id is not None:

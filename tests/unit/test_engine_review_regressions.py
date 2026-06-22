@@ -149,6 +149,124 @@ async def test_out_of_order_fills_compute_vwap_from_each_trade_delta() -> None:
     assert after.summary.metrics["execution_vwap"] == "95006.66666666666666666666667"
 
 
+async def test_split_batch_out_of_order_actual_trade_repairs_vwap_without_exposure_change() -> None:
+    service, _simulator, _clock = await fresh_service()
+    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    opened = await service.run_once(execution.execution_id)
+    child = opened.child_orders[0]
+
+    second_fill_first = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="split-trade-2",
+        cumulative_filled_quantity=Decimal("0.006"),
+        last_filled_quantity=Decimal("0.002"),
+        last_fill_price=Decimal("95010"),
+        event_time_ms=20,
+        transaction_time_ms=20,
+        is_maker=False,
+    )
+    after_second = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[second_fill_first]),
+    )
+
+    assert after_second.exposure.confirmed_filled_quantity == Decimal("0.006")
+    assert after_second.summary is not None
+    assert after_second.summary.metrics["execution_vwap"] == "95010"
+
+    first_fill_late = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="split-trade-1",
+        cumulative_filled_quantity=Decimal("0.004"),
+        last_filled_quantity=Decimal("0.004"),
+        last_fill_price=Decimal("95005"),
+        event_time_ms=10,
+        transaction_time_ms=10,
+        is_maker=True,
+    )
+    after_late_first = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[first_fill_late]),
+    )
+
+    assert after_late_first.exposure.confirmed_filled_quantity == Decimal("0.006")
+    assert after_late_first.child_orders[0].confirmed_filled_quantity == Decimal("0.006")
+    assert after_late_first.summary is not None
+    assert (
+        after_late_first.summary.metrics["execution_vwap"]
+        == "95006.66666666666666666666667"
+    )
+    assert after_late_first.summary.metrics["maker_filled_quantity"] == Decimal("0.004")
+    assert after_late_first.summary.metrics["taker_filled_quantity"] == Decimal("0.002")
+    assert after_late_first.metric_counts.get("duplicate_events_ignored", 0) == 0
+
+    after_duplicate = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[first_fill_late]),
+    )
+
+    assert after_duplicate.exposure.confirmed_filled_quantity == Decimal("0.006")
+    assert after_duplicate.summary is not None
+    assert (
+        after_duplicate.summary.metrics["execution_vwap"]
+        == "95006.66666666666666666666667"
+    )
+    assert after_duplicate.summary.metrics["maker_filled_quantity"] == Decimal("0.004")
+    assert after_duplicate.summary.metrics["taker_filled_quantity"] == Decimal("0.002")
+    assert after_duplicate.metric_counts["duplicate_events_ignored"] == 1
+
+
+async def test_snapshot_then_older_actual_trade_repairs_provisional_summary() -> None:
+    service, _simulator, _clock = await fresh_service()
+    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    opened = await service.run_once(execution.execution_id)
+    child = opened.child_orders[0]
+
+    snapshot_order = ChildOrder(
+        child_order_id=child.child_order_id,
+        client_order_id=child.client_order_id,
+        symbol=SYMBOL,
+        side=Side.BUY,
+        submitted_quantity=child.submitted_quantity,
+        price=child.price,
+        status=ChildOrderStatus.PARTIALLY_FILLED,
+        confirmed_filled_quantity=Decimal("0.006"),
+        exchange_order_id="snapshot-order-1",
+        raw_status="PARTIALLY_FILLED",
+    )
+    after_snapshot = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[snapshot_order], fills=[]),
+    )
+
+    assert after_snapshot.exposure.confirmed_filled_quantity == Decimal("0.006")
+    assert after_snapshot.summary is not None
+    assert after_snapshot.summary.metrics["execution_vwap"] == "95000"
+
+    older_actual = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="snapshot-repair-trade-1",
+        cumulative_filled_quantity=Decimal("0.004"),
+        last_filled_quantity=Decimal("0.004"),
+        last_fill_price=Decimal("94990"),
+        event_time_ms=10,
+        transaction_time_ms=10,
+        is_maker=True,
+    )
+    after_actual = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[older_actual]),
+    )
+
+    assert after_actual.exposure.confirmed_filled_quantity == Decimal("0.006")
+    assert after_actual.child_orders[0].confirmed_filled_quantity == Decimal("0.006")
+    assert after_actual.summary is not None
+    assert after_actual.summary.metrics["execution_vwap"] == "94990"
+    assert after_actual.summary.metrics["maker_filled_quantity"] == Decimal("0.004")
+    assert after_actual.summary.metrics["taker_filled_quantity"] == Decimal("0")
+    assert after_actual.metric_counts.get("duplicate_events_ignored", 0) == 0
+
+
 async def test_temporary_sell_min_notional_waits_until_price_becomes_valid() -> None:
     service, simulator, _clock = await fresh_service(
         bid=Decimal("4000"),

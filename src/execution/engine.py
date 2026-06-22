@@ -1310,9 +1310,39 @@ class ExecutionEngine:
             return
 
         previous_child_cumulative = child.confirmed_filled_quantity
-        child_delta = Decimal("0")
-        if incoming_cumulative > previous_child_cumulative:
-            child_delta = incoming_cumulative - previous_child_cumulative
+        child_delta = (
+            incoming_cumulative - previous_child_cumulative
+            if incoming_cumulative > previous_child_cumulative
+            else Decimal("0")
+        )
+        trade_delta = fill_quantity_delta if fill_quantity_delta is not None else child_delta
+
+        if authoritative_trade:
+            if trade_delta <= Decimal("0"):
+                if trade_id is not None:
+                    record.seen_fill_trade_ids.add(trade_id)
+                    self._record_ignored_fill_trade_id_locked(record, trade_id)
+                return
+
+            interval_start = incoming_cumulative - trade_delta
+            interval_end = incoming_cumulative
+            child_intervals = record.child_authoritative_fill_intervals.setdefault(
+                child.client_order_id,
+                [],
+            )
+            if (
+                interval_start < Decimal("0")
+                or interval_end <= interval_start
+                or self._fill_interval_overlaps(interval_start, interval_end, child_intervals)
+            ):
+                if trade_id is not None:
+                    record.seen_fill_trade_ids.add(trade_id)
+                    self._record_ignored_fill_trade_id_locked(record, trade_id)
+                return
+        else:
+            child_intervals = None
+
+        if child_delta > Decimal("0"):
             child.confirmed_filled_quantity = incoming_cumulative
             aggregate_cumulative = tracker.exposure.confirmed_filled_quantity + child_delta
             tracker.apply_fill(trade_id, aggregate_cumulative)
@@ -1320,30 +1350,7 @@ class ExecutionEngine:
         if not authoritative_trade:
             return
 
-        trade_delta = fill_quantity_delta if fill_quantity_delta is not None else child_delta
-        if trade_delta <= Decimal("0"):
-            if trade_id is not None:
-                record.seen_fill_trade_ids.add(trade_id)
-                self._record_ignored_fill_trade_id_locked(record, trade_id)
-            return
-
-        interval_start = incoming_cumulative - trade_delta
-        interval_end = incoming_cumulative
-        child_intervals = record.child_authoritative_fill_intervals.setdefault(
-            child.client_order_id,
-            [],
-        )
-        if (
-            interval_start < Decimal("0")
-            or interval_end <= interval_start
-            or interval_end > child.confirmed_filled_quantity
-            or self._fill_interval_overlaps(interval_start, interval_end, child_intervals)
-        ):
-            if trade_id is not None:
-                record.seen_fill_trade_ids.add(trade_id)
-                self._record_ignored_fill_trade_id_locked(record, trade_id)
-            return
-
+        assert child_intervals is not None
         child_intervals.append((interval_start, interval_end))
 
         if trade_id is not None:

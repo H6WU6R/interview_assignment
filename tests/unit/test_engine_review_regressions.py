@@ -289,6 +289,77 @@ async def test_overlapping_stale_unique_trade_does_not_poison_vwap_or_block_repa
     assert after_late_first.metric_counts["duplicate_events_ignored"] == 1
 
 
+async def test_overlapping_higher_cumulative_authoritative_fill_does_not_advance_exposure() -> None:
+    service, _simulator, _clock = await fresh_service()
+    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    opened = await service.run_once(execution.execution_id)
+    child = opened.child_orders[0]
+
+    accepted_fill = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="higher-overlap-real",
+        cumulative_filled_quantity=Decimal("0.004"),
+        last_filled_quantity=Decimal("0.004"),
+        last_fill_price=Decimal("95000"),
+        event_time_ms=10,
+        transaction_time_ms=10,
+        is_maker=True,
+    )
+    after_accepted = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[accepted_fill]),
+    )
+
+    assert after_accepted.status is ExecutionStatus.RUNNING
+    assert after_accepted.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert after_accepted.child_orders[0].confirmed_filled_quantity == Decimal("0.004")
+    assert after_accepted.summary is None
+
+    stale_higher_overlap = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="higher-overlap-stale",
+        cumulative_filled_quantity=Decimal("0.006"),
+        last_filled_quantity=Decimal("0.004"),
+        last_fill_price=Decimal("96000"),
+        event_time_ms=20,
+        transaction_time_ms=20,
+        is_maker=False,
+    )
+    after_stale = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[stale_higher_overlap]),
+    )
+
+    assert after_stale.status is ExecutionStatus.RUNNING
+    assert after_stale.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert after_stale.child_orders[0].confirmed_filled_quantity == Decimal("0.004")
+    assert after_stale.summary is None
+    assert after_stale.metric_counts["duplicate_events_ignored"] == 1
+
+    adjacent_fill = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="higher-overlap-adjacent-real",
+        cumulative_filled_quantity=Decimal("0.006"),
+        last_filled_quantity=Decimal("0.002"),
+        last_fill_price=Decimal("95005"),
+        event_time_ms=30,
+        transaction_time_ms=30,
+        is_maker=False,
+    )
+    completed = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[adjacent_fill]),
+    )
+
+    assert completed.status is ExecutionStatus.COMPLETED
+    assert completed.exposure.confirmed_filled_quantity == Decimal("0.006")
+    assert completed.summary is not None
+    assert completed.summary.metrics["execution_vwap"] == "95001.66666666666666666666667"
+    assert completed.summary.metrics["maker_filled_quantity"] == Decimal("0.004")
+    assert completed.summary.metrics["taker_filled_quantity"] == Decimal("0.002")
+    assert completed.summary.metrics["duplicate_events_ignored"] == 1
+
+
 async def test_unique_lower_cumulative_trade_does_not_overcount_authoritative_metrics() -> None:
     service, _simulator, _clock = await fresh_service()
     execution = await service.create_execution(execution_request(target_position=Decimal("0.003")))

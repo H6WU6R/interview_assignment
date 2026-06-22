@@ -5,12 +5,13 @@ from collections.abc import AsyncIterator, Callable
 from decimal import Decimal
 from typing import Any
 
-from config import Settings, load_binance_usdm_credentials
+from config import Settings, load_allow_mainnet_trading, load_binance_usdm_credentials
 from exchanges.binance_usdm import BinanceUsdmAdapter
 from exchanges.simulator import DeterministicSimulator
+from execution import ids
 from execution.clock import ManualClock, SystemClock
 from execution.engine import ExecutionRecord, UnknownExecution
-from execution.models import Environment, ExecutionRequest
+from execution.models import Environment, ExecutionRequest, ReconciliationResult
 from execution.service import ExecutionService
 
 
@@ -206,7 +207,7 @@ class ExecutionRuntime:
     def _service_for_environment(self, environment: Environment) -> ExecutionService:
         if environment in self._services:
             return self._services[environment]
-        if environment is Environment.TESTNET:
+        if environment in {Environment.TESTNET, Environment.MAINNET}:
             return self._build_binance_service(environment)
         raise RuntimeConfigurationError(f"{environment.value} execution is not enabled")
 
@@ -214,12 +215,20 @@ class ExecutionRuntime:
         credentials = load_binance_usdm_credentials()
         if not credentials.is_configured:
             raise RuntimeConfigurationError(
-                "Binance USDM credentials are required for testnet execution"
+                f"Binance USDM credentials are required for {environment.value} execution"
+            )
+        allow_mainnet_trading = False
+        if environment is Environment.MAINNET:
+            allow_mainnet_trading = load_allow_mainnet_trading()
+        if environment is Environment.MAINNET and not allow_mainnet_trading:
+            raise RuntimeConfigurationError(
+                "mainnet execution requires ALLOW_MAINNET_TRADING=true"
             )
 
         clock = SystemClock()
         settings = Settings(
             environment=environment,
+            allow_mainnet_trading=allow_mainnet_trading,
             binance_api_key=credentials.api_key,
             binance_api_secret=credentials.api_secret,
         )
@@ -434,6 +443,9 @@ class ExecutionRuntime:
         environment: Environment,
         event: object,
     ) -> None:
+        if await self._apply_user_event_reconciliation(environment, event):
+            return
+
         event_time_ms = self._extract_event_time_ms(event)
         if event_time_ms is None:
             event_time_ms = self._clock_wall_ms(environment)
@@ -441,6 +453,54 @@ class ExecutionRuntime:
             environment,
             start_time_ms=max(0, event_time_ms - USER_EVENT_RECONCILIATION_LOOKBACK_MS),
             end_time_ms=event_time_ms,
+        )
+
+    async def _apply_user_event_reconciliation(
+        self,
+        environment: Environment,
+        event: object,
+    ) -> bool:
+        adapter = self._adapters.get(environment)
+        service = self._services.get(environment)
+        if adapter is None or service is None:
+            return False
+
+        parser = getattr(adapter, "reconciliation_from_user_event", None)
+        if not callable(parser):
+            return False
+
+        result = parser(event)
+        if not isinstance(result, ReconciliationResult):
+            return False
+
+        try:
+            active_records = await service.active_executions()
+        except Exception as exc:
+            self._record_runtime_error(f"{environment.value}.active_executions", exc)
+            return True
+
+        applied = False
+        for record in active_records:
+            prefix = ids.make_client_order_prefix(record.execution_id)
+            if not self._reconciliation_result_matches_prefix(result, prefix):
+                continue
+            try:
+                updated = await service.apply_reconciliation_result(record.execution_id, result)
+                self._remember_execution(updated)
+                self._cancel_background_loop_if_terminal(updated)
+                applied = True
+            except Exception as exc:
+                self._record_runtime_error(record.execution_id, exc)
+                applied = True
+        return applied
+
+    @staticmethod
+    def _reconciliation_result_matches_prefix(
+        result: ReconciliationResult,
+        prefix: str,
+    ) -> bool:
+        return any(order.client_order_id.startswith(prefix) for order in result.orders) or any(
+            fill.client_order_id.startswith(prefix) for fill in result.fills
         )
 
     async def _reconcile_active_executions_for_environment(

@@ -28,6 +28,8 @@ from exchanges.binance_usdm import (
     build_new_order_params,
     classify_mutation_timeout,
     decimal_to_api,
+    parse_fill,
+    reconciliation_from_user_event,
 )
 from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
@@ -641,6 +643,67 @@ def test_stream_parsers_preserve_exchange_timestamps() -> None:
     assert event["raw"]["o"]["x"] == "TRADE"
 
 
+def test_parse_fill_preserves_maker_flag_from_user_trades() -> None:
+    maker_fill = parse_fill(
+        {"id": 1, "qty": "0.002", "price": "95000", "time": 10, "maker": True},
+        "ce_abcdef123456_1",
+        Decimal("0.002"),
+    )
+    taker_fill = parse_fill(
+        {"id": 2, "qty": "0.001", "price": "95001", "time": 11, "maker": False},
+        "ce_abcdef123456_1",
+        Decimal("0.003"),
+    )
+
+    assert maker_fill.is_maker is True
+    assert taker_fill.is_maker is False
+
+
+def test_order_trade_update_event_maps_to_reconciliation_result() -> None:
+    result = reconciliation_from_user_event(
+        {
+            "event_type": "ORDER_TRADE_UPDATE",
+            "event_time_ms": 1000,
+            "transaction_time_ms": 1001,
+            "raw": {
+                "e": "ORDER_TRADE_UPDATE",
+                "E": 1000,
+                "T": 1001,
+                "o": {
+                    "s": "BTCUSDT",
+                    "c": "ce_abcdef123456_1",
+                    "S": "BUY",
+                    "q": "0.010",
+                    "p": "95000.00",
+                    "X": "PARTIALLY_FILLED",
+                    "i": 12345,
+                    "z": "0.004",
+                    "x": "TRADE",
+                    "l": "0.004",
+                    "L": "95000.00",
+                    "t": 777,
+                    "m": True,
+                    "T": 1001,
+                },
+            },
+        }
+    )
+
+    assert result is not None
+    assert len(result.orders) == 1
+    assert len(result.fills) == 1
+    assert result.orders[0].client_order_id == "ce_abcdef123456_1"
+    assert result.orders[0].status is ChildOrderStatus.PARTIALLY_FILLED
+    assert result.orders[0].confirmed_filled_quantity == Decimal("0.004")
+    assert result.fills[0].trade_id == "777"
+    assert result.fills[0].cumulative_filled_quantity == Decimal("0.004")
+    assert result.fills[0].is_maker is True
+
+
+def test_non_order_trade_update_event_does_not_create_reconciliation_result() -> None:
+    assert reconciliation_from_user_event({"event_type": "ACCOUNT_UPDATE", "raw": {"e": "ACCOUNT_UPDATE"}}) is None
+
+
 async def test_market_stream_marks_health_around_iterator_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -892,6 +955,86 @@ async def test_testnet_runner_starts_and_stops_market_and_user_stream_tasks(
     assert adapter is not None
     assert adapter.market_closed.is_set()
     assert adapter.user_closed.is_set()
+
+
+async def test_testnet_runner_user_stream_logs_and_applies_matching_event() -> None:
+    import importlib.util
+
+    execution_id = "exec_1234567890abcdef"
+    client_order_id = "ce_1234567890ab_1"
+
+    class FakeUserAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock(current=10.0)
+            self.user_stream_healthy = False
+            self.started = asyncio.Event()
+            self.applied = asyncio.Event()
+            self.closed = asyncio.Event()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_stream_healthy = True
+                self.started.set()
+                try:
+                    yield {"event_type": "ORDER_TRADE_UPDATE", "event_time_ms": 1000, "raw": {"c": client_order_id}}
+                    await self.applied.wait()
+                    await asyncio.Event().wait()
+                finally:
+                    self.user_stream_healthy = False
+                    self.closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.user_stream_healthy
+
+        def reconciliation_from_user_event(self, _event: object) -> Any:
+            return SimpleNamespace(
+                orders=[SimpleNamespace(client_order_id=client_order_id)],
+                fills=[],
+            )
+
+    class FakeService:
+        def __init__(self, adapter: FakeUserAdapter) -> None:
+            self.adapter = adapter
+            self.applied_execution_ids: list[str] = []
+
+        async def apply_reconciliation_result(self, applied_execution_id: str, _result: Any) -> Any:
+            self.applied_execution_ids.append(applied_execution_id)
+            self.adapter.applied.set()
+            return SimpleNamespace(
+                execution_id=applied_execution_id,
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter = FakeUserAdapter()
+    service = FakeService(adapter)
+    events: list[dict[str, Any]] = []
+    task = await module._start_user_stream(
+        adapter,
+        service,
+        events,
+        {"execution_id": execution_id},
+        timeout_seconds=1.0,
+    )
+
+    await asyncio.wait_for(adapter.applied.wait(), timeout=1.0)
+    await module._stop_stream_task(task)
+
+    assert service.applied_execution_ids == [execution_id]
+    assert [event["event"] for event in events] == ["user_stream_event", "user_stream_applied"]
+    assert events[0]["utc_timestamp"].startswith("1970-01-01T00:00:10")
+    assert events[0]["monotonic_time"] == Decimal("10.0")
+    assert adapter.closed.is_set()
 
 
 async def test_testnet_runner_run_progresses_past_two_stream_health_gate(

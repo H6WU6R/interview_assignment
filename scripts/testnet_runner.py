@@ -75,8 +75,15 @@ async def run(algorithm: Algorithm) -> Path:
     user_task: asyncio.Task[Any] | None = None
     try:
         snapshot, market_task = await _start_market_stream(adapter, timeout_seconds=args.market_timeout_seconds)
-        events.append({"event": "market_snapshot", "snapshot": _jsonable(snapshot)})
-        user_task = await _start_user_stream(adapter, timeout_seconds=args.market_timeout_seconds)
+        events.append(_runtime_event(adapter, "market_snapshot", snapshot=_jsonable(snapshot)))
+        active_execution: dict[str, str] = {}
+        user_task = await _start_user_stream(
+            adapter,
+            service,
+            events,
+            active_execution,
+            timeout_seconds=args.market_timeout_seconds,
+        )
 
         request = ExecutionRequest(
             environment=adapter.settings.environment,
@@ -90,7 +97,8 @@ async def run(algorithm: Algorithm) -> Path:
             parameters=ExecutionParameters(number_of_slices=args.number_of_slices),
         )
         execution = await service.create_execution(request)
-        events.append({"event": "execution_created", "execution": _record_summary(execution)})
+        active_execution["execution_id"] = execution.execution_id
+        events.append(_runtime_event(adapter, "execution_created", execution=_record_summary(execution)))
 
         deadline = adapter.clock.monotonic() + args.max_runtime_seconds
         latest = execution
@@ -104,7 +112,7 @@ async def run(algorithm: Algorithm) -> Path:
             _raise_if_stream_task_failed(market_task, user_task)
             latest = await service.run_once(execution.execution_id)
             _raise_if_stream_task_failed(market_task, user_task)
-            events.append({"event": "run_once", "execution": _record_summary(latest)})
+            events.append(_runtime_event(adapter, "run_once", execution=_record_summary(latest)))
             if latest.status.is_terminal:
                 break
             await asyncio.sleep(args.poll_interval_seconds)
@@ -113,12 +121,21 @@ async def run(algorithm: Algorithm) -> Path:
         if not latest.status.is_terminal:
             _raise_if_stream_task_failed(market_task, user_task)
             latest = await service.cancel_execution(execution.execution_id)
-            events.append({"event": "cancel_requested", "execution": _record_summary(latest)})
+            events.append(_runtime_event(adapter, "cancel_requested", execution=_record_summary(latest)))
             latest = await service.reconcile_execution(execution.execution_id)
-            events.append({"event": "final_reconcile", "execution": _record_summary(latest)})
+            events.append(_runtime_event(adapter, "final_reconcile", execution=_record_summary(latest)))
 
         prefix = make_client_order_prefix(execution.execution_id)
         reconciliation = await adapter.reconcile_orders_and_fills(symbol, client_order_prefix=prefix)
+        events.append(
+            _runtime_event(
+                adapter,
+                "post_run_reconciliation",
+                order_count=len(reconciliation.orders),
+                fill_count=len(reconciliation.fills),
+                warnings=list(reconciliation.warnings),
+            )
+        )
 
         artifact_dir = write_execution_artifacts(
             root=args.output_dir,
@@ -171,12 +188,27 @@ async def _stop_market_stream(task: asyncio.Task[Any]) -> None:
 
 async def _start_user_stream(
     adapter: BinanceUsdmAdapter,
+    service: ExecutionService,
+    events: list[dict[str, Any]],
+    active_execution: dict[str, str],
     *,
     timeout_seconds: float,
 ) -> asyncio.Task[Any]:
     async def pump() -> None:
-        async for _event in adapter.stream_user_events():
-            pass
+        async for event in adapter.stream_user_events():
+            events.append(_runtime_event(adapter, "user_stream_event", user_event=_jsonable(event)))
+            execution_id = active_execution.get("execution_id")
+            if execution_id is None:
+                continue
+            parser = getattr(adapter, "reconciliation_from_user_event", None)
+            apply_result = getattr(service, "apply_reconciliation_result", None)
+            if not callable(parser) or not callable(apply_result):
+                continue
+            result = parser(event)
+            if result is None or not _reconciliation_result_matches_execution(execution_id, result):
+                continue
+            updated = await apply_result(execution_id, result)
+            events.append(_runtime_event(adapter, "user_stream_applied", execution=_record_summary(updated)))
 
     task = asyncio.create_task(pump())
     try:
@@ -225,6 +257,15 @@ def _raise_if_stream_task_failed(*tasks: asyncio.Task[Any] | None) -> None:
         raise RuntimeError("stream task exited unexpectedly")
 
 
+def _reconciliation_result_matches_execution(execution_id: str, result: Any) -> bool:
+    prefix = make_client_order_prefix(execution_id)
+    orders = getattr(result, "orders", [])
+    fills = getattr(result, "fills", [])
+    return any(getattr(order, "client_order_id", "").startswith(prefix) for order in orders) or any(
+        getattr(fill, "client_order_id", "").startswith(prefix) for fill in fills
+    )
+
+
 def normalize_symbol(symbol: str) -> str:
     normalized = symbol.strip().upper()
     if not normalized:
@@ -245,6 +286,16 @@ def _jsonable(value: Any) -> Any:
     if is_dataclass(value):
         return to_jsonable(asdict(value))
     return to_jsonable(value)
+
+
+def _runtime_event(adapter: Any, event_name: str, **payload: Any) -> dict[str, Any]:
+    clock = getattr(adapter, "clock", None)
+    event: dict[str, Any] = {"event": event_name}
+    if clock is not None:
+        event["utc_timestamp"] = clock.utc_now().isoformat()
+        event["monotonic_time"] = Decimal(str(clock.monotonic()))
+    event.update(payload)
+    return event
 
 
 def _record_summary(record: Any) -> dict[str, Any]:

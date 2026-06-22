@@ -23,6 +23,7 @@ from execution.models import (
     ExecutionParameters,
     ExecutionRequest,
     ExecutionStatus,
+    Fill,
     OrderRequest,
     PositionSnapshot,
     ReconciliationResult,
@@ -1314,6 +1315,64 @@ async def test_chase_reprice_waits_for_min_interval_and_threshold() -> None:
     assert len(below_threshold.child_orders) == 1
     assert below_threshold.child_orders[0].status is ChildOrderStatus.OPEN
     assert below_threshold.child_orders[0].client_order_id == opened.child_orders[0].client_order_id
+
+
+async def test_chase_reprice_is_counted_in_terminal_summary_metrics() -> None:
+    clock = ManualClock()
+    params = ExecutionParameters(reprice_threshold_bps=Decimal("2.0"), minimum_reprice_interval_ms=500)
+    service, simulator, _ = await fresh_service(clock=clock)
+    execution = await service.create_execution(execution_request(parameters=params))
+    await service.run_once(execution.execution_id)
+
+    clock.advance(0.5)
+    await simulator.push_market_data(SYMBOL, Decimal("96000.00"), Decimal("96001.00"), exchange_event_time=20)
+    repriced = await service.run_once(execution.execution_id)
+    terminal = await service.cancel_execution(execution.execution_id)
+
+    assert len(repriced.child_orders) == 2
+    assert terminal.summary is not None
+    assert terminal.summary.metrics["reprices"] == 1
+
+
+async def test_summary_metrics_count_known_maker_and_taker_fills() -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+    child = opened.child_orders[0]
+
+    simulator.inject_reconciliation_fill(
+        Fill(
+            client_order_id=child.client_order_id,
+            trade_id="maker-trade",
+            cumulative_filled_quantity=Decimal("0.004"),
+            last_filled_quantity=Decimal("0.004"),
+            last_fill_price=Decimal("95000.00"),
+            event_time_ms=1,
+            transaction_time_ms=1,
+            is_maker=True,
+        )
+    )
+    simulator.inject_reconciliation_fill(
+        Fill(
+            client_order_id=child.client_order_id,
+            trade_id="taker-trade",
+            cumulative_filled_quantity=Decimal("0.010"),
+            last_filled_quantity=Decimal("0.006"),
+            last_fill_price=Decimal("95001.00"),
+            event_time_ms=2,
+            transaction_time_ms=2,
+            is_maker=False,
+        )
+    )
+
+    terminal = await service.reconcile_execution(execution.execution_id)
+
+    assert terminal.status is ExecutionStatus.COMPLETED
+    assert terminal.summary is not None
+    assert terminal.summary.metrics["maker_fills"] == 1
+    assert terminal.summary.metrics["taker_fills"] == 1
+    assert terminal.summary.metrics["maker_filled_quantity"] == Decimal("0.004")
+    assert terminal.summary.metrics["taker_filled_quantity"] == Decimal("0.006")
 
 
 async def test_twap_uses_absolute_schedule_and_carries_forward_unfilled_deficit() -> None:

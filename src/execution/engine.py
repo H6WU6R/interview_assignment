@@ -35,6 +35,7 @@ from execution.models import (
     MarketSnapshot,
     OrderRequest,
     PositionSnapshot,
+    ReconciliationResult,
     Side,
     SymbolRules,
     TimeInForce,
@@ -196,6 +197,8 @@ class ExecutionRecord:
     metric_counts: dict[str, int] = field(default_factory=dict)
     ignored_fill_trade_ids: set[str] = field(default_factory=set)
     fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
+    maker_filled_quantity: Decimal = Decimal("0")
+    taker_filled_quantity: Decimal = Decimal("0")
     child_submitted_monotonic: dict[str, Decimal] = field(default_factory=dict)
     aggressive_child_client_order_ids: set[str] = field(default_factory=set)
     consecutive_retryable_order_rejects: int = 0
@@ -431,6 +434,27 @@ class ExecutionEngine:
 
         return await actor.apply(reconcile)
 
+    async def apply_reconciliation_result(
+        self,
+        execution_id: str,
+        result: ReconciliationResult,
+    ) -> ExecutionRecord:
+        record, actor = self._lookup_execution(execution_id)
+
+        async def apply() -> ExecutionRecord:
+            await self._apply_reconciliation_result_locked(
+                record,
+                result,
+                exact_unknown_lookup=False,
+            )
+            if record.status is ExecutionStatus.CANCELLING:
+                self._terminalize_manual_cancel_if_clear_locked(record)
+            elif not record.status.is_terminal and self._target_filled(record):
+                self._complete_locked(record, TARGET_QUANTITY_FILLED)
+            return self._snapshot(record)
+
+        return await actor.apply(apply)
+
     def _lookup_execution(self, execution_id: str) -> tuple[ExecutionRecord, ExecutionEventActor]:
         record = self._records.get(execution_id)
         actor = self._actors.get(execution_id)
@@ -660,7 +684,22 @@ class ExecutionEngine:
             client_order_prefix=prefix,
             **reconciliation_kwargs,
         )
+        await self._apply_reconciliation_result_locked(
+            record,
+            result,
+            exact_unknown_lookup=True,
+        )
 
+    async def _apply_reconciliation_result_locked(
+        self,
+        record: ExecutionRecord,
+        result: ReconciliationResult,
+        *,
+        exact_unknown_lookup: bool,
+    ) -> None:
+        tracker = record.exposure_tracker
+        if tracker is None:
+            return
         children_by_client_id = {child.client_order_id: child for child in record.child_orders}
         exchange_client_ids = {order.client_order_id for order in result.orders}
         fill_client_ids = {fill.client_order_id for fill in result.fills}
@@ -686,6 +725,7 @@ class ExecutionEngine:
                 fill.cumulative_filled_quantity,
                 trade_id=fill.trade_id,
                 fill_price=fill.last_fill_price,
+                is_maker=fill.is_maker,
             )
 
         for exchange_order in result.orders:
@@ -707,7 +747,8 @@ class ExecutionEngine:
                 if self._reconciled_unknown_child_resets_retryable_reject_gate(child):
                     self._reset_retryable_order_reject_gate_locked(record)
 
-        await self._reconcile_unknown_children_exact_locked(record)
+        if exact_unknown_lookup:
+            await self._reconcile_unknown_children_exact_locked(record)
 
         if CREATE_TIMEOUT_ORDER_NOT_FOUND in result.warnings:
             for child in record.child_orders:
@@ -780,6 +821,7 @@ class ExecutionEngine:
         )
         if decision is ChaseDecision.REPRICE:
             record.last_reprice_monotonic = self._now_decimal()
+            self._increment_metric(record, "reprices")
             await self._cancel_active_children_locked(record)
 
     async def _build_child_demand_locked(
@@ -1180,6 +1222,7 @@ class ExecutionEngine:
         *,
         trade_id: str | None,
         fill_price: Decimal,
+        is_maker: bool | None = None,
     ) -> None:
         if incoming_cumulative > child.confirmed_filled_quantity:
             child.confirmed_filled_quantity = incoming_cumulative
@@ -1188,6 +1231,7 @@ class ExecutionEngine:
             child,
             trade_id=trade_id,
             fill_price=fill_price,
+            is_maker=is_maker,
         )
 
     def _apply_order_fill_locked(
@@ -1197,6 +1241,7 @@ class ExecutionEngine:
         *,
         trade_id: str | None,
         fill_price: Decimal,
+        is_maker: bool | None,
     ) -> None:
         tracker = self._require_exposure_tracker(record)
         aggregate_cumulative = sum(
@@ -1206,6 +1251,12 @@ class ExecutionEngine:
         fill_delta = tracker.apply_fill(trade_id, aggregate_cumulative)
         if fill_delta > Decimal("0"):
             record.fill_vwap_inputs.append((fill_price, fill_delta))
+            if is_maker is True:
+                record.maker_filled_quantity += fill_delta
+                self._increment_metric(record, "maker_fills")
+            elif is_maker is False:
+                record.taker_filled_quantity += fill_delta
+                self._increment_metric(record, "taker_fills")
         elif trade_id is not None and trade_id not in record.ignored_fill_trade_ids:
             record.ignored_fill_trade_ids.add(trade_id)
             self._increment_metric(record, "duplicate_events_ignored")
@@ -1312,7 +1363,12 @@ class ExecutionEngine:
                 "child_order_count": len(record.child_orders),
                 "orders_submitted": record.metric_counts.get("orders_submitted", 0),
                 "cancels_requested": record.metric_counts.get("cancels_requested", 0),
+                "reprices": record.metric_counts.get("reprices", 0),
                 "rejections": record.metric_counts.get("rejections", 0),
+                "maker_fills": record.metric_counts.get("maker_fills", 0),
+                "taker_fills": record.metric_counts.get("taker_fills", 0),
+                "maker_filled_quantity": record.maker_filled_quantity,
+                "taker_filled_quantity": record.taker_filled_quantity,
                 "retryable_order_rejections": record.metric_counts.get("retryable_order_rejections", 0),
                 "retryable_order_reject_streak": record.consecutive_retryable_order_rejects,
                 "retryable_order_reject_limit": record.request.parameters.max_post_only_reject_retries,

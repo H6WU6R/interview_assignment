@@ -3,7 +3,7 @@ from __future__ import annotations
 from exchanges.base import ExchangeAdapter
 from execution.clock import Clock, ManualClock
 from execution.engine import ExecutionEngine, ExecutionRecord
-from execution.models import Environment, ExecutionRequest
+from execution.models import Environment, ExecutionRequest, ReconciliationResult
 
 
 class ExecutionService:
@@ -52,3 +52,10 @@ class ExecutionService:
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms,
         )
+
+    async def apply_reconciliation_result(
+        self,
+        execution_id: str,
+        result: ReconciliationResult,
+    ) -> ExecutionRecord:
+        return await self._engine.apply_reconciliation_result(execution_id, result)

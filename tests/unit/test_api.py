@@ -11,7 +11,15 @@ from api.app import create_app
 from api.schemas import ExecutionCreateRequest
 from exchanges.simulator import DeterministicSimulator
 from execution import ids
-from execution.models import MarketSnapshot
+from execution.models import (
+    ChildOrder,
+    ChildOrderStatus,
+    Environment,
+    Fill,
+    MarketSnapshot,
+    ReconciliationResult,
+    Side,
+)
 
 
 SYMBOL = "BTCUSDT"
@@ -168,6 +176,133 @@ async def test_testnet_request_constructs_binance_adapter_with_system_clock_and_
     assert adapter.settings.binance_api_key == "test-key"
     assert adapter.settings.binance_api_secret == "test-secret"
     assert response.json()["request"]["environment"] == "testnet"
+
+
+@pytest.mark.asyncio
+async def test_mainnet_request_requires_explicit_allow_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from config import BinanceUsdmCredentials
+
+    runtime_module = importlib.import_module("api.runtime")
+    monkeypatch.setattr(
+        runtime_module,
+        "load_binance_usdm_credentials",
+        lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
+    )
+    monkeypatch.setattr(runtime_module, "load_allow_mainnet_trading", lambda: False)
+    app = create_app()
+
+    response = await post_json(
+        app,
+        "/executions",
+        execution_payload(environment="mainnet", target_position="0.010"),
+    )
+
+    assert response.status_code == 503
+    assert "ALLOW_MAINNET_TRADING=true" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_mainnet_request_constructs_adapter_only_when_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from config import BinanceUsdmCredentials
+
+    runtime_module = importlib.import_module("api.runtime")
+    constructed: list[DeterministicSimulator] = []
+
+    class RecordingMainnetAdapter(DeterministicSimulator):
+        def __init__(self, *, settings: Any, clock: Any) -> None:
+            super().__init__(clock=clock, position=Decimal("0.010"))
+            self.settings = settings
+            constructed.append(self)
+
+    monkeypatch.setattr(
+        runtime_module,
+        "load_binance_usdm_credentials",
+        lambda: BinanceUsdmCredentials(api_key="mainnet-key", api_secret="mainnet-secret"),
+    )
+    monkeypatch.setattr(runtime_module, "load_allow_mainnet_trading", lambda: True)
+    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", RecordingMainnetAdapter)
+    app = create_app()
+
+    response = await post_json(
+        app,
+        "/executions",
+        execution_payload(environment="mainnet", target_position="0.010"),
+    )
+
+    assert response.status_code == 200
+    assert len(constructed) == 1
+    adapter = constructed[0]
+    assert adapter.settings.environment is Environment.MAINNET
+    assert adapter.settings.allow_mainnet_trading is True
+    assert adapter.settings.binance_api_key == "mainnet-key"
+    assert adapter.settings.binance_api_secret == "mainnet-secret"
+
+
+@pytest.mark.asyncio
+async def test_runtime_applies_matching_user_event_without_rest_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(simulator_position="0")
+    runtime = app.state.runtime
+    adapter = app.state.adapter
+    request = ExecutionCreateRequest.model_validate(execution_payload()).to_domain()
+    created = await runtime.create_execution(request)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    opened = await runtime.run_once(created.execution_id)
+    child = opened.child_orders[0]
+
+    async def unexpected_rest_reconcile(*_args: Any, **_kwargs: Any) -> ReconciliationResult:
+        raise AssertionError("REST reconciliation should not be used for a matching user event")
+
+    def parse_event(_event: object) -> ReconciliationResult:
+        return ReconciliationResult(
+            orders=[
+                ChildOrder(
+                    child_order_id=child.child_order_id,
+                    client_order_id=child.client_order_id,
+                    symbol=SYMBOL,
+                    side=Side.BUY,
+                    submitted_quantity=child.submitted_quantity,
+                    price=child.price,
+                    status=ChildOrderStatus.PARTIALLY_FILLED,
+                    confirmed_filled_quantity=Decimal("0.004"),
+                )
+            ],
+            fills=[
+                Fill(
+                    client_order_id=child.client_order_id,
+                    trade_id="stream-trade",
+                    cumulative_filled_quantity=Decimal("0.004"),
+                    last_filled_quantity=Decimal("0.004"),
+                    last_fill_price=child.price,
+                    event_time_ms=123,
+                    transaction_time_ms=124,
+                    is_maker=True,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(adapter, "reconcile_orders_and_fills", unexpected_rest_reconcile)
+    monkeypatch.setattr(adapter, "reconciliation_from_user_event", parse_event, raising=False)
+
+    applied = await runtime._apply_user_event_reconciliation(
+        Environment.SIMULATION,
+        {"event_type": "ORDER_TRADE_UPDATE", "event_time_ms": 123},
+    )
+    updated = await runtime.get_execution(created.execution_id)
+
+    assert applied is True
+    assert updated.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert updated.maker_filled_quantity == Decimal("0.004")
+    assert updated.child_orders[0].status is ChildOrderStatus.PARTIALLY_FILLED
 
 
 @pytest.mark.asyncio

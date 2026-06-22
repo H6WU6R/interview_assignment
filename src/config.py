@@ -57,6 +57,16 @@ def load_binance_usdm_credentials(dotenv_path: Path | str | None = None) -> Bina
     )
 
 
+def load_allow_mainnet_trading(dotenv_path: Path | str | None = None) -> bool:
+    dotenv_credentials: dict[str, str | None] = {}
+    if not _dotenv_disabled():
+        dotenv_credentials = dotenv_values(dotenv_path or DEFAULT_DOTENV_PATH)
+    raw_value = _credential_value("ALLOW_MAINNET_TRADING", dotenv_credentials)
+    if raw_value is None:
+        return False
+    return _parse_bool(raw_value, field_name="ALLOW_MAINNET_TRADING")
+
+
 def load_settings(path: Path) -> Settings:
     payload = yaml.safe_load(path.read_text()) or {}
     if not isinstance(payload, dict):

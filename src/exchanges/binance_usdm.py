@@ -482,6 +482,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             "raw": dict(message),
         }
 
+    def reconciliation_from_user_event(self, event: object) -> ReconciliationResult | None:
+        return reconciliation_from_user_event(event)
+
     async def reconcile_orders_and_fills(
         self,
         symbol: str,
@@ -596,7 +599,69 @@ def parse_fill(
         last_fill_price=Decimal(str(raw.get("price", "0"))),
         event_time_ms=_optional_int(raw.get("time")),
         transaction_time_ms=_optional_int(raw.get("time")),
+        is_maker=_optional_bool(raw.get("maker")),
     )
+
+
+def reconciliation_from_user_event(event: object) -> ReconciliationResult | None:
+    if not isinstance(event, Mapping):
+        return None
+
+    raw = event.get("raw", event)
+    if not isinstance(raw, Mapping):
+        return None
+
+    event_type = event.get("event_type", raw.get("e"))
+    if event_type != "ORDER_TRADE_UPDATE":
+        return None
+
+    order_payload = raw.get("o")
+    if not isinstance(order_payload, Mapping):
+        return None
+
+    client_order_id = str(order_payload.get("c") or "")
+    if not client_order_id:
+        return None
+
+    raw_status = str(order_payload.get("X", "UNKNOWN"))
+    submitted_quantity = Decimal(str(order_payload.get("q", "0")))
+    cumulative_filled_quantity = Decimal(str(order_payload.get("z", "0")))
+    order_price = _order_update_price(order_payload)
+    order = ChildOrder(
+        child_order_id=client_order_id,
+        client_order_id=client_order_id,
+        symbol=str(order_payload.get("s", "")),
+        side=_parse_side(order_payload.get("S", "BUY")),
+        submitted_quantity=submitted_quantity,
+        price=order_price,
+        status=normalize_order_status(raw_status),
+        confirmed_filled_quantity=cumulative_filled_quantity,
+        exchange_order_id=str(order_payload["i"]) if order_payload.get("i") is not None else None,
+        raw_status=raw_status,
+        terminal_reason=raw_status if raw_status in {"EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"} else None,
+    )
+
+    fills: list[Fill] = []
+    last_filled_quantity = Decimal(str(order_payload.get("l", "0")))
+    if last_filled_quantity > Decimal("0"):
+        trade_id = None
+        raw_trade_id = order_payload.get("t")
+        if raw_trade_id is not None and str(raw_trade_id) != "-1":
+            trade_id = str(raw_trade_id)
+        fills.append(
+            Fill(
+                client_order_id=client_order_id,
+                trade_id=trade_id,
+                cumulative_filled_quantity=cumulative_filled_quantity,
+                last_filled_quantity=last_filled_quantity,
+                last_fill_price=Decimal(str(order_payload.get("L", order_price))),
+                event_time_ms=_optional_int(raw.get("E")),
+                transaction_time_ms=_optional_int(order_payload.get("T", raw.get("T"))),
+                is_maker=_optional_bool(order_payload.get("m")),
+            )
+        )
+
+    return ReconciliationResult(orders=[order], fills=fills)
 
 
 def _require_execution_prefix(client_order_prefix: str | None) -> None:
@@ -620,6 +685,30 @@ def _optional_int(value: Any) -> int | None:
     if value is None:
         return None
     return int(value)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+    return bool(value)
+
+
+def _order_update_price(order_payload: Mapping[str, Any]) -> Decimal:
+    price = Decimal(str(order_payload.get("p", "0")))
+    if price != Decimal("0"):
+        return price
+    last_price = Decimal(str(order_payload.get("L", "0")))
+    if last_price != Decimal("0"):
+        return last_price
+    return Decimal("0")
 
 
 def _stream_data(message: Mapping[str, Any]) -> Mapping[str, Any]:

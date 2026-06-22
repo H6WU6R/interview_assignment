@@ -181,6 +181,7 @@ class Fill:
     last_fill_price: Decimal
     event_time_ms: int | None
     transaction_time_ms: int | None
+    is_maker: bool | None = None
 
 
 @dataclass(frozen=True)

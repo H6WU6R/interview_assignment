@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from config import load_binance_usdm_credentials
+from config import load_allow_mainnet_trading, load_binance_usdm_credentials
 
 
 def test_load_binance_usdm_credentials_reads_dotenv_values(tmp_path, monkeypatch) -> None:
@@ -54,3 +54,20 @@ def test_load_binance_usdm_credentials_honors_dotenv_disabled(tmp_path, monkeypa
     assert credentials.api_key is None
     assert credentials.api_secret is None
     assert not credentials.is_configured
+
+
+def test_load_allow_mainnet_trading_defaults_false_and_reads_dotenv(tmp_path, monkeypatch) -> None:
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("ALLOW_MAINNET_TRADING=true\n")
+    monkeypatch.delenv("ALLOW_MAINNET_TRADING", raising=False)
+
+    assert load_allow_mainnet_trading(tmp_path / "missing.env") is False
+    assert load_allow_mainnet_trading(dotenv_path) is True
+
+
+def test_load_allow_mainnet_trading_prefers_exported_value(tmp_path, monkeypatch) -> None:
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("ALLOW_MAINNET_TRADING=false\n")
+    monkeypatch.setenv("ALLOW_MAINNET_TRADING", "true")
+
+    assert load_allow_mainnet_trading(dotenv_path) is True

@@ -1,0 +1,14 @@
+\section{Chase Design}
+
+Chase uses passive limit orders at the current best queue price: buy orders at best bid and sell orders at best ask. Passive orders are post-only when the venue supports it. Repricing requires both a price movement threshold and a minimum interval:
+
+\begin{equation}
+  reprice\_difference\_bps =
+  \left|\frac{desired\_price}{active\_order\_price} - 1\right| \times 10000.
+\end{equation}
+
+The default repricing mode is \code{ADVERSE\_ONLY}. A buy order reprices upward when the best bid moves up enough; a sell order reprices downward when the best ask moves down enough. This default is deliberately conservative. It avoids unnecessary cancels when the existing order is already passive at a more favorable price and reduces cancel storm risk. \code{TWO\_SIDED} is still available for experiments or interview discussion, but the safer default is to avoid churn unless the market moves away from the resting order.
+
+Partial fills are handled at the parent level. If an order partially fills and then a reprice is needed, replacement quantity is not the old child's original quantity and not merely the venue-reported remaining quantity. It is the target quantity minus parent confirmed fills minus all still-reserved exposure. This is the same submit path as Equation~\ref{eq:invariant}, so cancel/fill race behavior is handled by the engine rather than by Chase-specific logic.
+
+Deadline behavior is explicit. Under \code{CANCEL\_REMAINDER}, active orders are cancelled and actual unfilled quantity is reported. Under \code{AGGRESSIVE\_WITHIN\_RANGE}, the engine may attempt a bounded marketable limit: buy no higher than the upper bound and sell no lower than the lower bound. If the market is outside range, the correct result is partial or unfilled, not fake completion.

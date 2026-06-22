@@ -1,0 +1,54 @@
+\section{Lifecycle and State Machines}
+
+The parent execution lifecycle is monotonic. Terminal executions do not return to \status{RUNNING}. The engine serializes operations per execution so API requests, background ticks, stream events, manual cancel, and reconciliation cannot concurrently mutate the same execution record.
+
+\begin{figure}[t]
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.18\linewidth} >{\raggedright\arraybackslash}p{0.28\linewidth} X}
+\toprule
+Phase & Allowed next phase & Purpose \\
+\midrule
+\status{CREATED} & \status{VALIDATING} & Request accepted and domain objects built. \\
+\status{VALIDATING} & \status{RUNNING} or terminal & Position, symbol rules, bounds, duration, and dust checks. \\
+\status{RUNNING} & \status{CANCELLING} or terminal & Submit, cancel, reconcile, deadline, and fill processing. \\
+\status{CANCELLING} & terminal & Stop active exposure, reconcile, then summarize. \\
+Terminal & none & \status{COMPLETED}, \status{PARTIALLY COMPLETED}, \status{EXPIRED}, \status{CANCELLED}, or \status{FAILED}. \\
+\bottomrule
+\end{tabularx}
+\caption{Parent execution state transition table. Terminal states are one-way.}
+\label{fig:execution-state}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  node distance=0.48cm and 0.6cm,
+  state/.style={draw, rounded corners=2pt, align=center, minimum width=2.15cm, minimum height=0.55cm, font=\small},
+  terminal/.style={state, fill=gray!10},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+\node[state] (pending) {PENDING\\SUBMIT};
+\node[state, right=of pending] (open) {OPEN};
+\node[state, right=of open] (partial) {PARTIALLY\\FILLED};
+\node[state, right=of partial] (pcancel) {PENDING\\CANCEL};
+\node[terminal, below=0.65cm of pending] (unknown) {UNKNOWN};
+\node[terminal, below=0.65cm of open] (rejected) {REJECTED};
+\node[terminal, below=0.65cm of partial] (filled) {FILLED};
+\node[terminal, below=0.65cm of pcancel] (cancelled) {CANCELLED};
+\draw[arrow] (pending) -- (open);
+\draw[arrow] (pending) -- (unknown);
+\draw[arrow] (pending) -- (rejected);
+\draw[arrow] (open) -- (partial);
+\draw[arrow] (open) -- (pcancel);
+\draw[arrow] (open) -- (filled);
+\draw[arrow] (partial) -- (pcancel);
+\draw[arrow] (partial) -- (filled);
+\draw[arrow] (pcancel) -- (cancelled);
+\draw[arrow] (pcancel) -- (filled);
+\end{tikzpicture}
+\caption{Child order states. \status{UNKNOWN} is a reserved-exposure state, not a harmless error.}
+\label{fig:child-state}
+\end{figure}
+
+The child state machine is designed for disagreement between REST responses and user-stream events. A fill can arrive after a cancel request. A create request can time out while the exchange still accepts the order. A REST snapshot can be older than a private stream event. The engine therefore treats cumulative fills as monotonic, keeps pending-cancel and unknown-create exposure reserved, and uses exact client-order lookup to repair ambiguous create outcomes.

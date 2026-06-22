@@ -1,0 +1,86 @@
+\documentclass{article}
+
+\usepackage{arxiv}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric}
+\usepackage{natbib}
+\usepackage{enumitem}
+\usepackage{xcolor}
+
+\renewcommand{\headeright}{Technical Report}
+\renewcommand{\undertitle}{Candidate Project Report}
+\renewcommand{\shorttitle}{Safety-Oriented Execution Algorithm Service}
+
+\hypersetup{
+  pdftitle={A Safety-Oriented Execution Algorithm Service for Binance USD-M BTCUSDT},
+  pdfsubject={Calais quantitative development candidate project},
+  pdfauthor={Haoran Wu},
+  pdfkeywords={execution algorithm, TWAP, chase order, Binance futures, deterministic simulator, order state machine}
+}
+
+\title{A Safety-Oriented Execution Algorithm Service for Binance USD-M BTCUSDT}
+
+\author{
+  Haoran Wu \\
+  Calais Quantitative Development Candidate Project \\
+  \texttt{calais-execution-algorithm}
+}
+
+\date{June 2026}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\status}[1]{\textsc{#1}}
+\newcommand{\yes}{\textsc{covered}}
+\newcommand{\partialstatus}{\textsc{partial}}
+\newcommand{\gap}{\textsc{gap}}
+
+\begin{document}
+\maketitle
+
+\input{sections/00-abstract}
+
+\input{sections/01-introduction}
+
+\input{sections/02-architecture}
+
+\input{sections/03-lifecycle-state-machines}
+
+\input{sections/04-core-safety-invariant}
+
+\input{sections/05-chase-design}
+
+\input{sections/06-twap-design}
+
+\input{sections/07-precision-risk-binance}
+
+\input{sections/08-testing-evidence}
+
+\input{sections/09-results-metrics}
+
+\input{sections/10-failure-case-hardening}
+
+\input{sections/11-limitations-future-work}
+
+\input{sections/12-ai-usage}
+
+\appendix
+
+\input{sections/a-edge-case-matrix}
+
+\input{sections/b-artifact-checklist}
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+\end{document}

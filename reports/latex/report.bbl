@@ -1,0 +1,28 @@
+\begin{thebibliography}{3}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Kour(2026)]{arxiv-style}
+George Kour.
+\newblock arxiv-style: A latex style and template for paper preprints.
+\newblock \url{https://github.com/kourgeorge/arxiv-style}, 2026.
+\newblock Repository accessed for local report template.
+
+\bibitem[{Calais}(2026)]{calais-brief}
+{Calais}.
+\newblock Calais execution algorithm candidate project brief and interviewer
+  evaluation guide, 2026.
+\newblock Candidate project brief, Version 2.0.
+
+\bibitem[{Binance}(2026)]{binance-usdm-docs}
+{Binance}.
+\newblock Binance usd-m futures api documentation.
+\newblock
+  \url{https://developers.binance.com/docs/derivatives/usds-margined-futures/},
+  2026.
+\newblock Reference for venue concepts used by the implementation.
+
+\end{thebibliography}

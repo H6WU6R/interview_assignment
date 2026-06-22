@@ -1,0 +1,11 @@
+\section{Precision, Risk, and Binance Integration}
+
+All trading prices and quantities use \code{Decimal}. API trading fields are decimal strings, and Binance parameters are serialized as strings. This matters because direct Python \code{float} construction can introduce non-exchange-valid prices or quantities before tick and step rounding.
+
+Risk validation is side-aware. Passive buys must not round through the best ask or exceed the upper bound. Passive sells must not round through the best bid or go below the lower bound. Aggressive buy deadline orders cannot exceed the upper bound, and aggressive sell deadline orders cannot go below the lower bound. Quantity normalization floors to step size rather than rounding up into over-trading; dust is recorded or rejected according to the implemented rule.
+
+The Binance adapter reads dynamic BTCUSDT symbol rules from exchange metadata, including tick size, quantity step, minimum quantity, minimum notional, trading status, and supported time-in-force assumptions \citep{binance-usdm-docs}. Market data is based on best bid/ask updates. Private user-data events and REST reconciliation repair order and fill state. REST is also used for initialization, create/cancel mutation, exact order lookup, and reconciliation after disconnects.
+
+Create and cancel mutations are classified conservatively. HTTP 408 and transport timeout on create map to an unknown create outcome; the child remains \status{UNKNOWN} and its quantity remains reserved. HTTP 408 and transport timeout on cancel keep the child in pending-cancel exposure until reconciliation. Mainnet mutation is hard disabled by default and requires explicit configuration; it is not part of the take-home demonstration path.
+
+Secrets are runtime-only. API keys, API secrets, request signatures, listen keys, and signed payloads are sanitized from artifacts and are not committed.

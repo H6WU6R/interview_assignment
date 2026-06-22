@@ -1,0 +1,33 @@
+\section{Architecture and Ownership Boundaries}
+
+The architecture is organized around one rule: the engine owns trading correctness. API and runtime code supervise execution, algorithms compute narrow decisions, and exchange adapters normalize venue behavior. They do not independently mutate exposure.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  node distance=0.55cm,
+  box/.style={draw, rounded corners=2pt, align=center, minimum width=0.72\linewidth, minimum height=0.72cm},
+  arrow/.style={-{Latex[length=2mm]}, thick}
+]
+\node[box] (api) {API and Runtime\\FastAPI validation, environment construction, background ticks, stream supervision};
+\node[box, below=of api] (service) {Execution Service and Engine\\state ownership, exposure accounting, reconciliation, deadlines, summaries};
+\node[box, below=of service] (algo) {Algorithm Helpers\\Chase desired price and repricing; TWAP absolute schedule and safe deficit};
+\node[box, below=of algo] (exchange) {Exchange Adapter Contract\\deterministic simulator and Binance USD-M adapter};
+\node[box, below=of exchange] (obs) {Observability\\JSONL, CSV, execution summaries, sanitized evidence bundle};
+\draw[arrow] (api) -- (service);
+\draw[arrow] (service) -- (algo);
+\draw[arrow] (algo) -- (exchange);
+\draw[arrow] (service) -- (exchange);
+\draw[arrow] (service) -- (obs);
+\end{tikzpicture}
+\caption{Layered ownership. The algorithm layer proposes; the engine decides whether the proposed child order is safe.}
+\label{fig:architecture}
+\end{figure}
+
+\code{ExecutionRuntime} is the API-facing supervisor. It builds the correct environment, rejects concurrent active executions for the same environment and symbol, advances nonterminal executions, supervises market and private streams for Binance-like adapters, renews listen keys, and reconciles after stream events or disconnects.
+
+\code{ExecutionService} is deliberately thin. It delegates execution lifecycle to \code{ExecutionEngine}, which owns parent execution state, child order state, exposure buckets, fill accounting, cancel flow, create-timeout handling, deadline behavior, and terminal summaries. This boundary keeps correctness checks in one place.
+
+\code{Chase} and \code{TWAP} helpers do not submit orders. Chase computes the passive desired price and whether repricing is due. TWAP computes schedule progress and deficit. Both route through the engine's submit path, so price checks, exposure checks, Decimal normalization, and unknown-order reservations remain common.
+
+\code{ExchangeAdapter} gives the simulator and Binance adapter the same shape: symbol rules, position, best bid/ask, submit, cancel, exact order lookup, stream events, reconciliation, and stream health. This is important because deterministic simulator tests exercise the same engine logic used by the Binance Testnet runner.

@@ -1,0 +1,26 @@
+\section{Edge-Case Matrix}
+
+\begin{table}[h]
+\caption{Brief edge cases and implemented behavior.}
+\label{tab:edge-matrix}
+\centering
+\scriptsize
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.08\linewidth} >{\raggedright\arraybackslash}p{0.28\linewidth} X}
+\toprule
+ID & Edge case & Implemented behavior \\
+\midrule
+E1 & Target already reached & No child order; terminal no-action/completed behavior. \\
+E2 & Target below minimum order size & Reject or record dust explicitly; never silently round up into overfill. \\
+E3 & Partial fill then cancel/reprice & Replacement quantity is based on parent confirmed fills and reserved exposure. \\
+E4 & Fill during pending cancel & Pending-cancel exposure remains reserved until terminal state or reconciliation. \\
+E5 & Create request timeout & Child becomes \status{UNKNOWN}; exact client-order lookup before clearing exposure. \\
+E6 & Duplicate or out-of-order events & Trade IDs and monotonic cumulative quantity prevent double counting and state regression. \\
+E7 & Price jumps outside range & Stop active chasing; deadline policy reports actual unfilled quantity. \\
+E8 & Frequent price movement & Reprice threshold and minimum interval limit cancel storm risk. \\
+E9 & Stream disconnect or stale quote & Pause new action, reconnect, reconcile, then resume or exit safely. \\
+E10 & Deadline with remainder & Cancel remainder or make bounded aggressive attempt within range; report actual result. \\
+E11 & Post-only reject & Refresh state and retry within bounded behavior; no infinite loop. \\
+E12 & Target crosses zero & Required trade is net position delta, not close/open split confusion. \\
+\bottomrule
+\end{tabularx}
+\end{table}

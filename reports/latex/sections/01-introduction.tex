@@ -1,0 +1,54 @@
+\section{Introduction}
+
+The project brief asks for a Python 3.11+ execution service for Binance USD-M Futures BTCUSDT Perpetual \citep{calais-brief}. The service receives a final account target position, a price interval, a target duration, and an execution algorithm. The most important interpretation is that \code{target\_position} is not an order quantity. The system first reads the current position and computes:
+
+\begin{equation}
+  required\_trade\_quantity = target\_position - current\_position.
+\end{equation}
+
+A negative-to-positive target therefore requires trading through zero. For example, moving from \(-0.003\) BTC to \(+0.005\) BTC requires buying \(0.008\) BTC, not \(0.005\) BTC. This rule is intentionally placed at execution creation, before algorithm selection, so Chase and TWAP share the same target-position semantics.
+
+The second important interpretation is that price, time, and quantity cannot all be guaranteed across every market path. If a buy price range ends at an upper bound, the implementation cannot legally force a fill above that bound. If the market never becomes executable within the interval, a correct result may be partial or fully unfilled. The report therefore evaluates the project by whether the system reports actual outcome and preserves safety, not whether every run reaches 100 percent completion.
+
+The implementation follows a ``small and correct'' strategy. It avoids multi-asset routing, durable production recovery, and mainnet automation. In exchange, the core order lifecycle is explicit, deterministic tests cover abnormal event ordering, and every child submit passes through the same exposure gate.
+
+The scoring rubric makes this emphasis natural. Execution correctness and edge cases dominate the score, while report writing is a smaller but important communication channel. The report is therefore structured as a correctness defense. It starts with requirements and ownership boundaries, then spends most of its space on state, safety invariants, failure cases, and evidence. The goal is to make the implementation easy to challenge in an interview: each important claim should point to a module boundary, invariant, test, artifact, or limitation.
+
+\begin{table}[t]
+\caption{How the report maps to the visible scoring categories.}
+\label{tab:scoring}
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.28\linewidth} X}
+\toprule
+Scoring area & Report emphasis \\
+\midrule
+Execution correctness & Target-position delta, Decimal math, price bounds, exposure invariant, create-timeout handling. \\
+Edge cases and state & Parent and child state machines, cancel/fill race, duplicate events, stale streams, deadline behavior. \\
+Testing quality & Deterministic simulator, T1-T10 matrix, raw artifacts, repeatable verification commands. \\
+Algorithm design & Chase repricing policy and TWAP absolute schedule with carry-forward deficit. \\
+Architecture and communication & Clear ownership boundaries, limitations, AI disclosure, and honest Testnet evidence status. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[t]
+\caption{Compact requirement coverage. More detailed edge-case and test mappings are in the appendix.}
+\label{tab:coverage}
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.27\linewidth} >{\raggedright\arraybackslash}p{0.17\linewidth} X}
+\toprule
+Requirement area & Status & Evidence or note \\
+\midrule
+Target-position semantics & \yes & Engine computes net delta from current position; no-action and cross-zero cases are tested. \\
+Chase and TWAP & \yes & Chase passive repricing and TWAP absolute schedule are implemented as narrow algorithm helpers. \\
+Price bounds and Decimal math & \yes & Decimal-string API fields, Decimal internal math, side-aware rounding, tick/step/min checks. \\
+State machines and overfill safety & \yes & Parent and child states are monotonic; submit path enforces the exposure invariant. \\
+Deterministic simulator & \yes & Simulator covers partial fill, cancel/fill race, post-only rejection, create timeout, duplicate/lower fills, stale data, and stream disconnect. \\
+Binance Testnet integration code & \yes & Adapter and runner implement symbol rules, REST mutation, exact lookup, user streams, and evidence artifacts. \\
+Accepted Binance Testnet Chase/TWAP evidence & \gap & Runner exists, but accepted-order artifacts are account and margin dependent and are not claimed in this report unless attached. \\
+Final reporting and AI disclosure & \yes & This LaTeX report and \code{AI\_USAGE.md} document decisions, evidence, and verification. \\
+\bottomrule
+\end{tabularx}
+\end{table}

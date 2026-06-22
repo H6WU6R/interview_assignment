@@ -1,0 +1,27 @@
+\section{Core Safety Invariant}
+
+The central correctness claim is the submit gate:
+
+\begin{equation}
+\begin{split}
+&confirmed\_filled + live\_open + pending\_submit \\
+&+ pending\_cancel + unknown\_order + new\_child\_quantity \\
+&\le normalized\_target\_trade\_quantity.
+\end{split}
+\label{eq:invariant}
+\end{equation}
+
+This is stronger than recomputing a simple remaining quantity. \code{confirmed\_filled} is parent-level cumulative filled quantity. \code{live\_open} can still trade at the venue. \code{pending\_submit} protects the interval between local intent and exchange response. \code{pending\_cancel} protects the period where a cancel request has been sent but fills can still arrive. \code{unknown\_order} protects ambiguous create outcomes. \code{new\_child\_quantity} is the proposed order.
+
+The two most important buckets are \code{pending\_cancel} and \code{unknown\_order}. If the system releases \code{pending\_cancel} too early, it can submit a replacement while the old order is still fillable. If it releases \code{unknown\_order} after a create timeout, it can retry with a fresh client order ID even though the original order may be live. Both cases can create predictable overfill. Equation~\ref{eq:invariant} prevents this by reserving exposure until reconciliation proves it is gone.
+
+Other invariants support this gate:
+
+\begin{itemize}[leftmargin=1.2em]
+  \item Parent confirmed filled quantity is monotonic.
+  \item Per-child cumulative filled quantity is monotonic.
+  \item Duplicate trade or event messages cannot increase parent fill twice.
+  \item A timed-out create remains \status{UNKNOWN} until exact \code{origClientOrderId} reconciliation.
+  \item No aggressive child order may violate the configured price bound.
+  \item Terminal execution state cannot return to \status{RUNNING}.
+\end{itemize}

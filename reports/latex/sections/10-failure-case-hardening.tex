@@ -1,0 +1,18 @@
+\section{Real Failure Case and Hardening}
+
+The most important failure case found during development was ambiguous Binance create timeout handling. A timeout from \code{POST /fapi/v1/order} does not prove the order failed. The exchange may have accepted it while the client lost the response. If the client clears exposure and retries with a fresh client order ID, both the original and replacement can fill.
+
+The fix was to classify create HTTP 408 and transport timeout as unknown mutation outcomes. The child stays in \status{UNKNOWN}; its quantity remains in \code{unknown\_order\_quantity}; the engine blocks new child creation that would violate the invariant; and reconciliation queries the exact \code{origClientOrderId}. If the order is found, it is promoted back to live open or filled state. If exact lookup proves it does not exist, unknown exposure is cleared. Broad prefix scans are useful diagnostics, but they are not proof that a specific timed-out order does not exist.
+
+External-review hardening also improved several related paths:
+
+\begin{itemize}[leftmargin=1.2em]
+  \item Partial fills returned in create responses now update parent fills immediately.
+  \item Lower or duplicate cumulative snapshots cannot reduce or double-count parent fills.
+  \item Stale market data pauses execution with a controlled reason instead of raising unexpectedly.
+  \item Runtime unknown-reconciliation failures are recorded and retried.
+  \item User stream events and disconnects trigger bounded execution-scoped reconciliation.
+  \item Shutdown stops new child creation, cancels active orders, reconciles, and leaves no background execution task running.
+\end{itemize}
+
+This failure case is useful for live defense because it maps directly to a direct-deduction item in the brief and shows that the implementation was hardened against a concrete venue ambiguity, not just a theoretical edge case.

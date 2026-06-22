@@ -305,14 +305,20 @@ class ExecutionEngine:
         record, actor = self._lookup_execution(execution_id)
 
         async def cancel() -> ExecutionRecord:
-            if record.status.is_terminal or record.status is ExecutionStatus.CANCELLING:
+            if record.status.is_terminal:
                 return self._snapshot(record)
 
-            record.status = transition_execution(record.status, ExecutionStatus.CANCELLING)
-            record.final_reason = CANCEL_REQUESTED
+            if record.status is not ExecutionStatus.CANCELLING:
+                record.status = transition_execution(record.status, ExecutionStatus.CANCELLING)
+                record.final_reason = CANCEL_REQUESTED
+
+            await self._reconcile_locked(record, exact_unknown_lookup=True)
             await self._cancel_active_children_locked(record)
-            await self._reconcile_locked(record)
-            self._terminalize_manual_cancel_if_clear_locked(record)
+            await self._reconcile_locked(record, exact_unknown_lookup=True)
+            if self._target_filled(record):
+                self._complete_locked(record, TARGET_QUANTITY_FILLED)
+            else:
+                self._terminalize_manual_cancel_if_clear_locked(record)
             return self._snapshot(record)
 
         return await actor.apply(cancel)
@@ -330,7 +336,11 @@ class ExecutionEngine:
                 return self._snapshot(record)
 
             if record.exposure.unknown_order_quantity > Decimal("0"):
-                return self._snapshot(record)
+                await self._reconcile_locked(record, exact_unknown_lookup=True)
+                if record.exposure.unknown_order_quantity > Decimal("0"):
+                    if self._deadline_reached(record):
+                        record.final_reason = CREATE_TIMEOUT_PENDING_RECONCILIATION
+                    return self._snapshot(record)
 
             await self._reconcile_locked(record)
 
@@ -678,6 +688,7 @@ class ExecutionEngine:
         *,
         start_time_ms: int | None = None,
         end_time_ms: int | None = None,
+        exact_unknown_lookup: bool = True,
     ) -> None:
         tracker = record.exposure_tracker
         if tracker is None:
@@ -697,7 +708,7 @@ class ExecutionEngine:
         await self._apply_reconciliation_result_locked(
             record,
             result,
-            exact_unknown_lookup=True,
+            exact_unknown_lookup=exact_unknown_lookup,
         )
 
     async def _apply_reconciliation_result_locked(

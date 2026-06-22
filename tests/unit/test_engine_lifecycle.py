@@ -473,28 +473,24 @@ async def test_aggressive_deadline_rejects_buy_when_marketable_price_exceeds_upp
     assert reconciliation.orders == []
 
 
-async def test_create_timeout_discoverable_reserves_unknown_until_reconcile_maps_live_open() -> None:
+async def test_create_timeout_discoverable_reserves_unknown_until_run_once_maps_live_open() -> None:
     service, simulator, _ = await fresh_service()
     execution = await service.create_execution(execution_request())
     prefix = make_client_order_prefix(execution.execution_id)
     simulator.script_create_timeout(prefix)
 
     timed_out = await service.run_once(execution.execution_id)
-    blocked_before_reconcile = await service.run_once(execution.execution_id)
+    reconciled_by_run_once = await service.run_once(execution.execution_id)
 
     assert len(timed_out.child_orders) == 1
     assert timed_out.child_orders[0].status is ChildOrderStatus.UNKNOWN
     assert timed_out.exposure.unknown_order_quantity == Decimal("0.010")
     assert timed_out.exposure.reserved_exposure == timed_out.required_quantity
-    assert len(blocked_before_reconcile.child_orders) == 1
-    assert blocked_before_reconcile.child_orders[0].client_order_id == timed_out.child_orders[0].client_order_id
-    assert blocked_before_reconcile.exposure.unknown_order_quantity == Decimal("0.010")
-
-    reconciled = await service.reconcile_execution(execution.execution_id)
-
-    assert reconciled.child_orders[0].status is ChildOrderStatus.OPEN
-    assert reconciled.exposure.unknown_order_quantity == Decimal("0")
-    assert reconciled.exposure.live_open_quantity == Decimal("0.010")
+    assert len(reconciled_by_run_once.child_orders) == 1
+    assert reconciled_by_run_once.child_orders[0].client_order_id == timed_out.child_orders[0].client_order_id
+    assert reconciled_by_run_once.child_orders[0].status is ChildOrderStatus.OPEN
+    assert reconciled_by_run_once.exposure.unknown_order_quantity == Decimal("0")
+    assert reconciled_by_run_once.exposure.live_open_quantity == Decimal("0.010")
 
 
 async def test_create_timeout_not_found_clears_unknown_and_retries_with_new_client_order_id() -> None:

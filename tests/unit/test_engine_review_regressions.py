@@ -1,0 +1,184 @@
+from __future__ import annotations
+
+from decimal import Decimal
+
+import pytest
+
+from execution.ids import make_client_order_prefix
+from execution.models import (
+    Algorithm,
+    ChildOrder,
+    ChildOrderStatus,
+    DeadlinePolicy,
+    Fill,
+    ReconciliationResult,
+    Side,
+)
+from test_engine_lifecycle import SYMBOL, execution_request, fresh_service
+
+
+async def test_unknown_create_cancel_reconciles_then_cancels_open_child() -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    prefix = make_client_order_prefix(execution.execution_id)
+    simulator.script_create_timeout(prefix)
+
+    after_timeout = await service.run_once(execution.execution_id)
+    assert after_timeout.status.value == "RUNNING"
+    assert after_timeout.child_orders[0].status is ChildOrderStatus.UNKNOWN
+    assert after_timeout.exposure.unknown_order_quantity == Decimal("0.010")
+
+    after_cancel = await service.cancel_execution(execution.execution_id)
+
+    assert after_cancel.status.value == "CANCELLED"
+    assert after_cancel.exposure.reserved_exposure == Decimal("0")
+    assert after_cancel.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert after_cancel.child_orders[0].exchange_order_id is not None
+
+
+async def test_unhealthy_stream_does_not_block_expiry() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(execution_request(duration=1))
+    opened = await service.run_once(execution.execution_id)
+    assert opened.status.value == "RUNNING"
+    assert opened.child_orders
+
+    simulator.set_stream_health(user_stream_healthy=False)
+    clock.advance(5)
+    expired = await service.run_once(execution.execution_id)
+
+    assert expired.status.value in {"EXPIRED", "PARTIALLY_COMPLETED", "CANCELLED"}
+    assert expired.status.value != "RUNNING"
+    assert expired.completed_monotonic is not None
+    assert expired.final_reason is not None
+
+
+async def test_aggressive_deadline_with_stale_market_terminalizes() -> None:
+    service, _simulator, clock = await fresh_service()
+    execution = await service.create_execution(
+        execution_request(
+            duration=1,
+            deadline_policy=DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE,
+        )
+    )
+    clock.advance(120)
+
+    terminal = await service.run_once(execution.execution_id)
+
+    assert terminal.status.value == "EXPIRED"
+    assert terminal.completed_monotonic is not None
+    assert terminal.final_reason in {"DEADLINE_AGGRESSIVE_ATTEMPTED", "MARKET_DATA_STALE_RECONCILED"}
+    assert terminal.summary is not None
+
+
+async def test_late_actual_trade_price_replaces_snapshot_limit_price_for_vwap() -> None:
+    service, _simulator, _clock = await fresh_service()
+    execution = await service.create_execution(execution_request(target_position=Decimal("0.005")))
+    opened = await service.run_once(execution.execution_id)
+    child = opened.child_orders[0]
+
+    snapshot_order = ChildOrder(
+        child_order_id=child.child_order_id,
+        client_order_id=child.client_order_id,
+        symbol=SYMBOL,
+        side=Side.BUY,
+        submitted_quantity=child.submitted_quantity,
+        price=child.price,
+        status=ChildOrderStatus.FILLED,
+        confirmed_filled_quantity=Decimal("0.005"),
+        exchange_order_id="order-1",
+        raw_status="FILLED",
+    )
+    after_snapshot = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[snapshot_order], fills=[]),
+    )
+    assert after_snapshot.summary is not None
+    assert after_snapshot.summary.metrics["execution_vwap"] == "95000"
+
+    actual_fill = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="actual-trade-1",
+        cumulative_filled_quantity=Decimal("0.005"),
+        last_filled_quantity=Decimal("0.005"),
+        last_fill_price=Decimal("49999.5"),
+        event_time_ms=1,
+        transaction_time_ms=1,
+        is_maker=True,
+    )
+    after_fill = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[actual_fill]),
+    )
+
+    assert after_fill.summary is not None
+    assert after_fill.summary.metrics["execution_vwap"] == "49999.5"
+    assert after_fill.metric_counts.get("duplicate_events_ignored", 0) == 0
+
+
+async def test_out_of_order_fills_compute_vwap_from_each_trade_delta() -> None:
+    service, _simulator, _clock = await fresh_service()
+    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    opened = await service.run_once(execution.execution_id)
+    child = opened.child_orders[0]
+
+    second_fill_first = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="trade-2",
+        cumulative_filled_quantity=Decimal("0.006"),
+        last_filled_quantity=Decimal("0.002"),
+        last_fill_price=Decimal("95010"),
+        event_time_ms=20,
+        transaction_time_ms=20,
+        is_maker=False,
+    )
+    first_fill_late = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="trade-1",
+        cumulative_filled_quantity=Decimal("0.004"),
+        last_filled_quantity=Decimal("0.004"),
+        last_fill_price=Decimal("95005"),
+        event_time_ms=10,
+        transaction_time_ms=10,
+        is_maker=True,
+    )
+
+    after = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[second_fill_first, first_fill_late]),
+    )
+
+    assert after.summary is not None
+    assert after.fill_vwap_inputs == [
+        (Decimal("95005"), Decimal("0.004")),
+        (Decimal("95010"), Decimal("0.002")),
+    ]
+    assert after.summary.metrics["execution_vwap"] == "95006.66666666666666666666667"
+
+
+async def test_temporary_sell_min_notional_waits_until_price_becomes_valid() -> None:
+    service, simulator, _clock = await fresh_service(
+        bid=Decimal("4000"),
+        ask=Decimal("4001"),
+        position=Decimal("0"),
+    )
+    execution = await service.create_execution(
+        execution_request(
+            target_position=Decimal("-0.001"),
+            lower=Decimal("1"),
+            upper=Decimal("100000"),
+            duration=100,
+        )
+    )
+
+    waiting = await service.run_once(execution.execution_id)
+    assert waiting.status.value == "RUNNING"
+    assert waiting.child_orders == []
+    assert waiting.final_reason == "ORDER_SHAPE_TEMPORARILY_UNTRADEABLE"
+
+    await simulator.push_market_data(SYMBOL, Decimal("5000"), Decimal("5001"), exchange_event_time=20)
+    active = await service.run_once(execution.execution_id)
+
+    assert active.status.value == "RUNNING"
+    assert len(active.child_orders) == 1
+    assert active.child_orders[0].side is Side.SELL

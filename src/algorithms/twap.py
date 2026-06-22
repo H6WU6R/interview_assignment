@@ -1,3 +1,5 @@
+"""Pure TWAP schedule and safe-sizing helpers."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -10,6 +12,8 @@ def scheduled_cumulative_quantity(
     elapsed_time: Decimal,
     total_duration: Decimal,
 ) -> Decimal:
+    """Return cumulative target quantity implied by absolute elapsed time."""
+
     if total_duration <= Decimal("0"):
         raise ValueError("total_duration must be positive")
     if total_trade_quantity < Decimal("0"):
@@ -24,6 +28,8 @@ def effective_slice_elapsed(
     total_duration: Decimal,
     number_of_slices: int,
 ) -> Decimal:
+    """Return elapsed schedule time snapped to completed TWAP slice boundaries."""
+
     if total_duration <= Decimal("0"):
         raise ValueError("total_duration must be positive")
     if number_of_slices <= 0:
@@ -42,6 +48,8 @@ def scheduled_deficit(
     scheduled_cumulative: Decimal,
     confirmed_cumulative_filled: Decimal,
 ) -> Decimal:
+    """Return non-negative scheduled quantity not yet confirmed filled."""
+
     if scheduled_cumulative < Decimal("0"):
         raise ValueError("scheduled_cumulative must be non-negative")
     if confirmed_cumulative_filled < Decimal("0"):
@@ -52,6 +60,8 @@ def scheduled_deficit(
 
 
 def safe_child_quantity(deficit: Decimal, exposure: Exposure) -> Decimal:
+    """Return the scheduled deficit left after subtracting reserved exposure."""
+
     if deficit < Decimal("0"):
         raise ValueError("deficit must be non-negative")
 

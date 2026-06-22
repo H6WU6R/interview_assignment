@@ -1,3 +1,5 @@
+"""Clock abstractions for system time and deterministic tests."""
+
 from __future__ import annotations
 
 import time
@@ -6,6 +8,8 @@ from datetime import UTC, datetime
 
 
 class Clock:
+    """Clock interface used to separate monotonic scheduling from wall-clock logging."""
+
     def monotonic(self) -> float:
         raise NotImplementedError
 
@@ -14,6 +18,8 @@ class Clock:
 
 
 class SystemClock(Clock):
+    """System clock backed by monotonic time and UTC wall time."""
+
     def monotonic(self) -> float:
         return time.monotonic()
 
@@ -23,6 +29,8 @@ class SystemClock(Clock):
 
 @dataclass
 class ManualClock(Clock):
+    """Controllable clock for deterministic tests and simulator examples."""
+
     current: float = 0.0
 
     def monotonic(self) -> float:

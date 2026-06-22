@@ -1,3 +1,5 @@
+"""Execution engine for lifecycle, exposure accounting, and reconciliation."""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -78,6 +80,8 @@ RETRYABLE_ORDER_REJECT_BACKOFF_SECONDS = Decimal("1")
 
 @dataclass
 class ExposureTracker:
+    """Tracks filled and reserved exposure buckets for one parent execution."""
+
     target_quantity: Decimal
     exposure: Exposure = field(default_factory=Exposure)
     seen_trade_ids: set[str] = field(default_factory=set)
@@ -175,6 +179,8 @@ class ExposureTracker:
 
 @dataclass
 class ExecutionRecord:
+    """Mutable engine-owned state for one execution."""
+
     execution_id: str
     request: ExecutionRequest
     status: ExecutionStatus
@@ -216,12 +222,16 @@ class ExecutionRecord:
 
 
 class UnknownExecution(LookupError):
+    """Raised when an execution identifier is not known to the engine."""
+
     def __init__(self, execution_id: str) -> None:
         super().__init__(f"unknown execution: {execution_id}")
         self.execution_id = execution_id
 
 
 class ExecutionEngine:
+    """Owns execution lifecycle, child orders, exposure accounting, and reconciliation."""
+
     def __init__(self, adapter: ExchangeAdapter, clock: Clock | None = None) -> None:
         self._adapter = adapter
         self._clock = clock or getattr(adapter, "clock", None) or ManualClock()

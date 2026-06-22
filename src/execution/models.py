@@ -1,3 +1,5 @@
+"""Domain models and enums for execution lifecycle state."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -7,39 +9,53 @@ from typing import Any
 
 
 class Environment(StrEnum):
+    """Supported execution environments."""
+
     SIMULATION = "simulation"
     TESTNET = "testnet"
     MAINNET = "mainnet"
 
 
 class Algorithm(StrEnum):
+    """Supported parent execution algorithms."""
+
     CHASE = "CHASE"
     TWAP = "TWAP"
 
 
 class DeadlinePolicy(StrEnum):
+    """Policy for handling unfilled quantity at the target deadline."""
+
     CANCEL_REMAINDER = "CANCEL_REMAINDER"
     AGGRESSIVE_WITHIN_RANGE = "AGGRESSIVE_WITHIN_RANGE"
 
 
 class RepricingMode(StrEnum):
+    """Policy controlling which Chase price movements trigger repricing."""
+
     ADVERSE_ONLY = "ADVERSE_ONLY"
     TWO_SIDED = "TWO_SIDED"
 
 
 class Side(StrEnum):
+    """Trade side required to move toward the target position."""
+
     BUY = "BUY"
     SELL = "SELL"
     NO_ACTION = "NO_ACTION"
 
 
 class TimeInForce(StrEnum):
+    """Exchange time-in-force values supported by the execution engine."""
+
     GTC = "GTC"
     GTX = "GTX"
     IOC = "IOC"
 
 
 class ExecutionStatus(StrEnum):
+    """Parent execution lifecycle status."""
+
     CREATED = "CREATED"
     VALIDATING = "VALIDATING"
     RUNNING = "RUNNING"
@@ -62,6 +78,8 @@ class ExecutionStatus(StrEnum):
 
 
 class ChildOrderStatus(StrEnum):
+    """Child order lifecycle status."""
+
     PENDING_SUBMIT = "PENDING_SUBMIT"
     OPEN = "OPEN"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
@@ -82,6 +100,8 @@ class ChildOrderStatus(StrEnum):
 
 @dataclass(frozen=True)
 class ExecutionParameters:
+    """Algorithm and lifecycle parameters for a parent execution."""
+
     reprice_threshold_bps: Decimal = Decimal("2.0")
     minimum_reprice_interval_ms: int = 500
     number_of_slices: int = 10
@@ -92,6 +112,8 @@ class ExecutionParameters:
 
 @dataclass(frozen=True)
 class ExecutionRequest:
+    """Immutable request to create a parent execution."""
+
     environment: Environment
     symbol: str
     algorithm: Algorithm
@@ -105,6 +127,8 @@ class ExecutionRequest:
 
 @dataclass(frozen=True)
 class SymbolRules:
+    """Exchange trading rules for one symbol."""
+
     symbol: str
     tick_size: Decimal
     quantity_step: Decimal
@@ -116,6 +140,8 @@ class SymbolRules:
 
 @dataclass(frozen=True)
 class MarketSnapshot:
+    """Best bid and ask snapshot with exchange and local timing metadata."""
+
     symbol: str
     bid: Decimal
     ask: Decimal
@@ -133,6 +159,8 @@ class MarketSnapshot:
 
 @dataclass(frozen=True)
 class PositionSnapshot:
+    """Current exchange position for one symbol."""
+
     symbol: str
     position: Decimal
     update_time_ms: int | None = None
@@ -140,6 +168,8 @@ class PositionSnapshot:
 
 @dataclass(frozen=True)
 class OrderRequest:
+    """Exchange order submission request for one child order."""
+
     execution_id: str
     child_order_id: str
     client_order_id: str
@@ -154,6 +184,8 @@ class OrderRequest:
 
 @dataclass
 class ChildOrder:
+    """Mutable child order state tracked by the execution engine."""
+
     child_order_id: str
     client_order_id: str
     symbol: str
@@ -174,6 +206,8 @@ class ChildOrder:
 
 @dataclass(frozen=True)
 class Fill:
+    """Exchange fill event normalized for exposure accounting."""
+
     client_order_id: str
     trade_id: str | None
     cumulative_filled_quantity: Decimal
@@ -186,6 +220,8 @@ class Fill:
 
 @dataclass(frozen=True)
 class ReconciliationResult:
+    """Orders and fills recovered from exchange state or user events."""
+
     orders: list[ChildOrder]
     fills: list[Fill]
     warnings: list[str] = field(default_factory=list)
@@ -193,6 +229,8 @@ class ReconciliationResult:
 
 @dataclass
 class Exposure:
+    """Filled and reserved exposure buckets for one parent execution."""
+
     confirmed_filled_quantity: Decimal = Decimal("0")
     live_open_quantity: Decimal = Decimal("0")
     pending_submit_quantity: Decimal = Decimal("0")
@@ -211,6 +249,8 @@ class Exposure:
 
 @dataclass
 class ExecutionSummary:
+    """Terminal execution summary and metrics."""
+
     execution_id: str
     final_status: ExecutionStatus
     final_reason: str
@@ -221,6 +261,8 @@ def required_trade(
     target_position: Decimal,
     current_position: Decimal,
 ) -> tuple[Side, Decimal]:
+    """Return side and absolute quantity required to move from current to target position."""
+
     quantity = target_position - current_position
     if quantity > Decimal("0"):
         return Side.BUY, quantity

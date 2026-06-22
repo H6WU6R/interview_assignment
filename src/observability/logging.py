@@ -1,3 +1,5 @@
+"""JSON logging helpers with secret sanitization."""
+
 from __future__ import annotations
 
 import json
@@ -27,6 +29,8 @@ _KEY_NORMALIZATION_TABLE = str.maketrans("", "", "_- ")
 
 
 def to_jsonable(value: Any) -> Any:
+    """Convert common runtime values into JSON-serializable values."""
+
     if isinstance(value, Decimal):
         return format(value, "f")
     if isinstance(value, Enum):
@@ -43,6 +47,8 @@ def to_jsonable(value: Any) -> Any:
 
 
 def sanitize_log_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a JSON-safe payload with secrets and signed request data removed."""
+
     sanitized: dict[str, Any] = {}
     for key, value in payload.items():
         if _is_sensitive_key(key):
@@ -68,6 +74,8 @@ def _sanitize_value(value: Any) -> Any:
 
 
 def append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
+    """Append one sanitized payload as a JSON Lines record."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(sanitize_log_payload(payload), sort_keys=True) + "\n")

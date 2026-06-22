@@ -1,3 +1,5 @@
+"""Risk validation helpers for order shape and exposure safety."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -6,10 +8,14 @@ from execution.models import Exposure, Side, SymbolRules
 
 
 class ValidationError(ValueError):
+    """Raised when an order or exposure safety check fails."""
+
     pass
 
 
 def validate_quantity(quantity: Decimal, price: Decimal, rules: SymbolRules) -> None:
+    """Reject quantities that violate exchange quantity or notional rules."""
+
     if quantity < rules.min_quantity:
         raise ValidationError(f"quantity {quantity} below min quantity {rules.min_quantity}")
     notional = quantity * price
@@ -18,6 +24,8 @@ def validate_quantity(quantity: Decimal, price: Decimal, rules: SymbolRules) -> 
 
 
 def validate_price_bounds(side: Side, price: Decimal, lower: Decimal, upper: Decimal) -> None:
+    """Reject prices outside the target price band for the trade side."""
+
     if lower > upper:
         raise ValidationError("lower price bound cannot exceed upper price bound")
     if side is Side.BUY and price > upper:
@@ -41,6 +49,8 @@ def validate_order_shape(
     best_ask: Decimal,
     post_only: bool,
 ) -> None:
+    """Reject orders that violate tick, post-only, or quantity rules."""
+
     if rules.status != "TRADING":
         raise ValidationError(f"symbol {rules.symbol} is not trading: status={rules.status}")
     if rules.quantity_step <= Decimal("0"):
@@ -71,6 +81,8 @@ def validate_child_order_safety(
     lower: Decimal,
     upper: Decimal,
 ) -> None:
+    """Reject child orders that violate price bounds or exchange order shape rules."""
+
     validate_price_bounds(side, price, lower, upper)
     validate_order_shape(quantity, price, side, rules, best_bid, best_ask, post_only)
 
@@ -80,6 +92,8 @@ def check_exposure_invariant(
     new_child_quantity: Decimal,
     normalized_target_trade_quantity: Decimal,
 ) -> None:
+    """Reject exposure that would exceed the normalized target trade quantity."""
+
     total = exposure.confirmed_filled_quantity + exposure.reserved_exposure + new_child_quantity
     if total > normalized_target_trade_quantity:
         raise ValidationError(

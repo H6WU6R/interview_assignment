@@ -1,3 +1,5 @@
+"""Terminal execution summary metric helpers."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -7,10 +9,14 @@ from risk.decimal_math import completion_rate, slippage_bps
 
 
 def decimal_string(value: Decimal) -> str:
+    """Return a normalized plain decimal string."""
+
     return format(value.normalize(), "f")
 
 
 def execution_vwap(fills: list[tuple[Decimal, Decimal]]) -> Decimal:
+    """Return volume-weighted average price from price and quantity pairs."""
+
     filled_quantity = sum(quantity for _, quantity in fills)
     if filled_quantity == Decimal("0"):
         return Decimal("0")
@@ -19,6 +25,8 @@ def execution_vwap(fills: list[tuple[Decimal, Decimal]]) -> Decimal:
 
 
 def overfill_quantity(filled_quantity: Decimal, required_quantity: Decimal) -> Decimal:
+    """Return filled quantity above the required quantity, floored at zero."""
+
     excess = filled_quantity - required_quantity
     return excess if excess > Decimal("0") else Decimal("0")
 
@@ -40,6 +48,8 @@ def summary_metrics(
     unknown_orders_reconciled: int,
     max_reserved_exposure: Decimal,
 ) -> dict[str, str | int]:
+    """Build terminal execution metrics for summaries and artifacts."""
+
     unfilled = required_quantity - filled_quantity
     if unfilled < Decimal("0"):
         unfilled = Decimal("0")

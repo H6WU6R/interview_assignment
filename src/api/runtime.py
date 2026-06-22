@@ -1,3 +1,5 @@
+"""Runtime supervisor for execution services and exchange streams."""
+
 from __future__ import annotations
 
 import asyncio
@@ -16,10 +18,14 @@ from execution.service import ExecutionService
 
 
 class ActiveExecutionConflict(RuntimeError):
+    """Raised when a symbol already has an active execution in an environment."""
+
     pass
 
 
 class RuntimeConfigurationError(RuntimeError):
+    """Raised when a requested runtime environment is not configured."""
+
     pass
 
 
@@ -27,6 +33,8 @@ USER_EVENT_RECONCILIATION_LOOKBACK_MS = 60_000
 
 
 class ExecutionRuntime:
+    """Supervises execution services, background loops, streams, and shutdown."""
+
     def __init__(
         self,
         *,

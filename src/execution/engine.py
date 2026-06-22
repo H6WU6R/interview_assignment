@@ -349,13 +349,15 @@ class ExecutionEngine:
                 self._complete_locked(record, TARGET_QUANTITY_FILLED)
                 return self._snapshot(record)
 
-            if self._deadline_reached(record) and not await self._adapter.health_check_streams():
+            stream_healthy = await self._adapter.health_check_streams()
+            if self._deadline_reached(record) and not stream_healthy:
+                record.final_reason = STREAM_HEALTH_DEGRADED_RECONCILED
                 await self._cancel_active_children_locked(record)
                 await self._reconcile_locked(record, exact_unknown_lookup=True)
                 self._terminalize_deadline_locked(record, STREAM_HEALTH_DEGRADED_RECONCILED)
                 return self._snapshot(record)
 
-            if not await self._adapter.health_check_streams():
+            if not stream_healthy:
                 record.final_reason = STREAM_HEALTH_DEGRADED_RECONCILED
                 return self._snapshot(record)
 
@@ -431,7 +433,11 @@ class ExecutionEngine:
                     )
                 except NoFreshMarketData:
                     record.final_reason = MARKET_DATA_STALE_RECONCILED
-                    await self._reconcile_locked(record)
+                    await self._reconcile_locked(record, exact_unknown_lookup=True)
+                    if self._deadline_reached(record):
+                        await self._cancel_active_children_locked(record)
+                        await self._reconcile_locked(record, exact_unknown_lookup=True)
+                        self._terminalize_deadline_locked(record, MARKET_DATA_STALE_RECONCILED)
                     return self._snapshot(record)
 
             if self._target_filled(record):

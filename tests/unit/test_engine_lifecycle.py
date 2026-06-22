@@ -5,6 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from exchanges.base import (
+    NoFreshMarketData,
     OrderCancelTimeout,
     OrderCreateTimeout,
     OrderRejected,
@@ -1702,6 +1703,74 @@ async def test_stream_health_failure_reconciles_existing_fill_without_new_submit
     assert len(snapshot.child_orders) == 1
     assert snapshot.exposure.confirmed_filled_quantity == Decimal("0.004")
     assert snapshot.exposure.live_open_quantity == Decimal("0.006")
+
+
+async def test_deadline_stream_health_check_is_single_decision() -> None:
+    class OneShotUnhealthySimulator(DeterministicSimulator):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.health_checks = 0
+
+        async def health_check_streams(self) -> bool:
+            self.health_checks += 1
+            if self.health_checks > 1:
+                raise AssertionError("stream health checked more than once")
+            return False
+
+    clock = ManualClock()
+    simulator = OneShotUnhealthySimulator(clock=clock)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(simulator, clock=clock)
+    execution = await service.create_execution(execution_request(duration=1))
+    opened = await service.run_once(execution.execution_id)
+    simulator.health_checks = 0
+    clock.advance(5)
+
+    terminal = await service.run_once(execution.execution_id)
+
+    assert opened.status is ExecutionStatus.RUNNING
+    assert terminal.status is ExecutionStatus.EXPIRED
+    assert terminal.final_reason == "STREAM_HEALTH_DEGRADED_RECONCILED"
+    assert simulator.health_checks == 1
+
+
+async def test_unhealthy_deadline_reserved_exposure_preserves_final_reason() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(execution_request(duration=1))
+    opened = await service.run_once(execution.execution_id)
+    prefix = make_client_order_prefix(execution.execution_id)
+    simulator.script_cancel_reconcile_open(prefix)
+    simulator.set_stream_health(user_stream_healthy=False)
+    clock.advance(5)
+
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert opened.status is ExecutionStatus.RUNNING
+    assert snapshot.status is ExecutionStatus.RUNNING
+    assert snapshot.exposure.reserved_exposure > Decimal("0")
+    assert snapshot.final_reason == "STREAM_HEALTH_DEGRADED_RECONCILED"
+
+
+async def test_submit_time_stale_market_data_at_deadline_terminalizes() -> None:
+    class SubmitStaleMarketSimulator(DeterministicSimulator):
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            raise NoFreshMarketData(f"stale market data for {order_request.symbol}")
+
+    clock = ManualClock()
+    simulator = SubmitStaleMarketSimulator(clock=clock)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(simulator, clock=clock)
+    execution = await service.create_execution(
+        execution_request(duration=1, upper=Decimal("95001.00"))
+    )
+    clock.advance(1)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+
+    terminal = await service.run_once(execution.execution_id)
+
+    assert terminal.status is ExecutionStatus.EXPIRED
+    assert terminal.final_reason == "MARKET_DATA_STALE_RECONCILED"
+    assert terminal.summary is not None
 
 
 async def test_stale_rest_snapshot_cannot_reduce_child_cumulative_fill() -> None:

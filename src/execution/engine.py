@@ -760,6 +760,16 @@ class ExecutionEngine:
         children_by_client_id = {child.client_order_id: child for child in record.child_orders}
         exchange_client_ids = {order.client_order_id for order in result.orders}
         fill_client_ids = {fill.client_order_id for fill in result.fills}
+        order_snapshot_confirmed_by_client_id: dict[str, Decimal] = {}
+        for exchange_order in result.orders:
+            current_confirmed = order_snapshot_confirmed_by_client_id.get(exchange_order.client_order_id)
+            if (
+                current_confirmed is None
+                or exchange_order.confirmed_filled_quantity > current_confirmed
+            ):
+                order_snapshot_confirmed_by_client_id[exchange_order.client_order_id] = (
+                    exchange_order.confirmed_filled_quantity
+                )
 
         for exchange_order in result.orders:
             child = children_by_client_id.get(exchange_order.client_order_id)
@@ -784,6 +794,11 @@ class ExecutionEngine:
             child = children_by_client_id.get(fill.client_order_id)
             if child is None:
                 continue
+            validation_confirmed_limit = max(
+                child.confirmed_filled_quantity,
+                order_snapshot_confirmed_by_client_id.get(fill.client_order_id, Decimal("0")),
+                fill.cumulative_filled_quantity,
+            )
             self._update_child_cumulative_fill_locked(
                 record,
                 child,
@@ -795,6 +810,7 @@ class ExecutionEngine:
                 fill_quantity_delta=fill.last_filled_quantity,
                 event_time_ms=fill.event_time_ms,
                 transaction_time_ms=fill.transaction_time_ms,
+                authoritative_confirmed_limit=validation_confirmed_limit,
             )
 
         for exchange_order in result.orders:
@@ -1302,6 +1318,7 @@ class ExecutionEngine:
         fill_quantity_delta: Decimal | None = None,
         event_time_ms: int | None = None,
         transaction_time_ms: int | None = None,
+        authoritative_confirmed_limit: Decimal | None = None,
     ) -> None:
         tracker = self._require_exposure_tracker(record)
 
@@ -1330,7 +1347,11 @@ class ExecutionEngine:
                 child.client_order_id,
                 [],
             )
-            interval_limit = max(child.confirmed_filled_quantity, incoming_cumulative)
+            interval_limit = max(
+                child.confirmed_filled_quantity,
+                incoming_cumulative,
+                authoritative_confirmed_limit or Decimal("0"),
+            )
             if self._fill_interval_is_valid(
                 interval_start,
                 interval_end,
@@ -1347,7 +1368,7 @@ class ExecutionEngine:
                     interval_start,
                     interval_end,
                     trade_delta,
-                    child.confirmed_filled_quantity,
+                    interval_limit,
                     child_intervals,
                     trade_id=trade_id,
                 )

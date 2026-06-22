@@ -286,6 +286,70 @@ async def test_window_local_rest_trade_after_snapshot_fills_uncovered_interval()
     assert completed.metric_counts.get("duplicate_events_ignored", 0) == 0
 
 
+async def test_same_batch_snapshot_limit_accepts_window_local_rest_trade() -> None:
+    service, _simulator, _clock = await fresh_service()
+    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    opened = await service.run_once(execution.execution_id)
+    child = opened.child_orders[0]
+
+    earlier_actual = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="same-batch-window-actual-1",
+        cumulative_filled_quantity=Decimal("0.004"),
+        last_filled_quantity=Decimal("0.004"),
+        last_fill_price=Decimal("95000"),
+        event_time_ms=10,
+        transaction_time_ms=10,
+        is_maker=True,
+    )
+    after_earlier_actual = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[], fills=[earlier_actual]),
+    )
+
+    assert after_earlier_actual.exposure.confirmed_filled_quantity == Decimal("0.004")
+
+    snapshot_order = ChildOrder(
+        child_order_id=child.child_order_id,
+        client_order_id=child.client_order_id,
+        symbol=SYMBOL,
+        side=Side.BUY,
+        submitted_quantity=child.submitted_quantity,
+        price=child.price,
+        status=ChildOrderStatus.FILLED,
+        confirmed_filled_quantity=Decimal("0.006"),
+        exchange_order_id="same-batch-window-order-1",
+        raw_status="FILLED",
+    )
+    later_window_local = Fill(
+        client_order_id=child.client_order_id,
+        trade_id="same-batch-window-actual-2",
+        cumulative_filled_quantity=Decimal("0.002"),
+        last_filled_quantity=Decimal("0.002"),
+        last_fill_price=Decimal("95010"),
+        event_time_ms=20,
+        transaction_time_ms=20,
+        is_maker=False,
+    )
+    completed = await service.apply_reconciliation_result(
+        execution.execution_id,
+        ReconciliationResult(orders=[snapshot_order], fills=[later_window_local]),
+    )
+
+    expected_vwap = (
+        Decimal("95000") * Decimal("0.004")
+        + Decimal("95010") * Decimal("0.002")
+    ) / Decimal("0.006")
+    assert completed.status is ExecutionStatus.COMPLETED
+    assert completed.exposure.confirmed_filled_quantity == Decimal("0.006")
+    assert completed.child_orders[0].confirmed_filled_quantity == Decimal("0.006")
+    assert completed.summary is not None
+    assert Decimal(completed.summary.metrics["execution_vwap"]) == expected_vwap
+    assert completed.summary.metrics["maker_filled_quantity"] == Decimal("0.004")
+    assert completed.summary.metrics["taker_filled_quantity"] == Decimal("0.002")
+    assert completed.metric_counts.get("duplicate_events_ignored", 0) == 0
+
+
 async def test_overlapping_stale_unique_trade_does_not_poison_vwap_or_block_repair() -> None:
     service, _simulator, _clock = await fresh_service()
     execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))

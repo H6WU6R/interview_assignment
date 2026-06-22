@@ -181,7 +181,7 @@ uv run python scripts/run_sim_create_timeout.py
 
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
 
-Current local verification result: `311 passed`.
+Current local verification result from the latest local review run: `343 passed`.
 
 ## Known Limitations
 

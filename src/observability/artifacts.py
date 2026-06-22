@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -9,11 +10,31 @@ from typing import Any
 from observability.logging import append_jsonl, sanitize_log_payload
 
 
-def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+_RESERVED_ARTIFACT_FILENAMES = frozenset(
+    {
+        "request_snapshot.json",
+        "execution_log.jsonl",
+        "execution_summary.json",
+        "child_orders.csv",
+        "fills.csv",
+        "timeline.csv",
+        "twap_slice_ledger.csv",
+    }
+)
+_EXTRA_ARTIFACT_FILENAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _write_json(path: Path, payload: Any) -> None:
     path.write_text(
-        json.dumps(sanitize_log_payload(payload), indent=2, sort_keys=True),
+        json.dumps(_sanitize_json_payload(payload), indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def _sanitize_json_payload(payload: Any) -> Any:
+    if isinstance(payload, Mapping):
+        return sanitize_log_payload(payload)
+    return sanitize_log_payload({"payload": payload}).get("payload")
 
 
 def _write_csv(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
@@ -38,6 +59,23 @@ def _csv_value(value: Any) -> Any:
     return value
 
 
+def _extra_artifact_path(output_dir: Path, filename: str, suffix: str) -> Path:
+    path = Path(filename)
+    if (
+        not filename
+        or path.is_absolute()
+        or path.name != filename
+        or "/" in filename
+        or "\\" in filename
+        or path.stem == ""
+        or path.suffix != suffix
+        or filename in _RESERVED_ARTIFACT_FILENAMES
+        or _EXTRA_ARTIFACT_FILENAME_RE.fullmatch(filename) is None
+    ):
+        raise ValueError(f"invalid extra artifact filename: {filename!r}")
+    return output_dir / filename
+
+
 def write_execution_artifacts(
     root: Path,
     execution_id: str,
@@ -48,6 +86,9 @@ def write_execution_artifacts(
     fills: Iterable[Mapping[str, Any]],
     timeline: Iterable[Mapping[str, Any]],
     twap_slice_ledger: Iterable[Mapping[str, Any]] = (),
+    *,
+    extra_json_artifacts: Mapping[str, Any] | None = None,
+    extra_csv_artifacts: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
 ) -> Path:
     output_dir = root / execution_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -60,4 +101,8 @@ def write_execution_artifacts(
     _write_csv(output_dir / "fills.csv", fills)
     _write_csv(output_dir / "timeline.csv", timeline)
     _write_csv(output_dir / "twap_slice_ledger.csv", twap_slice_ledger)
+    for filename, payload in (extra_json_artifacts or {}).items():
+        _write_json(_extra_artifact_path(output_dir, filename, ".json"), payload)
+    for filename, rows in (extra_csv_artifacts or {}).items():
+        _write_csv(_extra_artifact_path(output_dir, filename, ".csv"), rows)
     return output_dir

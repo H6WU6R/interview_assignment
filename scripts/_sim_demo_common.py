@@ -113,7 +113,7 @@ def exposure_snapshot(record: ExecutionRecord) -> dict[str, Any]:
 
 
 def summary_snapshot(record: ExecutionRecord) -> dict[str, Any]:
-    return {
+    snapshot = {
         "execution_id": record.execution_id,
         "final_status": record.status,
         "final_reason": record.final_reason or "",
@@ -123,6 +123,9 @@ def summary_snapshot(record: ExecutionRecord) -> dict[str, Any]:
         "child_order_count": len(record.child_orders),
         "client_order_ids": [child.client_order_id for child in record.child_orders],
     }
+    if record.summary is not None:
+        snapshot["metrics"] = record.summary.metrics
+    return snapshot
 
 
 def child_order_rows(children: Iterable[ChildOrder]) -> list[dict[str, Any]]:
@@ -209,6 +212,9 @@ def write_artifacts(
     fills: Iterable[Fill],
 ) -> Path:
     log_events = list(log_events)
+    twap_slice_ledger = []
+    if record.summary is not None:
+        twap_slice_ledger = record.summary.metrics.get("twap_slice_ledger", [])
     return write_execution_artifacts(
         root=output_root,
         execution_id=record.execution_id,
@@ -218,6 +224,7 @@ def write_artifacts(
         child_orders=child_order_rows(record.child_orders),
         fills=fill_rows(fills),
         timeline=timeline_rows(log_events),
+        twap_slice_ledger=twap_slice_ledger,
     )
 
 

@@ -21,6 +21,15 @@ uv run uvicorn api.app:create_app --factory --reload
 
 The API factory wires a deterministic simulator by default. It does not send Binance orders. When run through FastAPI lifespan, the runtime starts background execution loops automatically; `/run-once` remains available for deterministic demos and debugging.
 
+Optional container run for the simulation API:
+
+```bash
+docker build -t calais-execution-algorithm .
+docker run --rm -p 8000:8000 calais-execution-algorithm
+```
+
+Do not bake Binance credentials into the image. Pass Testnet credentials at runtime only when explicitly running the Testnet scripts.
+
 ## Project Layout
 
 - `src/api/`: FastAPI app, runtime supervisor, and Pydantic request/response schemas.
@@ -32,6 +41,7 @@ The API factory wires a deterministic simulator by default. It does not send Bin
 - `scripts/`: simulator demos and credential-gated Binance Testnet runners.
 - `tests/`: unit, simulation, and optional Binance Testnet contract tests.
 - `reports/`: report draft and failure-case log.
+- `Dockerfile`, `.dockerignore`: optional container packaging for the simulation API.
 
 ## Architecture
 
@@ -163,7 +173,15 @@ uv run python scripts/run_testnet_twap.py \
   --number-of-slices 5
 ```
 
-They never fall back to the simulator. If credentials are absent, or `--confirm-send-orders` is missing, they exit before sending orders. Testnet artifacts are written under `/tmp/calais-binance-testnet` unless `--output-dir` is provided. If the Testnet account is not funded or Binance rejects the order before acceptance, keep the raw artifact as connectivity/error evidence and rerun the same script once the account can accept a small BTCUSDT order.
+They never fall back to the simulator. If credentials are absent, or `--confirm-send-orders` is missing, they exit before sending orders. Testnet artifacts are written under `/tmp/calais-binance-testnet` unless `--output-dir` is provided.
+
+The Testnet runner writes the standard execution bundle plus Testnet-specific evidence:
+
+- `symbol_rules.json`: exchange rule snapshot used for rounding and validation.
+- `reconciliation_orders.csv`: final reconciliation order rows scoped to the execution.
+- `evidence_manifest.json`: execution ID, order IDs, exchange-order evidence status, stream-event evidence flags, warning list, reconciliation counts, and rate-limit metadata.
+
+If the Testnet account is not funded or Binance rejects the order before acceptance, keep the raw artifact as connectivity/error evidence and rerun the same script once the account can accept a small BTCUSDT order.
 
 Mainnet is config-compatible only. Mutating mainnet requests are hard-disabled by default through `allow_mainnet_trading=False` and should not be used for demos.
 
@@ -181,7 +199,7 @@ uv run python scripts/run_sim_create_timeout.py
 
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
 
-Current local verification result from the latest local review run: `343 passed`.
+Current local verification result from the latest local review run: `351 passed`.
 
 ## Known Limitations
 

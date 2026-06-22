@@ -206,7 +206,9 @@ class ExecutionRecord:
     fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
     trade_fill_vwap_inputs: dict[str, tuple[Decimal, Decimal]] = field(default_factory=dict)
     trade_fill_sort_keys: dict[str, tuple[int, int, str]] = field(default_factory=dict)
-    child_authoritative_fill_quantities: dict[str, Decimal] = field(default_factory=dict)
+    child_authoritative_fill_intervals: dict[str, list[tuple[Decimal, Decimal]]] = field(
+        default_factory=dict
+    )
     anonymous_fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
     maker_filled_quantity: Decimal = Decimal("0")
     taker_filled_quantity: Decimal = Decimal("0")
@@ -1325,19 +1327,24 @@ class ExecutionEngine:
                 self._record_ignored_fill_trade_id_locked(record, trade_id)
             return
 
-        child_trade_quantity = record.child_authoritative_fill_quantities.get(
+        interval_start = incoming_cumulative - trade_delta
+        interval_end = incoming_cumulative
+        child_intervals = record.child_authoritative_fill_intervals.setdefault(
             child.client_order_id,
-            Decimal("0"),
+            [],
         )
-        if child_trade_quantity + trade_delta > child.confirmed_filled_quantity:
+        if (
+            interval_start < Decimal("0")
+            or interval_end <= interval_start
+            or interval_end > child.confirmed_filled_quantity
+            or self._fill_interval_overlaps(interval_start, interval_end, child_intervals)
+        ):
             if trade_id is not None:
                 record.seen_fill_trade_ids.add(trade_id)
                 self._record_ignored_fill_trade_id_locked(record, trade_id)
             return
 
-        record.child_authoritative_fill_quantities[child.client_order_id] = (
-            child_trade_quantity + trade_delta
-        )
+        child_intervals.append((interval_start, interval_end))
 
         if trade_id is not None:
             record.seen_fill_trade_ids.add(trade_id)
@@ -1359,6 +1366,17 @@ class ExecutionEngine:
         elif is_maker is False:
             record.taker_filled_quantity += trade_delta
             self._increment_metric(record, "taker_fills")
+
+    @staticmethod
+    def _fill_interval_overlaps(
+        start: Decimal,
+        end: Decimal,
+        intervals: list[tuple[Decimal, Decimal]],
+    ) -> bool:
+        return any(
+            start < existing_end and end > existing_start
+            for existing_start, existing_end in intervals
+        )
 
     def _record_ignored_fill_trade_id_locked(self, record: ExecutionRecord, trade_id: str) -> None:
         if trade_id in record.ignored_fill_trade_ids:

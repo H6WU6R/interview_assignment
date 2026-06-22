@@ -491,6 +491,8 @@ async def test_create_timeout_discoverable_reserves_unknown_until_run_once_maps_
     assert reconciled_by_run_once.child_orders[0].status is ChildOrderStatus.OPEN
     assert reconciled_by_run_once.exposure.unknown_order_quantity == Decimal("0")
     assert reconciled_by_run_once.exposure.live_open_quantity == Decimal("0.010")
+    assert reconciled_by_run_once.final_reason == "CREATE_TIMEOUT_RECONCILED"
+    assert reconciled_by_run_once.child_orders[0].terminal_reason is None
 
 
 async def test_create_timeout_not_found_clears_unknown_and_retries_with_new_client_order_id() -> None:
@@ -500,16 +502,39 @@ async def test_create_timeout_not_found_clears_unknown_and_retries_with_new_clie
     simulator.script_create_timeout_not_found(prefix)
 
     timed_out = await service.run_once(execution.execution_id)
-    reconciled = await service.reconcile_execution(execution.execution_id)
-    retried = await service.run_once(execution.execution_id)
+    reconciled = await service.run_once(execution.execution_id)
 
     assert timed_out.child_orders[0].status is ChildOrderStatus.UNKNOWN
     assert reconciled.exposure.unknown_order_quantity == Decimal("0")
+    assert len(reconciled.child_orders) == 1
+    assert reconciled.child_orders[0].status is ChildOrderStatus.REJECTED
+    assert reconciled.child_orders[0].terminal_reason == "CREATE_TIMEOUT_ORDER_NOT_FOUND"
+
+    retried = await service.run_once(execution.execution_id)
+
     assert len(retried.child_orders) == 2
     assert retried.child_orders[0].status is ChildOrderStatus.REJECTED
     assert retried.child_orders[0].terminal_reason == "CREATE_TIMEOUT_ORDER_NOT_FOUND"
     assert retried.child_orders[1].status is ChildOrderStatus.OPEN
     assert retried.child_orders[1].client_order_id != retried.child_orders[0].client_order_id
+
+
+async def test_cancel_after_create_timeout_clears_pending_reconciliation_reason() -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    prefix = make_client_order_prefix(execution.execution_id)
+    simulator.script_create_timeout(prefix)
+
+    timed_out = await service.run_once(execution.execution_id)
+    assert timed_out.child_orders[0].status is ChildOrderStatus.UNKNOWN
+    assert timed_out.child_orders[0].terminal_reason == "CREATE_TIMEOUT_PENDING_RECONCILIATION"
+
+    cancelled = await service.cancel_execution(execution.execution_id)
+
+    assert cancelled.status is ExecutionStatus.CANCELLED
+    assert cancelled.final_reason == "CANCEL_REQUESTED"
+    assert cancelled.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert cancelled.child_orders[0].terminal_reason is None
 
 
 async def test_adapter_level_create_timeout_reserves_unknown_exposure() -> None:

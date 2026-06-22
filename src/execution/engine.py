@@ -341,6 +341,7 @@ class ExecutionEngine:
                     if self._deadline_reached(record):
                         record.final_reason = CREATE_TIMEOUT_PENDING_RECONCILIATION
                     return self._snapshot(record)
+                return self._snapshot(record)
 
             await self._reconcile_locked(record)
 
@@ -783,14 +784,15 @@ class ExecutionEngine:
         self._refresh_reserved_exposure_locked(record)
         self._record_max_reserved_exposure(record)
         self._assert_exposure_invariant_locked(record)
-        if (
-            record.final_reason == CREATE_TIMEOUT_PENDING_RECONCILIATION
-            and record.exposure.unknown_order_quantity == Decimal("0")
-        ):
-            record.final_reason = CREATE_TIMEOUT_RECONCILED
+        if record.exposure.unknown_order_quantity == Decimal("0"):
             for child in record.child_orders:
-                if child.terminal_reason == CREATE_TIMEOUT_PENDING_RECONCILIATION:
+                if (
+                    child.terminal_reason == CREATE_TIMEOUT_PENDING_RECONCILIATION
+                    and child.status is not ChildOrderStatus.UNKNOWN
+                ):
                     child.terminal_reason = None
+            if record.final_reason == CREATE_TIMEOUT_PENDING_RECONCILIATION:
+                record.final_reason = CREATE_TIMEOUT_RECONCILED
 
     async def _reconcile_unknown_children_exact_locked(self, record: ExecutionRecord) -> None:
         for child in list(record.child_orders):

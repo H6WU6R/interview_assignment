@@ -201,8 +201,12 @@ class ExecutionRecord:
     arrival_ask: Decimal | None = None
     max_reserved_exposure: Decimal = Decimal("0")
     metric_counts: dict[str, int] = field(default_factory=dict)
+    seen_fill_trade_ids: set[str] = field(default_factory=set)
     ignored_fill_trade_ids: set[str] = field(default_factory=set)
     fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
+    trade_fill_vwap_inputs: dict[str, tuple[Decimal, Decimal]] = field(default_factory=dict)
+    trade_fill_sort_keys: dict[str, tuple[int, int, str]] = field(default_factory=dict)
+    anonymous_fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
     maker_filled_quantity: Decimal = Decimal("0")
     taker_filled_quantity: Decimal = Decimal("0")
     child_submitted_monotonic: dict[str, Decimal] = field(default_factory=dict)
@@ -612,15 +616,17 @@ class ExecutionEngine:
             raise
 
         tracker.release_pending_submit(quantity)
-        self._copy_exchange_child(child, submitted)
+        submitted_filled_quantity = submitted.confirmed_filled_quantity
+        self._copy_exchange_child(child, submitted, include_filled=False)
         self._set_child_status(child, submitted.status)
-        if child.confirmed_filled_quantity > Decimal("0"):
+        if submitted_filled_quantity > Decimal("0"):
             self._update_child_cumulative_fill_locked(
                 record,
                 child,
-                child.confirmed_filled_quantity,
+                submitted_filled_quantity,
                 trade_id=None,
                 fill_price=child.price,
+                authoritative_trade=False,
             )
 
         if child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
@@ -686,16 +692,18 @@ class ExecutionEngine:
             self._assert_exposure_invariant_locked(record)
             return False
 
-        self._copy_exchange_child(child, cancelled)
+        cancelled_filled_quantity = cancelled.confirmed_filled_quantity
+        self._copy_exchange_child(child, cancelled, include_filled=False)
         self._set_child_status(child, cancelled.status)
 
-        if child.confirmed_filled_quantity > Decimal("0"):
+        if cancelled_filled_quantity > Decimal("0"):
             self._update_child_cumulative_fill_locked(
                 record,
                 child,
-                child.confirmed_filled_quantity,
+                cancelled_filled_quantity,
                 trade_id=None,
                 fill_price=child.price,
+                authoritative_trade=False,
             )
 
         if child.status in {ChildOrderStatus.CANCELLED, ChildOrderStatus.FILLED}:
@@ -761,7 +769,15 @@ class ExecutionEngine:
                 continue
             self._copy_exchange_child(child, exchange_order, include_filled=False)
 
-        for fill in result.fills:
+        sorted_fills = sorted(
+            result.fills,
+            key=lambda fill: (
+                fill.event_time_ms if fill.event_time_ms is not None else 0,
+                fill.transaction_time_ms if fill.transaction_time_ms is not None else 0,
+                fill.trade_id or "",
+            ),
+        )
+        for fill in sorted_fills:
             child = children_by_client_id.get(fill.client_order_id)
             if child is None:
                 continue
@@ -772,6 +788,10 @@ class ExecutionEngine:
                 trade_id=fill.trade_id,
                 fill_price=fill.last_fill_price,
                 is_maker=fill.is_maker,
+                authoritative_trade=True,
+                fill_quantity_delta=fill.last_filled_quantity,
+                event_time_ms=fill.event_time_ms,
+                transaction_time_ms=fill.transaction_time_ms,
             )
 
         for exchange_order in result.orders:
@@ -785,6 +805,7 @@ class ExecutionEngine:
                 exchange_order.confirmed_filled_quantity,
                 trade_id=None,
                 fill_price=child.price,
+                authoritative_trade=False,
             )
             self._copy_exchange_child(child, exchange_order)
             self._set_child_status(child, exchange_order.status)
@@ -817,6 +838,8 @@ class ExecutionEngine:
                     child.terminal_reason = None
             if record.final_reason == CREATE_TIMEOUT_PENDING_RECONCILIATION:
                 record.final_reason = CREATE_TIMEOUT_RECONCILED
+        if record.summary is not None:
+            record.summary = self._summary(record)
 
     async def _reconcile_unknown_children_exact_locked(self, record: ExecutionRecord) -> None:
         for child in list(record.child_orders):
@@ -834,15 +857,17 @@ class ExecutionEngine:
                 self._increment_metric(record, "unknown_orders_reconciled")
                 continue
 
-            self._copy_exchange_child(child, exchange_child)
+            exchange_filled_quantity = exchange_child.confirmed_filled_quantity
+            self._copy_exchange_child(child, exchange_child, include_filled=False)
             self._set_child_status(child, getattr(exchange_child, "status", child.status))
-            if child.confirmed_filled_quantity > Decimal("0"):
+            if exchange_filled_quantity > Decimal("0"):
                 self._update_child_cumulative_fill_locked(
                     record,
                     child,
-                    child.confirmed_filled_quantity,
+                    exchange_filled_quantity,
                     trade_id=None,
                     fill_price=child.price,
+                    authoritative_trade=False,
                 )
             self._increment_metric(record, "unknown_orders_reconciled")
             if self._reconciled_unknown_child_resets_retryable_reject_gate(child):
@@ -1270,43 +1295,76 @@ class ExecutionEngine:
         trade_id: str | None,
         fill_price: Decimal,
         is_maker: bool | None = None,
-    ) -> None:
-        if incoming_cumulative > child.confirmed_filled_quantity:
-            child.confirmed_filled_quantity = incoming_cumulative
-        self._apply_order_fill_locked(
-            record,
-            child,
-            trade_id=trade_id,
-            fill_price=fill_price,
-            is_maker=is_maker,
-        )
-
-    def _apply_order_fill_locked(
-        self,
-        record: ExecutionRecord,
-        child: ChildOrder,
-        *,
-        trade_id: str | None,
-        fill_price: Decimal,
-        is_maker: bool | None,
+        authoritative_trade: bool = True,
+        fill_quantity_delta: Decimal | None = None,
+        event_time_ms: int | None = None,
+        transaction_time_ms: int | None = None,
     ) -> None:
         tracker = self._require_exposure_tracker(record)
-        aggregate_cumulative = sum(
-            (stored_child.confirmed_filled_quantity for stored_child in record.child_orders),
-            Decimal("0"),
+
+        if trade_id is not None and trade_id in record.seen_fill_trade_ids:
+            self._record_ignored_fill_trade_id_locked(record, trade_id)
+            return
+
+        previous_child_cumulative = child.confirmed_filled_quantity
+        child_delta = Decimal("0")
+        if incoming_cumulative > previous_child_cumulative:
+            child_delta = incoming_cumulative - previous_child_cumulative
+            child.confirmed_filled_quantity = incoming_cumulative
+            aggregate_cumulative = tracker.exposure.confirmed_filled_quantity + child_delta
+            tracker.apply_fill(trade_id, aggregate_cumulative)
+
+        if not authoritative_trade:
+            return
+
+        if incoming_cumulative < previous_child_cumulative:
+            if trade_id is not None:
+                record.seen_fill_trade_ids.add(trade_id)
+                self._record_ignored_fill_trade_id_locked(record, trade_id)
+            return
+
+        trade_delta = fill_quantity_delta if fill_quantity_delta is not None else child_delta
+        if trade_delta <= Decimal("0"):
+            if trade_id is not None:
+                record.seen_fill_trade_ids.add(trade_id)
+                self._record_ignored_fill_trade_id_locked(record, trade_id)
+            return
+
+        if trade_id is not None:
+            record.seen_fill_trade_ids.add(trade_id)
+            tracker.seen_trade_ids.add(trade_id)
+            record.trade_fill_vwap_inputs[trade_id] = (fill_price, trade_delta)
+            record.trade_fill_sort_keys[trade_id] = (
+                event_time_ms if event_time_ms is not None else 0,
+                transaction_time_ms if transaction_time_ms is not None else 0,
+                trade_id,
+            )
+            self._rebuild_trade_fill_vwap_inputs_locked(record)
+        else:
+            record.anonymous_fill_vwap_inputs.append((fill_price, trade_delta))
+            record.fill_vwap_inputs.append((fill_price, trade_delta))
+
+        if is_maker is True:
+            record.maker_filled_quantity += trade_delta
+            self._increment_metric(record, "maker_fills")
+        elif is_maker is False:
+            record.taker_filled_quantity += trade_delta
+            self._increment_metric(record, "taker_fills")
+
+    def _record_ignored_fill_trade_id_locked(self, record: ExecutionRecord, trade_id: str) -> None:
+        if trade_id in record.ignored_fill_trade_ids:
+            return
+        record.ignored_fill_trade_ids.add(trade_id)
+        self._increment_metric(record, "duplicate_events_ignored")
+
+    def _rebuild_trade_fill_vwap_inputs_locked(self, record: ExecutionRecord) -> None:
+        ordered_trade_ids = sorted(
+            record.trade_fill_vwap_inputs,
+            key=lambda trade_id: record.trade_fill_sort_keys.get(trade_id, (0, 0, trade_id)),
         )
-        fill_delta = tracker.apply_fill(trade_id, aggregate_cumulative)
-        if fill_delta > Decimal("0"):
-            record.fill_vwap_inputs.append((fill_price, fill_delta))
-            if is_maker is True:
-                record.maker_filled_quantity += fill_delta
-                self._increment_metric(record, "maker_fills")
-            elif is_maker is False:
-                record.taker_filled_quantity += fill_delta
-                self._increment_metric(record, "taker_fills")
-        elif trade_id is not None and trade_id not in record.ignored_fill_trade_ids:
-            record.ignored_fill_trade_ids.add(trade_id)
-            self._increment_metric(record, "duplicate_events_ignored")
+        record.fill_vwap_inputs = [
+            record.trade_fill_vwap_inputs[trade_id] for trade_id in ordered_trade_ids
+        ] + record.anonymous_fill_vwap_inputs
 
     def _copy_exchange_child(
         self,
@@ -1379,7 +1437,8 @@ class ExecutionEngine:
     def _summary_metrics(self, record: ExecutionRecord) -> dict[str, Any]:
         arrival_bid = record.arrival_bid if record.arrival_bid is not None else Decimal("0")
         arrival_ask = record.arrival_ask if record.arrival_ask is not None else Decimal("0")
-        vwap = execution_vwap(record.fill_vwap_inputs) if record.fill_vwap_inputs else Decimal("0")
+        vwap_inputs = record.fill_vwap_inputs or self._provisional_fill_vwap_inputs(record)
+        vwap = execution_vwap(vwap_inputs) if vwap_inputs else Decimal("0")
         completed_at = record.completed_monotonic if record.completed_monotonic is not None else self._now_decimal()
         actual_duration = completed_at - record.started_monotonic
         if actual_duration < Decimal("0"):
@@ -1432,6 +1491,14 @@ class ExecutionEngine:
             }
         )
         return metrics
+
+    @staticmethod
+    def _provisional_fill_vwap_inputs(record: ExecutionRecord) -> list[tuple[Decimal, Decimal]]:
+        return [
+            (child.price, child.confirmed_filled_quantity)
+            for child in record.child_orders
+            if child.confirmed_filled_quantity > Decimal("0")
+        ]
 
     def _twap_slice_ledger(self, record: ExecutionRecord) -> list[dict[str, Any]]:
         if (

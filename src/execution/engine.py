@@ -1330,17 +1330,37 @@ class ExecutionEngine:
                 child.client_order_id,
                 [],
             )
-            if (
-                interval_start < Decimal("0")
-                or interval_end <= interval_start
-                or self._fill_interval_overlaps(interval_start, interval_end, child_intervals)
+            interval_limit = max(child.confirmed_filled_quantity, incoming_cumulative)
+            if self._fill_interval_is_valid(
+                interval_start,
+                interval_end,
+                interval_limit,
+            ) and not self._fill_interval_overlaps(
+                interval_start,
+                interval_end,
+                child_intervals,
             ):
-                if trade_id is not None:
-                    record.seen_fill_trade_ids.add(trade_id)
-                    self._record_ignored_fill_trade_id_locked(record, trade_id)
-                return
+                accepted_interval_start = interval_start
+                accepted_interval_end = interval_end
+            else:
+                fallback_interval = self._window_local_fill_interval(
+                    interval_start,
+                    interval_end,
+                    trade_delta,
+                    child.confirmed_filled_quantity,
+                    child_intervals,
+                    trade_id=trade_id,
+                )
+                if fallback_interval is None:
+                    if trade_id is not None:
+                        record.seen_fill_trade_ids.add(trade_id)
+                        self._record_ignored_fill_trade_id_locked(record, trade_id)
+                    return
+                accepted_interval_start, accepted_interval_end = fallback_interval
         else:
             child_intervals = None
+            accepted_interval_start = Decimal("0")
+            accepted_interval_end = Decimal("0")
 
         if child_delta > Decimal("0"):
             child.confirmed_filled_quantity = incoming_cumulative
@@ -1351,7 +1371,7 @@ class ExecutionEngine:
             return
 
         assert child_intervals is not None
-        child_intervals.append((interval_start, interval_end))
+        child_intervals.append((accepted_interval_start, accepted_interval_end))
 
         if trade_id is not None:
             record.seen_fill_trade_ids.add(trade_id)
@@ -1373,6 +1393,57 @@ class ExecutionEngine:
         elif is_maker is False:
             record.taker_filled_quantity += trade_delta
             self._increment_metric(record, "taker_fills")
+
+    @staticmethod
+    def _fill_interval_is_valid(
+        start: Decimal,
+        end: Decimal,
+        confirmed_limit: Decimal,
+    ) -> bool:
+        return (
+            start >= Decimal("0")
+            and end > start
+            and end <= confirmed_limit
+        )
+
+    def _window_local_fill_interval(
+        self,
+        absolute_start: Decimal,
+        absolute_end: Decimal,
+        trade_delta: Decimal,
+        confirmed_limit: Decimal,
+        intervals: list[tuple[Decimal, Decimal]],
+        *,
+        trade_id: str | None,
+    ) -> tuple[Decimal, Decimal] | None:
+        if (
+            trade_id is None
+            or absolute_start != Decimal("0")
+            or absolute_end <= absolute_start
+            or confirmed_limit <= Decimal("0")
+        ):
+            return None
+
+        sorted_intervals = sorted(intervals)
+        contiguous_prefix_end = Decimal("0")
+        for existing_start, existing_end in sorted_intervals:
+            if existing_start > contiguous_prefix_end:
+                break
+            if existing_end > contiguous_prefix_end:
+                contiguous_prefix_end = existing_end
+
+        if contiguous_prefix_end <= Decimal("0"):
+            return None
+
+        fallback_start = contiguous_prefix_end
+        fallback_end = fallback_start + trade_delta
+        if (
+            not self._fill_interval_is_valid(fallback_start, fallback_end, confirmed_limit)
+            or self._fill_interval_overlaps(fallback_start, fallback_end, intervals)
+        ):
+            return None
+
+        return fallback_start, fallback_end
 
     @staticmethod
     def _fill_interval_overlaps(

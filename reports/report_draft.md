@@ -43,15 +43,15 @@ The direct pass/fail risks from the brief are:
 | Deadline policy | `CANCEL_REMAINDER` cancels active orders; `AGGRESSIVE_WITHIN_RANGE` may use bounded marketable limit only within range. | Engine deadline handling and tests. | Include one policy example in final report. |
 | TWAP | Absolute schedule, carry-forward deficits, rounding remainder, no drift, no naive sleep loop. | `src/algorithms/twap.py`, engine TWAP ledger, tests. | Include slice ledger with planned/submitted/open/filled/unfilled. |
 | State machines | Execution and child state transitions must be monotonic and auditable. | `src/execution/state_machine.py`, domain models, tests. | Add diagram to PDF if space allows. |
-| Binance symbol rules | Read tick size, quantity step, minimum quantity, minimum notional, status. | Binance adapter and simulator symbol rules. | Testnet evidence should include exchangeInfo/rules snapshot. |
+| Binance symbol rules | Read tick size, quantity step, minimum quantity, minimum notional, status. | Binance adapter and simulator symbol rules; Testnet runner writes `symbol_rules.json`. | Attach the accepted-run `symbol_rules.json` in the final evidence bundle. |
 | Market/user streams | Market data via book ticker; orders/fills preferably via private stream; REST for initialization, order mutation, reconciliation. | Runtime stream supervisors, Binance adapter hooks, user-stream event application, REST reconciliation fallback. | Final evidence should show user stream order/trade events or a labeled REST fallback. |
 | Staleness/disconnect | Pause new actions if streams are stale/disconnected; reconnect and reconcile. | Runtime health checks and simulator stream-disconnect tests. | Include T8 result summary. |
 | Decimal precision | No direct Python float for order price/quantity. | Decimal models, Pydantic decimal strings, decimal math helpers. | Mention in architecture and AI defense. |
 | Environments | Support simulation/testnet/mainnet config; mainnet default hard disabled. | Simulation/Testnet runtime paths; mainnet requires credentials plus `ALLOW_MAINNET_TRADING=true`, and no mainnet demo is required. | State clearly that mainnet is gated and should not be used for the take-home demo. |
 | Idempotency | Execution, child, and client order IDs must be traceable. | ID helpers, client order prefixing, artifacts, tests. | Include sample `execution_id`, `child_order_id`, `client_order_id`. |
-| Logging | Structured logs sufficient to reconstruct order timeline. | Artifact writers and demo scripts. | Attach raw JSONL/CSV artifact bundle. |
+| Logging | Structured logs sufficient to reconstruct order timeline. | Artifact writers and demo scripts, including Testnet-specific evidence files. | Attach raw JSONL/CSV/JSON artifact bundle. |
 | Tests | Deterministic simulator plus Testnet E2E Chase/TWAP. | Unit/simulation tests and Testnet scripts. | Accepted Testnet artifacts remain the biggest final submission gap. |
-| Results | Quantity, price, order, time, and safety metrics. | Summary metrics and artifact tables, including reprices and known maker/taker fill counts. | Populate the final PDF tables from simulator and Testnet artifacts. |
+| Results | Quantity, price, order, time, and safety metrics. | Summary metrics and artifact tables, including reprices, known maker/taker fill counts, reconciliation rows, and evidence manifest. | Populate the final PDF tables from simulator and accepted Testnet artifacts. |
 | Deliverables | Repo, README, tests, raw results, PDF report, AI disclosure. | Repo docs exist; PDF not generated in this pass. | Generate PDF and attach final evidence bundle before submission. |
 
 ## Scope and Assumptions
@@ -318,6 +318,13 @@ Expected artifact files:
 - `child_orders.csv`
 - `fills.csv`
 - `timeline.csv`
+- `twap_slice_ledger.csv` when a TWAP ledger exists.
+
+Testnet runs add:
+
+- `symbol_rules.json`
+- `reconciliation_orders.csv`
+- `evidence_manifest.json`
 
 ## Required Edge Case Matrix
 
@@ -412,15 +419,17 @@ uv run python scripts/run_testnet_twap.py \
 Evidence bundle checklist:
 
 - Request parameter snapshot.
-- Symbol rules snapshot from Binance.
+- `symbol_rules.json` snapshot from Binance exchange rules.
 - Market snapshot at arrival.
 - Raw sanitized REST create response with exchange order ID.
 - Client order ID and child order ID.
 - Raw sanitized REST cancel response if cancel occurs.
 - Raw private user stream order/trade events if received.
 - REST reconciliation snapshots used after stream disconnect or ambiguous outcomes.
+- `reconciliation_orders.csv` with final execution-scoped order rows.
 - Fill records with trade IDs, fill price, fill quantity, cumulative quantity, and maker/taker flag if available.
 - Execution summary with final status, reason, filled/unfilled quantity, VWAP, slippage, and safety metrics.
+- `evidence_manifest.json` with execution ID, order IDs, exchange-order evidence status, stream evidence flags, warnings, reconciliation counts, and rate-limit metadata.
 - Timeline showing UTC timestamps and monotonic timing.
 
 Do not include:
@@ -481,7 +490,7 @@ uv run python scripts/run_sim_create_timeout.py
 Latest local verification result after this documentation update:
 
 ```text
-343 passed
+351 passed
 ```
 
 The README and final PDF should be updated again if later code changes alter the test count.

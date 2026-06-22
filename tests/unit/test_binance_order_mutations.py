@@ -893,6 +893,9 @@ async def test_testnet_runner_starts_and_stops_market_and_user_stream_tasks(
         async def health_check_streams(self) -> bool:
             return self.market_started.is_set() and self.user_started.is_set()
 
+        async def get_symbol_rules(self, _symbol: str) -> SymbolRules:
+            return rules()
+
     class FakeExecutionService:
         def __init__(self, adapter: FakeRunnerAdapter, **_kwargs: Any) -> None:
             self.adapter = adapter
@@ -1052,6 +1055,7 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
         def __init__(self, settings: Settings) -> None:
             super().__init__(clock=AdvancingClock(), stale_market_data_seconds=999.0)
             self.settings = settings
+            self.rate_limits = {"REQUEST_WEIGHT": 2400, "ORDERS": 1200}
             self._market_stream_symbol = "BTCUSDT"
             self.market_stream_healthy = False
             self.user_stream_healthy = False
@@ -1059,6 +1063,7 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
             self.user_closed = asyncio.Event()
             self.health_checks: list[bool] = []
             self.submitted_orders: list[OrderRequest] = []
+            self.symbol_rule_calls = 0
 
         def set_market_stream_symbol(self, symbol: str) -> None:
             self._market_stream_symbol = symbol
@@ -1098,9 +1103,16 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
             self.health_checks.append(healthy)
             return healthy
 
+        async def get_symbol_rules(self, symbol: str) -> SymbolRules:
+            self.symbol_rule_calls += 1
+            self.rate_limits = {"REQUEST_WEIGHT": 2400, "ORDERS": 1200}
+            return await super().get_symbol_rules(symbol)
+
         async def submit_limit_order(self, order_request: OrderRequest):
             self.submitted_orders.append(order_request)
-            return await super().submit_limit_order(order_request)
+            submitted = await super().submit_limit_order(order_request)
+            await asyncio.sleep(0)
+            return submitted
 
     spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
     assert spec is not None
@@ -1138,7 +1150,13 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
         lambda: SimpleNamespace(is_configured=True, api_key="key", api_secret="secret"),
     )
     monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
-    monkeypatch.setattr(module, "write_execution_artifacts", lambda **_kwargs: tmp_path / "artifacts")
+    artifact_call: dict[str, Any] = {}
+
+    def capture_artifacts(**kwargs: Any) -> Path:
+        artifact_call.update(kwargs)
+        return tmp_path / "artifacts"
+
+    monkeypatch.setattr(module, "write_execution_artifacts", capture_artifacts)
 
     artifact_dir = await module.run(Algorithm.CHASE)
 
@@ -1147,8 +1165,56 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
     assert adapter.health_checks
     assert any(adapter.health_checks)
     assert adapter.submitted_orders
+    assert adapter.symbol_rule_calls >= 1
     assert adapter.market_closed.is_set()
     assert adapter.user_closed.is_set()
+
+    assert artifact_call["extra_json_artifacts"]["symbol_rules.json"] == {
+        "symbol": "BTCUSDT",
+        "rules": {
+            "symbol": "BTCUSDT",
+            "tick_size": "0.10",
+            "quantity_step": "0.001",
+            "min_quantity": "0.001",
+            "min_notional": "5",
+            "status": "TRADING",
+            "supported_time_in_force": ["GTC", "GTX", "IOC"],
+        },
+        "rate_limits": {"REQUEST_WEIGHT": 2400, "ORDERS": 1200},
+    }
+    reconciliation_orders = artifact_call["extra_csv_artifacts"]["reconciliation_orders.csv"]
+    assert [row["client_order_id"] for row in reconciliation_orders] == [
+        adapter.submitted_orders[0].client_order_id
+    ]
+    assert reconciliation_orders[0]["exchange_order_id"] is not None
+
+    evidence_manifest = artifact_call["extra_json_artifacts"]["evidence_manifest.json"]
+    assert evidence_manifest["execution_id"] == artifact_call["execution_id"]
+    assert evidence_manifest["environment"] == "testnet"
+    assert evidence_manifest["symbol"] == "BTCUSDT"
+    assert evidence_manifest["algorithm"] == "CHASE"
+    assert evidence_manifest["final_status"] in {
+        "COMPLETED",
+        "PARTIALLY_COMPLETED",
+        "EXPIRED",
+        "CANCELLED",
+        "FAILED",
+    }
+    assert evidence_manifest["reconciled_order_count"] == 1
+    assert evidence_manifest["reconciled_fill_count"] == 0
+    assert evidence_manifest["client_order_ids"] == [adapter.submitted_orders[0].client_order_id]
+    assert evidence_manifest["exchange_order_ids"] == [reconciliation_orders[0]["exchange_order_id"]]
+    assert evidence_manifest["exchange_order_id_count"] == 1
+    assert evidence_manifest["reconciled_exchange_order_id_count"] == 1
+    assert evidence_manifest["exchange_order_evidence_status"] == "reconciled_exchange_order_ids_observed"
+    assert evidence_manifest["has_private_user_stream_events"] is True
+    assert isinstance(evidence_manifest["has_user_stream_applied_events"], bool)
+    assert evidence_manifest["warnings"] == []
+    assert evidence_manifest["final_reconciliation_counts"] == {
+        "order_count": 1,
+        "fill_count": 0,
+        "warning_count": 0,
+    }
 
 
 async def test_testnet_runner_stops_before_next_tick_when_stream_task_fails(
@@ -1207,6 +1273,9 @@ async def test_testnet_runner_stops_before_next_tick_when_stream_task_fails(
 
         async def reconcile_orders_and_fills(self, *_args: Any, **_kwargs: Any) -> Any:
             return SimpleNamespace(fills=[])
+
+        async def get_symbol_rules(self, _symbol: str) -> SymbolRules:
+            return rules()
 
     class FakeExecutionService:
         def __init__(self, adapter: FakeRunnerAdapter, **_kwargs: Any) -> None:
@@ -1339,6 +1408,9 @@ async def test_testnet_runner_cleanup_stops_market_when_user_task_already_failed
 
         async def health_check_streams(self) -> bool:
             return self.market_started.is_set() and self.user_started.is_set()
+
+        async def get_symbol_rules(self, _symbol: str) -> SymbolRules:
+            return rules()
 
     class FakeExecutionService:
         def __init__(self, adapter: FakeRunnerAdapter, **_kwargs: Any) -> None:

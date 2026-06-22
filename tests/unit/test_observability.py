@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from execution.models import ExecutionStatus, Side
 from observability.artifacts import write_execution_artifacts
 from observability.logging import sanitize_log_payload, to_jsonable
@@ -403,3 +405,106 @@ def test_write_execution_artifacts_sanitizes_secret_aliases_in_outputs(tmp_path)
         assert secret not in output_text
     assert "ce_secret_1" in output_text
     assert "BTCUSDT" in output_text
+
+
+def test_write_execution_artifacts_writes_sanitized_extra_json_and_csv(tmp_path) -> None:
+    output_dir = write_execution_artifacts(
+        root=tmp_path,
+        execution_id="exec_extra_artifacts",
+        request_snapshot={"symbol": "BTCUSDT"},
+        log_events=[],
+        summary={"execution_id": "exec_extra_artifacts"},
+        child_orders=[],
+        fills=[],
+        timeline=[],
+        extra_json_artifacts={
+            "review_evidence.json": {
+                "execution_id": "exec_extra_artifacts",
+                "signature": "json-secret",
+                "filled_quantity": Decimal("0.010"),
+            }
+        },
+        extra_csv_artifacts={
+            "reconciliation_orders.csv": [
+                {
+                    "client_order_id": "ce_extra_1",
+                    "api_secret": "csv-secret",
+                    "quantity": Decimal("0.010"),
+                    "metadata": {"source": "unit"},
+                }
+            ]
+        },
+    )
+
+    extra_json = json.loads((output_dir / "review_evidence.json").read_text(encoding="utf-8"))
+    assert extra_json == {
+        "execution_id": "exec_extra_artifacts",
+        "filled_quantity": "0.010",
+    }
+
+    with (output_dir / "reconciliation_orders.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert rows == [
+        {
+            "client_order_id": "ce_extra_1",
+            "metadata": json.dumps({"source": "unit"}, sort_keys=True),
+            "quantity": "0.010",
+        }
+    ]
+    output_text = "\n".join(
+        [
+            (output_dir / "review_evidence.json").read_text(encoding="utf-8"),
+            (output_dir / "reconciliation_orders.csv").read_text(encoding="utf-8"),
+        ]
+    )
+    assert "json-secret" not in output_text
+    assert "csv-secret" not in output_text
+
+
+@pytest.mark.parametrize(
+    "extra_json_artifacts",
+    [
+        {"../escape.json": {"ok": True}},
+        {"nested/escape.json": {"ok": True}},
+        {"/tmp/escape.json": {"ok": True}},
+        {"request_snapshot.json": {"ok": True}},
+        {"bad\nname.json": {"ok": True}},
+        {"bad name.json": {"ok": True}},
+    ],
+)
+def test_write_execution_artifacts_rejects_unsafe_extra_json_names(
+    tmp_path,
+    extra_json_artifacts,
+) -> None:
+    with pytest.raises(ValueError, match="extra artifact filename"):
+        write_execution_artifacts(
+            root=tmp_path,
+            execution_id="exec_unsafe_extra",
+            request_snapshot={"symbol": "BTCUSDT"},
+            log_events=[],
+            summary={"execution_id": "exec_unsafe_extra"},
+            child_orders=[],
+            fills=[],
+            timeline=[],
+            extra_json_artifacts=extra_json_artifacts,
+        )
+
+    assert not (tmp_path / "escape.json").exists()
+
+
+def test_write_execution_artifacts_rejects_unsafe_extra_csv_names(tmp_path) -> None:
+    with pytest.raises(ValueError, match="extra artifact filename"):
+        write_execution_artifacts(
+            root=tmp_path,
+            execution_id="exec_unsafe_extra_csv",
+            request_snapshot={"symbol": "BTCUSDT"},
+            log_events=[],
+            summary={"execution_id": "exec_unsafe_extra_csv"},
+            child_orders=[],
+            fills=[],
+            timeline=[],
+            extra_csv_artifacts={"../escape.csv": [{"ok": True}]},
+        )
+
+    assert not (tmp_path / "escape.csv").exists()

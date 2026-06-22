@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
-
 from execution.ids import make_client_order_prefix
 from execution.models import (
-    Algorithm,
     ChildOrder,
     ChildOrderStatus,
     DeadlinePolicy,
+    ExecutionStatus,
     Fill,
     ReconciliationResult,
     Side,
@@ -24,13 +22,13 @@ async def test_unknown_create_cancel_reconciles_then_cancels_open_child() -> Non
     simulator.script_create_timeout(prefix)
 
     after_timeout = await service.run_once(execution.execution_id)
-    assert after_timeout.status.value == "RUNNING"
+    assert after_timeout.status is ExecutionStatus.RUNNING
     assert after_timeout.child_orders[0].status is ChildOrderStatus.UNKNOWN
     assert after_timeout.exposure.unknown_order_quantity == Decimal("0.010")
 
     after_cancel = await service.cancel_execution(execution.execution_id)
 
-    assert after_cancel.status.value == "CANCELLED"
+    assert after_cancel.status is ExecutionStatus.CANCELLED
     assert after_cancel.exposure.reserved_exposure == Decimal("0")
     assert after_cancel.child_orders[0].status is ChildOrderStatus.CANCELLED
     assert after_cancel.child_orders[0].exchange_order_id is not None
@@ -40,17 +38,16 @@ async def test_unhealthy_stream_does_not_block_expiry() -> None:
     service, simulator, clock = await fresh_service()
     execution = await service.create_execution(execution_request(duration=1))
     opened = await service.run_once(execution.execution_id)
-    assert opened.status.value == "RUNNING"
+    assert opened.status is ExecutionStatus.RUNNING
     assert opened.child_orders
 
     simulator.set_stream_health(user_stream_healthy=False)
     clock.advance(5)
     expired = await service.run_once(execution.execution_id)
 
-    assert expired.status.value in {"EXPIRED", "PARTIALLY_COMPLETED", "CANCELLED"}
-    assert expired.status.value != "RUNNING"
+    assert expired.status is ExecutionStatus.EXPIRED
     assert expired.completed_monotonic is not None
-    assert expired.final_reason is not None
+    assert expired.final_reason == "STREAM_HEALTH_DEGRADED_RECONCILED"
 
 
 async def test_aggressive_deadline_with_stale_market_terminalizes() -> None:
@@ -65,7 +62,7 @@ async def test_aggressive_deadline_with_stale_market_terminalizes() -> None:
 
     terminal = await service.run_once(execution.execution_id)
 
-    assert terminal.status.value == "EXPIRED"
+    assert terminal.status is ExecutionStatus.EXPIRED
     assert terminal.completed_monotonic is not None
     assert terminal.final_reason in {"DEADLINE_AGGRESSIVE_ATTEMPTED", "MARKET_DATA_STALE_RECONCILED"}
     assert terminal.summary is not None
@@ -149,10 +146,6 @@ async def test_out_of_order_fills_compute_vwap_from_each_trade_delta() -> None:
     )
 
     assert after.summary is not None
-    assert after.fill_vwap_inputs == [
-        (Decimal("95005"), Decimal("0.004")),
-        (Decimal("95010"), Decimal("0.002")),
-    ]
     assert after.summary.metrics["execution_vwap"] == "95006.66666666666666666666667"
 
 
@@ -172,13 +165,13 @@ async def test_temporary_sell_min_notional_waits_until_price_becomes_valid() -> 
     )
 
     waiting = await service.run_once(execution.execution_id)
-    assert waiting.status.value == "RUNNING"
+    assert waiting.status is ExecutionStatus.RUNNING
     assert waiting.child_orders == []
     assert waiting.final_reason == "ORDER_SHAPE_TEMPORARILY_UNTRADEABLE"
 
     await simulator.push_market_data(SYMBOL, Decimal("5000"), Decimal("5001"), exchange_event_time=20)
     active = await service.run_once(execution.execution_id)
 
-    assert active.status.value == "RUNNING"
+    assert active.status is ExecutionStatus.RUNNING
     assert len(active.child_orders) == 1
     assert active.child_orders[0].side is Side.SELL

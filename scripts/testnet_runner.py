@@ -72,9 +72,11 @@ async def run(algorithm: Algorithm) -> Path:
     events: list[dict[str, Any]] = []
 
     market_task: asyncio.Task[Any] | None = None
+    user_task: asyncio.Task[Any] | None = None
     try:
         snapshot, market_task = await _start_market_stream(adapter, timeout_seconds=args.market_timeout_seconds)
         events.append({"event": "market_snapshot", "snapshot": _jsonable(snapshot)})
+        user_task = await _start_user_stream(adapter, timeout_seconds=args.market_timeout_seconds)
 
         request = ExecutionRequest(
             environment=adapter.settings.environment,
@@ -99,13 +101,17 @@ async def run(algorithm: Algorithm) -> Path:
             ExecutionStatus.CANCELLED,
             ExecutionStatus.FAILED,
         }:
+            _raise_if_stream_task_failed(market_task, user_task)
             latest = await service.run_once(execution.execution_id)
+            _raise_if_stream_task_failed(market_task, user_task)
             events.append({"event": "run_once", "execution": _record_summary(latest)})
             if latest.status.is_terminal:
                 break
             await asyncio.sleep(args.poll_interval_seconds)
+            _raise_if_stream_task_failed(market_task, user_task)
 
         if not latest.status.is_terminal:
+            _raise_if_stream_task_failed(market_task, user_task)
             latest = await service.cancel_execution(execution.execution_id)
             events.append({"event": "cancel_requested", "execution": _record_summary(latest)})
             latest = await service.reconcile_execution(execution.execution_id)
@@ -123,14 +129,14 @@ async def run(algorithm: Algorithm) -> Path:
             child_orders=[_jsonable(child) for child in latest.child_orders],
             fills=[_jsonable(fill) for fill in reconciliation.fills],
             timeline=events,
+            twap_slice_ledger=_twap_slice_ledger(latest),
         )
         print(f"execution_id={latest.execution_id}")
         print(f"status={latest.status.value}")
         print(f"artifact_dir={artifact_dir}")
         return artifact_dir
     finally:
-        if market_task is not None:
-            await _stop_market_stream(market_task)
+        await _stop_stream_tasks(user_task, market_task)
 
 
 async def _start_market_stream(
@@ -155,14 +161,68 @@ async def _start_market_stream(
     try:
         return await asyncio.wait_for(first_snapshot, timeout=timeout_seconds), task
     except BaseException:
-        await _stop_market_stream(task)
+        await _stop_stream_task(task)
         raise
 
 
 async def _stop_market_stream(task: asyncio.Task[Any]) -> None:
+    await _stop_stream_task(task)
+
+
+async def _start_user_stream(
+    adapter: BinanceUsdmAdapter,
+    *,
+    timeout_seconds: float,
+) -> asyncio.Task[Any]:
+    async def pump() -> None:
+        async for _event in adapter.stream_user_events():
+            pass
+
+    task = asyncio.create_task(pump())
+    try:
+        await asyncio.wait_for(_wait_for_stream_health(adapter, task), timeout=timeout_seconds)
+        return task
+    except BaseException:
+        await _stop_stream_task(task)
+        raise
+
+
+async def _wait_for_stream_health(adapter: BinanceUsdmAdapter, task: asyncio.Task[Any]) -> None:
+    while not task.done():
+        if await adapter.health_check_streams():
+            return
+        await asyncio.sleep(0.01)
+    await task
+
+
+async def _stop_stream_task(task: asyncio.Task[Any]) -> None:
     task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+async def _stop_stream_tasks(*tasks: asyncio.Task[Any] | None) -> None:
+    active_tasks = [task for task in tasks if task is not None]
+    if not active_tasks:
+        return
+
+    results = await asyncio.gather(
+        *(_stop_stream_task(task) for task in active_tasks),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+            raise result
+
+
+def _raise_if_stream_task_failed(*tasks: asyncio.Task[Any] | None) -> None:
+    for task in tasks:
+        if task is None or not task.done():
+            continue
+        if task.cancelled():
+            raise RuntimeError("stream task was cancelled unexpectedly")
+        task.result()
+        raise RuntimeError("stream task exited unexpectedly")
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -188,10 +248,21 @@ def _jsonable(value: Any) -> Any:
 
 
 def _record_summary(record: Any) -> dict[str, Any]:
-    return {
+    record_summary = getattr(record, "summary", None)
+    summary = {
         "execution_id": record.execution_id,
         "status": record.status,
         "final_reason": record.final_reason,
         "exposure": _jsonable(record.exposure),
         "child_order_count": len(record.child_orders),
     }
+    if record_summary is not None:
+        summary["metrics"] = _jsonable(record_summary.metrics)
+    return summary
+
+
+def _twap_slice_ledger(record: Any) -> list[dict[str, Any]]:
+    record_summary = getattr(record, "summary", None)
+    if record_summary is None:
+        return []
+    return record_summary.metrics.get("twap_slice_ledger", [])

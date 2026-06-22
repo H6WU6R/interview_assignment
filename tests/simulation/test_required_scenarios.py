@@ -499,6 +499,7 @@ def test_cancel_race_script_writes_required_artifacts(tmp_path: Path) -> None:
         "child_orders.csv",
         "fills.csv",
         "timeline.csv",
+        "twap_slice_ledger.csv",
     }
     assert expected_files <= {path.name for path in artifact_dir.iterdir()}
 
@@ -565,6 +566,7 @@ def test_create_timeout_script_writes_default_artifacts_with_resolved_reason() -
         "child_orders.csv",
         "fills.csv",
         "timeline.csv",
+        "twap_slice_ledger.csv",
     } <= {path.name for path in artifact_dir.iterdir()}
 
     summary = json.loads((artifact_dir / "execution_summary.json").read_text())

@@ -1,3 +1,5 @@
+import csv
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -260,6 +262,7 @@ def test_write_execution_artifacts_creates_required_files(tmp_path) -> None:
     assert (output_dir / "child_orders.csv").exists()
     assert (output_dir / "fills.csv").exists()
     assert (output_dir / "timeline.csv").exists()
+    assert (output_dir / "twap_slice_ledger.csv").exists()
 
 
 def test_write_execution_artifacts_tolerates_heterogeneous_timeline_rows(tmp_path) -> None:
@@ -297,6 +300,41 @@ def test_write_execution_artifacts_creates_empty_execution_log(tmp_path) -> None
     execution_log = output_dir / "execution_log.jsonl"
     assert execution_log.exists()
     assert execution_log.read_text(encoding="utf-8") == ""
+    assert (output_dir / "twap_slice_ledger.csv").exists()
+    assert (output_dir / "twap_slice_ledger.csv").read_text(encoding="utf-8") == ""
+
+
+def test_write_execution_artifacts_writes_sanitized_twap_slice_ledger(tmp_path) -> None:
+    output_dir = write_execution_artifacts(
+        root=tmp_path,
+        execution_id="exec_twap_ledger",
+        request_snapshot={"symbol": "BTCUSDT"},
+        log_events=[],
+        summary={"execution_id": "exec_twap_ledger"},
+        child_orders=[],
+        fills=[],
+        timeline=[],
+        twap_slice_ledger=[
+            {
+                "execution_id": "exec_twap_ledger",
+                "slice_index": 1,
+                "planned_slice_quantity": Decimal("0.100"),
+                "filled_quantity": Decimal("0.025"),
+                "child_order_ids": ["child_0001"],
+                "metadata": {"source": "unit"},
+            }
+        ],
+    )
+
+    with (output_dir / "twap_slice_ledger.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["planned_slice_quantity"] == "0.100"
+    assert row["filled_quantity"] == "0.025"
+    assert json.loads(row["child_order_ids"]) == ["child_0001"]
+    assert json.loads(row["metadata"]) == {"source": "unit"}
 
 
 def test_write_execution_artifacts_sanitizes_secret_aliases_in_outputs(tmp_path) -> None:

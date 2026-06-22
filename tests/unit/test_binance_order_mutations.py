@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -28,9 +29,12 @@ from exchanges.binance_usdm import (
     classify_mutation_timeout,
     decimal_to_api,
 )
+from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
 from execution.models import (
+    Algorithm,
     ChildOrderStatus,
+    ExecutionStatus,
     Environment,
     MarketSnapshot,
     OrderRequest,
@@ -765,13 +769,492 @@ async def test_testnet_runner_keeps_market_stream_running_until_stopped() -> Non
     spec.loader.exec_module(module)
 
     adapter = FakeMarketAdapter()
-    snapshot, task = await module._start_market_stream(adapter, timeout_seconds=0.1)
+    snapshot, task = await module._start_market_stream(adapter, timeout_seconds=1.0)
 
     assert snapshot.symbol == "BTCUSDT"
     assert not task.done()
 
     await module._stop_market_stream(task)
     assert adapter.closed.is_set()
+
+
+async def test_testnet_runner_starts_and_stops_market_and_user_stream_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    class PlannedExit(RuntimeError):
+        pass
+
+    class FakeRunnerAdapter:
+        def __init__(self, settings: Settings) -> None:
+            self.settings = settings
+            self.clock = ManualClock()
+            self.market_started = asyncio.Event()
+            self.user_started = asyncio.Event()
+            self.market_closed = asyncio.Event()
+            self.user_closed = asyncio.Event()
+
+        def set_market_stream_symbol(self, _symbol: str) -> None:
+            pass
+
+        def stream_market_data(self):
+            async def events():
+                self.market_started.set()
+                try:
+                    yield MarketSnapshot(
+                        symbol="BTCUSDT",
+                        bid=Decimal("100.00"),
+                        ask=Decimal("100.10"),
+                        last_market_event_time_exchange=1,
+                        last_market_event_time_local_monotonic=0.0,
+                    )
+                    await asyncio.Event().wait()
+                finally:
+                    self.market_closed.set()
+
+            return events()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_started.set()
+                try:
+                    while True:
+                        await asyncio.sleep(3600)
+                        yield {}
+                finally:
+                    self.user_closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.market_started.is_set() and self.user_started.is_set()
+
+    class FakeExecutionService:
+        def __init__(self, adapter: FakeRunnerAdapter, **_kwargs: Any) -> None:
+            self.adapter = adapter
+
+        async def create_execution(self, _request: Any) -> Any:
+            return SimpleNamespace(
+                execution_id="exec_1234567890abcdef",
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+        async def run_once(self, _execution_id: str) -> Any:
+            assert self.adapter.market_started.is_set()
+            assert self.adapter.user_started.is_set()
+            raise PlannedExit("stop after stream startup")
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter: FakeRunnerAdapter | None = None
+
+    def make_adapter(settings: Settings) -> FakeRunnerAdapter:
+        nonlocal adapter
+        adapter = FakeRunnerAdapter(settings)
+        return adapter
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda _algorithm: SimpleNamespace(
+            symbol="BTCUSDT",
+            confirm_send_orders=True,
+            target_position="0.100",
+            target_price_lower="90",
+            target_price_upper="110",
+            duration_seconds=60,
+            number_of_slices=1,
+            max_runtime_seconds=30.0,
+            poll_interval_seconds=0.0,
+            market_timeout_seconds=1.0,
+            output_dir=Path("/tmp"),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_binance_usdm_credentials",
+        lambda: SimpleNamespace(is_configured=True, api_key="key", api_secret="secret"),
+    )
+    monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
+    monkeypatch.setattr(module, "ExecutionService", FakeExecutionService)
+
+    with pytest.raises(PlannedExit):
+        await module.run(Algorithm.CHASE)
+
+    assert adapter is not None
+    assert adapter.market_closed.is_set()
+    assert adapter.user_closed.is_set()
+
+
+async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import importlib.util
+
+    class AdvancingClock(ManualClock):
+        def monotonic(self) -> float:
+            self.current += 0.2
+            return self.current
+
+    class FakeBinanceAdapter(DeterministicSimulator):
+        def __init__(self, settings: Settings) -> None:
+            super().__init__(clock=AdvancingClock(), stale_market_data_seconds=999.0)
+            self.settings = settings
+            self._market_stream_symbol = "BTCUSDT"
+            self.market_stream_healthy = False
+            self.user_stream_healthy = False
+            self.market_closed = asyncio.Event()
+            self.user_closed = asyncio.Event()
+            self.health_checks: list[bool] = []
+            self.submitted_orders: list[OrderRequest] = []
+
+        def set_market_stream_symbol(self, symbol: str) -> None:
+            self._market_stream_symbol = symbol
+
+        def stream_market_data(self):
+            async def events():
+                self.market_stream_healthy = True
+                try:
+                    await self.push_market_data(
+                        self._market_stream_symbol,
+                        Decimal("100.00"),
+                        Decimal("100.10"),
+                        exchange_event_time=1,
+                    )
+                    while True:
+                        yield await self._market_queue.get()
+                finally:
+                    self.market_stream_healthy = False
+                    self.market_closed.set()
+
+            return events()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_stream_healthy = True
+                try:
+                    while True:
+                        yield await self._user_event_queue.get()
+                finally:
+                    self.user_stream_healthy = False
+                    self.user_closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            healthy = self.market_stream_healthy and self.user_stream_healthy
+            self.health_checks.append(healthy)
+            return healthy
+
+        async def submit_limit_order(self, order_request: OrderRequest):
+            self.submitted_orders.append(order_request)
+            return await super().submit_limit_order(order_request)
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter: FakeBinanceAdapter | None = None
+
+    def make_adapter(settings: Settings) -> FakeBinanceAdapter:
+        nonlocal adapter
+        adapter = FakeBinanceAdapter(settings)
+        return adapter
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda _algorithm: SimpleNamespace(
+            symbol="BTCUSDT",
+            confirm_send_orders=True,
+            target_position="0.100",
+            target_price_lower="90",
+            target_price_upper="110",
+            duration_seconds=60,
+            number_of_slices=1,
+            max_runtime_seconds=0.3,
+            poll_interval_seconds=0.0,
+            market_timeout_seconds=1.0,
+            output_dir=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_binance_usdm_credentials",
+        lambda: SimpleNamespace(is_configured=True, api_key="key", api_secret="secret"),
+    )
+    monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
+    monkeypatch.setattr(module, "write_execution_artifacts", lambda **_kwargs: tmp_path / "artifacts")
+
+    artifact_dir = await module.run(Algorithm.CHASE)
+
+    assert artifact_dir == tmp_path / "artifacts"
+    assert adapter is not None
+    assert adapter.health_checks
+    assert any(adapter.health_checks)
+    assert adapter.submitted_orders
+    assert adapter.market_closed.is_set()
+    assert adapter.user_closed.is_set()
+
+
+async def test_testnet_runner_stops_before_next_tick_when_stream_task_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    class StreamFailed(RuntimeError):
+        pass
+
+    class FakeRunnerAdapter:
+        def __init__(self, settings: Settings) -> None:
+            self.settings = settings
+            self.clock = ManualClock()
+            self.market_started = asyncio.Event()
+            self.user_started = asyncio.Event()
+            self.market_closed = asyncio.Event()
+            self.user_closed = asyncio.Event()
+            self.fail_user_stream = asyncio.Event()
+            self.run_once_calls = 0
+
+        def set_market_stream_symbol(self, _symbol: str) -> None:
+            pass
+
+        def stream_market_data(self):
+            async def events():
+                self.market_started.set()
+                try:
+                    yield MarketSnapshot(
+                        symbol="BTCUSDT",
+                        bid=Decimal("100.00"),
+                        ask=Decimal("100.10"),
+                        last_market_event_time_exchange=1,
+                        last_market_event_time_local_monotonic=0.0,
+                    )
+                    await asyncio.Event().wait()
+                finally:
+                    self.market_closed.set()
+
+            return events()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_started.set()
+                try:
+                    yield {}
+                    await self.fail_user_stream.wait()
+                    raise StreamFailed("user stream failed")
+                finally:
+                    self.user_closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.market_started.is_set() and self.user_started.is_set()
+
+        async def reconcile_orders_and_fills(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(fills=[])
+
+    class FakeExecutionService:
+        def __init__(self, adapter: FakeRunnerAdapter, **_kwargs: Any) -> None:
+            self.adapter = adapter
+
+        async def create_execution(self, _request: Any) -> Any:
+            return SimpleNamespace(
+                execution_id="exec_1234567890abcdef",
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+        async def run_once(self, _execution_id: str) -> Any:
+            self.adapter.run_once_calls += 1
+            if self.adapter.run_once_calls > 1:
+                raise AssertionError("runner ticked after stream task failure")
+            self.adapter.fail_user_stream.set()
+            return SimpleNamespace(
+                execution_id="exec_1234567890abcdef",
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+        async def cancel_execution(self, _execution_id: str) -> Any:
+            raise AssertionError("runner cancelled execution after stream task failure")
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter: FakeRunnerAdapter | None = None
+
+    def make_adapter(settings: Settings) -> FakeRunnerAdapter:
+        nonlocal adapter
+        adapter = FakeRunnerAdapter(settings)
+        return adapter
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda _algorithm: SimpleNamespace(
+            symbol="BTCUSDT",
+            confirm_send_orders=True,
+            target_position="0.100",
+            target_price_lower="90",
+            target_price_upper="110",
+            duration_seconds=60,
+            number_of_slices=1,
+            max_runtime_seconds=30.0,
+            poll_interval_seconds=0.0,
+            market_timeout_seconds=1.0,
+            output_dir=Path("/tmp"),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_binance_usdm_credentials",
+        lambda: SimpleNamespace(is_configured=True, api_key="key", api_secret="secret"),
+    )
+    monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
+    monkeypatch.setattr(module, "ExecutionService", FakeExecutionService)
+
+    with pytest.raises(StreamFailed, match="user stream failed"):
+        await module.run(Algorithm.CHASE)
+
+    assert adapter is not None
+    assert adapter.run_once_calls == 1
+    assert adapter.market_closed.is_set()
+    assert adapter.user_closed.is_set()
+
+
+async def test_testnet_runner_cleanup_stops_market_when_user_task_already_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    class StreamFailed(RuntimeError):
+        pass
+
+    class FakeRunnerAdapter:
+        def __init__(self, settings: Settings) -> None:
+            self.settings = settings
+            self.clock = ManualClock()
+            self.market_started = asyncio.Event()
+            self.user_started = asyncio.Event()
+            self.user_failed = asyncio.Event()
+            self.fail_user_stream = asyncio.Event()
+            self.market_closed = asyncio.Event()
+            self.user_closed = asyncio.Event()
+            self.allow_market_exit = asyncio.Event()
+
+        def set_market_stream_symbol(self, _symbol: str) -> None:
+            pass
+
+        def stream_market_data(self):
+            async def events():
+                self.market_started.set()
+                try:
+                    yield MarketSnapshot(
+                        symbol="BTCUSDT",
+                        bid=Decimal("100.00"),
+                        ask=Decimal("100.10"),
+                        last_market_event_time_exchange=1,
+                        last_market_event_time_local_monotonic=0.0,
+                    )
+                    await self.allow_market_exit.wait()
+                finally:
+                    self.market_closed.set()
+
+            return events()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_started.set()
+                try:
+                    yield {}
+                    await self.fail_user_stream.wait()
+                    raise StreamFailed("user stream failed")
+                finally:
+                    self.user_closed.set()
+                    self.user_failed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.market_started.is_set() and self.user_started.is_set()
+
+    class FakeExecutionService:
+        def __init__(self, adapter: FakeRunnerAdapter, **_kwargs: Any) -> None:
+            self.adapter = adapter
+
+        async def create_execution(self, _request: Any) -> Any:
+            self.adapter.fail_user_stream.set()
+            await self.adapter.user_failed.wait()
+            raise AssertionError("runner reached execution creation after stream task failure")
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter: FakeRunnerAdapter | None = None
+
+    def make_adapter(settings: Settings) -> FakeRunnerAdapter:
+        nonlocal adapter
+        adapter = FakeRunnerAdapter(settings)
+        return adapter
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda _algorithm: SimpleNamespace(
+            symbol="BTCUSDT",
+            confirm_send_orders=True,
+            target_position="0.100",
+            target_price_lower="90",
+            target_price_upper="110",
+            duration_seconds=60,
+            number_of_slices=1,
+            max_runtime_seconds=30.0,
+            poll_interval_seconds=0.0,
+            market_timeout_seconds=1.0,
+            output_dir=Path("/tmp"),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_binance_usdm_credentials",
+        lambda: SimpleNamespace(is_configured=True, api_key="key", api_secret="secret"),
+    )
+    monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
+    monkeypatch.setattr(module, "ExecutionService", FakeExecutionService)
+
+    with pytest.raises(StreamFailed, match="user stream failed"):
+        await module.run(Algorithm.CHASE)
+
+    assert adapter is not None
+    try:
+        assert adapter.market_closed.is_set()
+    finally:
+        if not adapter.market_closed.is_set():
+            adapter.allow_market_exit.set()
+            await asyncio.wait_for(adapter.market_closed.wait(), timeout=1.0)
+    assert adapter.user_closed.is_set()
 
 
 def test_testnet_scripts_refuse_without_credentials_and_never_fallback_to_simulator() -> None:

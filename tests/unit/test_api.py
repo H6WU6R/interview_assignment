@@ -111,6 +111,7 @@ async def test_create_execution_no_action_completes() -> None:
             "minimum_reprice_interval_ms": 500,
             "number_of_slices": 10,
             "child_order_timeout_seconds": 20,
+            "max_post_only_reject_retries": 3,
             "repricing_mode": "ADVERSE_ONLY",
         },
     }
@@ -925,7 +926,12 @@ async def test_empty_parameters_default_and_repricing_mode_accepts_enum() -> Non
     created = await post_json(
         app,
         "/executions",
-        execution_payload(parameters={"repricing_mode": "TWO_SIDED"}),
+        execution_payload(
+            parameters={
+                "repricing_mode": "TWO_SIDED",
+                "max_post_only_reject_retries": 5,
+            }
+        ),
     )
     empty = await post_json(
         create_app(simulator_position="0"),
@@ -936,7 +942,10 @@ async def test_empty_parameters_default_and_repricing_mode_accepts_enum() -> Non
     assert created.status_code == 200
     assert empty.status_code == 200
     assert created.json()["status"] == "RUNNING"
+    assert created.json()["request"]["parameters"]["repricing_mode"] == "TWO_SIDED"
+    assert created.json()["request"]["parameters"]["max_post_only_reject_retries"] == 5
     assert empty.json()["status"] == "RUNNING"
+    assert empty.json()["request"]["parameters"]["max_post_only_reject_retries"] == 3
 
 
 @pytest.mark.asyncio
@@ -953,6 +962,7 @@ async def test_empty_parameters_default_and_repricing_mode_accepts_enum() -> Non
         execution_payload(parameters={"minimum_reprice_interval_ms": -1}),
         execution_payload(parameters={"number_of_slices": 0}),
         execution_payload(parameters={"child_order_timeout_seconds": 0}),
+        execution_payload(parameters={"max_post_only_reject_retries": 0}),
     ],
 )
 async def test_invalid_execution_request_fields_are_rejected(payload: dict[str, Any]) -> None:

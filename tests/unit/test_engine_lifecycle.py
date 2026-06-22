@@ -24,6 +24,7 @@ from execution.models import (
     ExecutionRequest,
     ExecutionStatus,
     OrderRequest,
+    PositionSnapshot,
     ReconciliationResult,
     Side,
     SymbolRules,
@@ -126,6 +127,132 @@ async def test_no_action_summary_duration_uses_execution_start_not_clock_origin(
     assert execution.summary.metrics["actual_duration_seconds"] == "0"
 
 
+async def test_running_start_time_is_captured_after_validation_io() -> None:
+    class SlowValidationSimulator(DeterministicSimulator):
+        async def get_position(self, symbol: str) -> PositionSnapshot:
+            self.clock.advance(2)
+            return await super().get_position(symbol)
+
+        async def get_symbol_rules(self, symbol: str) -> SymbolRules:
+            self.clock.advance(3)
+            return await super().get_symbol_rules(symbol)
+
+    clock = ManualClock()
+    simulator = SlowValidationSimulator(clock=clock)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(simulator, clock=clock)
+
+    execution = await service.create_execution(execution_request())
+
+    assert execution.status is ExecutionStatus.RUNNING
+    assert execution.started_monotonic == Decimal("5.0")
+
+
+async def test_create_execution_rejects_normalized_quantity_below_min_quantity_before_running() -> None:
+    service, simulator, _ = await fresh_service()
+    simulator.set_symbol_rules(
+        SymbolRules(
+            symbol=SYMBOL,
+            tick_size=Decimal("0.10"),
+            quantity_step=Decimal("0.001"),
+            min_quantity=Decimal("0.005"),
+            min_notional=Decimal("5"),
+            status="TRADING",
+            supported_time_in_force=frozenset({"GTC", "GTX", "IOC"}),
+        )
+    )
+
+    execution = await service.create_execution(execution_request(target_position=Decimal("0.0045")))
+
+    assert execution.status is ExecutionStatus.COMPLETED
+    assert execution.final_reason == "UNTRADEABLE_TARGET_DUST"
+    assert execution.required_quantity == Decimal("0.004")
+    assert execution.child_orders == []
+    assert execution.summary is not None
+    assert execution.summary.metrics["actual_duration_seconds"] == "0"
+
+
+async def test_create_execution_rejects_quantity_below_min_notional_at_best_legal_bound_before_running() -> None:
+    service, simulator, _ = await fresh_service()
+    rules = SymbolRules(
+        symbol=SYMBOL,
+        tick_size=Decimal("0.10"),
+        quantity_step=Decimal("0.001"),
+        min_quantity=Decimal("0.001"),
+        min_notional=Decimal("100"),
+        status="TRADING",
+        supported_time_in_force=frozenset({"GTC", "GTX", "IOC"}),
+    )
+    simulator.set_symbol_rules(rules)
+
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0.001"), upper=Decimal("97000"))
+    )
+
+    assert execution.status is ExecutionStatus.COMPLETED
+    assert execution.final_reason == "UNTRADEABLE_TARGET_DUST"
+    assert execution.required_quantity == Decimal("0.001")
+    assert execution.required_quantity >= rules.min_quantity
+    assert execution.required_quantity * Decimal("97000") < rules.min_notional
+    assert execution.child_orders == []
+    assert execution.summary is not None
+    assert execution.summary.metrics["actual_duration_seconds"] == "0"
+
+
+async def test_create_execution_rejects_buy_below_min_notional_after_rounding_upper_to_tick() -> None:
+    service, simulator, _ = await fresh_service()
+    simulator.set_symbol_rules(
+        SymbolRules(
+            symbol=SYMBOL,
+            tick_size=Decimal("1"),
+            quantity_step=Decimal("1"),
+            min_quantity=Decimal("1"),
+            min_notional=Decimal("100.50"),
+            status="TRADING",
+            supported_time_in_force=frozenset({"GTC", "GTX", "IOC"}),
+        )
+    )
+
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("1"), upper=Decimal("100.99"))
+    )
+
+    assert execution.status is ExecutionStatus.COMPLETED
+    assert execution.final_reason == "UNTRADEABLE_TARGET_DUST"
+    assert execution.required_quantity == Decimal("1")
+    assert execution.child_orders == []
+    assert execution.summary is not None
+
+
+async def test_create_execution_allows_sell_when_lower_bound_notional_is_low() -> None:
+    service, simulator, _ = await fresh_service(
+        position=Decimal("1"),
+        bid=Decimal("100"),
+        ask=Decimal("101"),
+    )
+    simulator.set_symbol_rules(
+        SymbolRules(
+            symbol=SYMBOL,
+            tick_size=Decimal("1"),
+            quantity_step=Decimal("1"),
+            min_quantity=Decimal("1"),
+            min_notional=Decimal("100"),
+            status="TRADING",
+            supported_time_in_force=frozenset({"GTC", "GTX", "IOC"}),
+        )
+    )
+
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0"), lower=Decimal("1"), upper=Decimal("200"))
+    )
+    snapshot = await service.run_once(execution.execution_id)
+
+    assert execution.status is ExecutionStatus.RUNNING
+    assert execution.side is Side.SELL
+    assert snapshot.child_orders[0].status is ChildOrderStatus.OPEN
+    assert snapshot.child_orders[0].price == Decimal("101")
+
+
 async def test_aggressive_deadline_submits_non_post_only_marketable_limit() -> None:
     class RecordingSimulator(DeterministicSimulator):
         submissions: list[OrderRequest]
@@ -158,6 +285,42 @@ async def test_aggressive_deadline_submits_non_post_only_marketable_limit() -> N
     assert simulator.submissions[0].price == Decimal("95001.00")
     assert simulator.submissions[0].post_only is False
     assert getattr(simulator.submissions[0], "time_in_force", None) == "IOC"
+
+
+async def test_non_post_only_order_reject_fails_parent_without_deadline_masking() -> None:
+    class AggressiveRejectSimulator(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            raise OrderRejected("IOC order rejected by exchange")
+
+    clock = ManualClock()
+    simulator = AggressiveRejectSimulator(clock=clock)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(simulator, clock=clock)
+    execution = await service.create_execution(
+        execution_request(duration=1, upper=Decimal("95001.00"))
+    )
+    clock.advance(1)
+    await simulator.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+
+    rejected = await service.run_once(execution.execution_id)
+    second = await service.run_once(execution.execution_id)
+
+    assert len(simulator.submissions) == 1
+    assert simulator.submissions[0].post_only is False
+    assert len(rejected.child_orders) == 1
+    assert rejected.child_orders[0].status is ChildOrderStatus.REJECTED
+    assert rejected.status is ExecutionStatus.FAILED
+    assert rejected.final_reason == "TERMINAL_ORDER_REJECTED: IOC order rejected by exchange"
+    assert len(second.child_orders) == 1
+    assert second.status is ExecutionStatus.FAILED
+    assert second.final_reason == "TERMINAL_ORDER_REJECTED: IOC order rejected by exchange"
 
 
 async def test_aggressive_deadline_does_not_cancel_its_own_final_attempt() -> None:
@@ -594,6 +757,350 @@ async def test_retryable_order_reject_does_not_fail_parent_execution() -> None:
     assert snapshot.exposure.reserved_exposure == Decimal("0")
 
 
+async def test_retryable_order_reject_waits_for_backoff_and_fresh_passive_price() -> None:
+    class RejectOnceAdapter(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            if len(self.submissions) == 1:
+                raise OrderRejected("post-only order would cross the current ask")
+            return self._create_open_order(order_request)
+
+    clock = ManualClock()
+    adapter = RejectOnceAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    rejected = await service.run_once(execution.execution_id)
+    immediate = await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=20)
+    stale_price = await service.run_once(execution.execution_id)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.10"), Decimal("95001.10"), exchange_event_time=30)
+    retried = await service.run_once(execution.execution_id)
+
+    assert len(adapter.submissions) == 2
+    assert rejected.child_orders[0].status is ChildOrderStatus.REJECTED
+    assert len(immediate.child_orders) == 1
+    assert immediate.final_reason == "RETRYABLE_ORDER_REJECT_BACKOFF"
+    assert len(stale_price.child_orders) == 1
+    assert stale_price.final_reason == "RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE"
+    assert len(retried.child_orders) == 2
+    assert retried.child_orders[1].status is ChildOrderStatus.OPEN
+    assert retried.child_orders[1].price == Decimal("95000.10")
+    assert retried.final_reason is None
+
+
+async def test_retryable_order_reject_buy_unblocks_when_ask_changes_even_if_passive_bid_unchanged() -> None:
+    class RejectOnceAdapter(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            if len(self.submissions) == 1:
+                raise OrderRejected("post-only order would cross the current ask")
+            return self._create_open_order(order_request)
+
+    clock = ManualClock()
+    adapter = RejectOnceAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    rejected = await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95002.00"), exchange_event_time=20)
+    retried = await service.run_once(execution.execution_id)
+
+    assert rejected.child_orders[0].price == Decimal("95000.00")
+    assert len(adapter.submissions) == 2
+    assert retried.child_orders[1].status is ChildOrderStatus.OPEN
+    assert retried.child_orders[1].price == Decimal("95000.00")
+
+
+async def test_retryable_order_reject_sell_unblocks_when_bid_changes_even_if_passive_ask_unchanged() -> None:
+    class RejectOnceAdapter(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            if len(self.submissions) == 1:
+                raise OrderRejected("post-only order would cross the current bid")
+            return self._create_open_order(order_request)
+
+    clock = ManualClock()
+    adapter = RejectOnceAdapter(clock=clock, position=Decimal("0.010"))
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request(target_position=Decimal("0")))
+
+    rejected = await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("94999.00"), Decimal("95001.00"), exchange_event_time=20)
+    retried = await service.run_once(execution.execution_id)
+
+    assert rejected.side is Side.SELL
+    assert rejected.child_orders[0].price == Decimal("95001.00")
+    assert len(adapter.submissions) == 2
+    assert retried.child_orders[1].status is ChildOrderStatus.OPEN
+    assert retried.child_orders[1].price == Decimal("95001.00")
+
+
+async def test_retryable_order_reject_limit_terminalizes_after_three_consecutive_rejects() -> None:
+    class AlwaysRejectAdapter(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            raise OrderRejected("post-only order would cross the current ask")
+
+    clock = ManualClock()
+    adapter = AlwaysRejectAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    first = await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.10"), Decimal("95001.10"), exchange_event_time=20)
+    second = await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.20"), Decimal("95001.20"), exchange_event_time=30)
+    terminal = await service.run_once(execution.execution_id)
+    after_terminal = await service.run_once(execution.execution_id)
+
+    assert first.status is ExecutionStatus.RUNNING
+    assert second.status is ExecutionStatus.RUNNING
+    assert len(adapter.submissions) == 3
+    assert len(terminal.child_orders) == 3
+    assert terminal.status is ExecutionStatus.EXPIRED
+    assert terminal.final_reason == "RETRYABLE_ORDER_REJECT_LIMIT_REACHED"
+    assert terminal.summary is not None
+    assert terminal.summary.metrics["retryable_order_reject_streak"] == 3
+    assert terminal.summary.metrics["retryable_order_reject_limit"] == 3
+    assert len(after_terminal.child_orders) == 3
+
+
+async def test_retryable_order_reject_limit_uses_request_parameter() -> None:
+    class AlwaysRejectAdapter(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            raise OrderRejected("post-only order would cross the current ask")
+
+    clock = ManualClock()
+    adapter = AlwaysRejectAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(
+        execution_request(
+            parameters=ExecutionParameters(max_post_only_reject_retries=2),
+        )
+    )
+
+    first = await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.10"), Decimal("95001.10"), exchange_event_time=20)
+    terminal = await service.run_once(execution.execution_id)
+
+    assert first.status is ExecutionStatus.RUNNING
+    assert len(adapter.submissions) == 2
+    assert terminal.status is ExecutionStatus.EXPIRED
+    assert terminal.final_reason == "RETRYABLE_ORDER_REJECT_LIMIT_REACHED"
+    assert terminal.summary is not None
+    assert terminal.summary.metrics["retryable_order_reject_streak"] == 2
+    assert terminal.summary.metrics["retryable_order_reject_limit"] == 2
+
+
+async def test_retryable_order_reject_limit_terminalizes_partially_completed_after_fill() -> None:
+    class PartialThenRejectAdapter(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            if len(self.submissions) == 1:
+                return ChildOrder(
+                    child_order_id=order_request.child_order_id,
+                    client_order_id=order_request.client_order_id,
+                    symbol=order_request.symbol,
+                    side=order_request.side,
+                    submitted_quantity=order_request.quantity,
+                    price=order_request.price,
+                    status=ChildOrderStatus.CANCELLED,
+                    confirmed_filled_quantity=Decimal("0.004"),
+                    raw_status="EXPIRED",
+                )
+            raise OrderRejected("post-only order would cross the current ask")
+
+    clock = ManualClock()
+    adapter = PartialThenRejectAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    partial = await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.10"), Decimal("95001.10"), exchange_event_time=20)
+    await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.20"), Decimal("95001.20"), exchange_event_time=30)
+    await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.30"), Decimal("95001.30"), exchange_event_time=40)
+    terminal = await service.run_once(execution.execution_id)
+
+    assert partial.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert len(adapter.submissions) == 4
+    assert terminal.status is ExecutionStatus.PARTIALLY_COMPLETED
+    assert terminal.final_reason == "RETRYABLE_ORDER_REJECT_LIMIT_REACHED"
+    assert terminal.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert terminal.summary is not None
+
+
+async def test_retryable_order_reject_streak_resets_after_immediate_successful_child() -> None:
+    class RejectThenFillAdapter(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            if len(self.submissions) in {1, 2, 4}:
+                raise OrderRejected("post-only order would cross the current ask")
+            return ChildOrder(
+                child_order_id=order_request.child_order_id,
+                client_order_id=order_request.client_order_id,
+                symbol=order_request.symbol,
+                side=order_request.side,
+                submitted_quantity=order_request.quantity,
+                price=order_request.price,
+                status=ChildOrderStatus.CANCELLED,
+                confirmed_filled_quantity=Decimal("0.004"),
+                raw_status="EXPIRED",
+            )
+
+    clock = ManualClock()
+    adapter = RejectThenFillAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.10"), Decimal("95001.10"), exchange_event_time=20)
+    await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.20"), Decimal("95001.20"), exchange_event_time=30)
+    filled = await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.30"), Decimal("95001.30"), exchange_event_time=40)
+    retried_after_fill = await service.run_once(execution.execution_id)
+
+    assert filled.consecutive_retryable_order_rejects == 0
+    assert len(adapter.submissions) == 4
+    assert retried_after_fill.status is ExecutionStatus.RUNNING
+    assert retried_after_fill.consecutive_retryable_order_rejects == 1
+    assert retried_after_fill.exposure.confirmed_filled_quantity == Decimal("0.004")
+
+
+async def test_retryable_order_reject_streak_resets_after_unknown_reconciles_to_filled() -> None:
+    class RejectThenUnknownFillAdapter(DeterministicSimulator):
+        submissions: list[OrderRequest]
+        stored_order: ChildOrder | None
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+            self.stored_order = None
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            if len(self.submissions) in {1, 2, 4}:
+                raise OrderRejected("post-only order would cross the current ask")
+            self.stored_order = ChildOrder(
+                child_order_id=order_request.child_order_id,
+                client_order_id=order_request.client_order_id,
+                symbol=order_request.symbol,
+                side=order_request.side,
+                submitted_quantity=order_request.quantity,
+                price=order_request.price,
+                status=ChildOrderStatus.CANCELLED,
+                confirmed_filled_quantity=Decimal("0.004"),
+                raw_status="EXPIRED",
+            )
+            raise OrderCreateTimeout(f"ambiguous create for {order_request.client_order_id}")
+
+        async def get_order_by_client_order_id(
+            self,
+            symbol: str,
+            client_order_id: str,
+        ) -> ChildOrder | None:
+            return self.stored_order
+
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+        ) -> ReconciliationResult:
+            return ReconciliationResult(orders=[], fills=[])
+
+    clock = ManualClock()
+    adapter = RejectThenUnknownFillAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.10"), Decimal("95001.10"), exchange_event_time=20)
+    await service.run_once(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.20"), Decimal("95001.20"), exchange_event_time=30)
+    unknown = await service.run_once(execution.execution_id)
+    reconciled = await service.reconcile_execution(execution.execution_id)
+    clock.advance(1)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.30"), Decimal("95001.30"), exchange_event_time=40)
+    retried_after_reconcile = await service.run_once(execution.execution_id)
+
+    assert unknown.child_orders[2].status is ChildOrderStatus.UNKNOWN
+    assert reconciled.child_orders[2].status is ChildOrderStatus.CANCELLED
+    assert reconciled.exposure.confirmed_filled_quantity == Decimal("0.004")
+    assert reconciled.consecutive_retryable_order_rejects == 0
+    assert len(adapter.submissions) == 4
+    assert retried_after_reconcile.status is ExecutionStatus.RUNNING
+    assert retried_after_reconcile.consecutive_retryable_order_rejects == 1
+    assert retried_after_reconcile.exposure.confirmed_filled_quantity == Decimal("0.004")
+
+
 async def test_adapter_level_cancel_timeout_keeps_pending_cancel_exposure_until_reconcile() -> None:
     class CancelTimeoutAdapter(DeterministicSimulator):
         async def cancel_order(self, symbol: str, client_order_id: str) -> ChildOrder:
@@ -840,6 +1347,52 @@ async def test_twap_uses_absolute_schedule_and_carries_forward_unfilled_deficit(
     assert len(still_reserved.child_orders) == 1
     assert carried_forward.child_orders[0].status is ChildOrderStatus.CANCELLED
     assert carried_forward.child_orders[1].submitted_quantity == Decimal("0.600")
+
+    clock.advance(40)
+    await simulator.push_market_data(SYMBOL, Decimal("100.00"), Decimal("101.00"), exchange_event_time=40)
+    cancelled = await service.cancel_execution(execution.execution_id)
+    terminal = await service.run_once(cancelled.execution_id)
+
+    assert terminal.summary is not None
+    ledger = terminal.summary.metrics["twap_slice_ledger"]
+    assert len(ledger) == 10
+    assert ledger[3 - 1] == {
+        "execution_id": terminal.execution_id,
+        "slice_index": 3,
+        "slice_start_seconds": Decimal("20"),
+        "slice_end_seconds": Decimal("30"),
+        "planned_cumulative_quantity": Decimal("0.300"),
+        "planned_slice_quantity": Decimal("0.100"),
+        "submitted_quantity": Decimal("0.300"),
+        "open_quantity": Decimal("0"),
+        "filled_quantity": Decimal("0"),
+        "cancelled_quantity": Decimal("0.300"),
+        "unfilled_quantity": Decimal("0.100"),
+        "schedule_deficit": Decimal("0.300"),
+        "child_order_ids": [carried_forward.child_orders[0].child_order_id],
+        "client_order_ids": [carried_forward.child_orders[0].client_order_id],
+    }
+    assert ledger[6 - 1]["submitted_quantity"] == Decimal("0.600")
+    assert ledger[6 - 1]["cancelled_quantity"] == Decimal("0.600")
+    assert ledger[6 - 1]["unfilled_quantity"] == Decimal("0.100")
+    assert ledger[6 - 1]["schedule_deficit"] == Decimal("0.600")
+
+
+async def test_chase_terminal_summary_has_empty_twap_slice_ledger() -> None:
+    service, simulator, _ = await fresh_service()
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+    await simulator.push_fill(
+        opened.child_orders[0].client_order_id,
+        Decimal("0.010"),
+        Decimal("95000.00"),
+    )
+
+    terminal = await service.run_once(execution.execution_id)
+
+    assert terminal.status is ExecutionStatus.COMPLETED
+    assert terminal.summary is not None
+    assert terminal.summary.metrics["twap_slice_ledger"] == []
 
 
 async def test_price_outside_range_does_not_submit_before_deadline() -> None:

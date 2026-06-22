@@ -1,3 +1,5 @@
+"""Pure Chase order decision helpers."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -7,11 +9,15 @@ from execution.models import RepricingMode, Side
 
 
 class ChaseDecision(StrEnum):
+    """Decision returned by Chase repricing logic."""
+
     WAIT = "WAIT"
     REPRICE = "REPRICE"
 
 
 def chase_desired_price(side: Side, best_bid: Decimal, best_ask: Decimal, passive: bool) -> Decimal:
+    """Return the near-touch price Chase should use for the requested side."""
+
     if side is Side.NO_ACTION:
         raise ValueError("NO_ACTION does not have a tradable chase price")
     if side is Side.BUY:
@@ -22,6 +28,8 @@ def chase_desired_price(side: Side, best_bid: Decimal, best_ask: Decimal, passiv
 
 
 def reprice_difference_bps(desired_price: Decimal, active_order_price: Decimal) -> Decimal:
+    """Return absolute price movement from active price to desired price in basis points."""
+
     if active_order_price <= Decimal("0"):
         return Decimal("0")
     return abs(desired_price - active_order_price) / active_order_price * Decimal("10000")
@@ -36,6 +44,8 @@ def should_reprice(
     elapsed_since_last_reprice_ms: int,
     repricing_mode: RepricingMode,
 ) -> ChaseDecision:
+    """Decide whether an active Chase order should be cancelled and replaced."""
+
     if side is Side.NO_ACTION or elapsed_since_last_reprice_ms < min_interval_ms:
         return ChaseDecision.WAIT
 

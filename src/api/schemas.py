@@ -1,3 +1,5 @@
+"""Pydantic request and response schemas for the execution API."""
+
 from __future__ import annotations
 
 import re
@@ -22,6 +24,8 @@ DECIMAL_STRING_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
 
 
 def parse_decimal_string(value: object) -> Decimal:
+    """Parse a finite Decimal from the API decimal string format."""
+
     if not isinstance(value, str):
         raise ValueError("decimal fields must be JSON strings")
     if not DECIMAL_STRING_RE.fullmatch(value):
@@ -36,10 +40,14 @@ def parse_decimal_string(value: object) -> Decimal:
 
 
 def decimal_to_string(value: Decimal) -> str:
+    """Serialize a Decimal value for API responses."""
+
     return str(value)
 
 
 class ExecutionParametersCreate(BaseModel):
+    """Request schema for configurable execution parameters."""
+
     model_config = ConfigDict(extra="forbid")
 
     reprice_threshold_bps: Decimal = Decimal("2.0")
@@ -97,6 +105,8 @@ class ExecutionParametersCreate(BaseModel):
 
 
 class ExecutionCreateRequest(BaseModel):
+    """Request schema for creating a parent execution."""
+
     model_config = ConfigDict(extra="forbid")
 
     environment: Environment
@@ -154,6 +164,8 @@ class ExecutionCreateRequest(BaseModel):
 
 
 class ChildOrderResponse(BaseModel):
+    """Response schema for child order state."""
+
     child_order_id: str
     client_order_id: str
     status: str
@@ -166,6 +178,8 @@ class ChildOrderResponse(BaseModel):
 
 
 class ExecutionParametersResponse(BaseModel):
+    """Response schema for resolved execution parameters."""
+
     reprice_threshold_bps: str
     minimum_reprice_interval_ms: int
     number_of_slices: int
@@ -175,6 +189,8 @@ class ExecutionParametersResponse(BaseModel):
 
 
 class ExecutionRequestResponse(BaseModel):
+    """Response schema for the original execution request."""
+
     environment: str
     symbol: str
     algorithm: str
@@ -187,6 +203,8 @@ class ExecutionRequestResponse(BaseModel):
 
 
 class ExecutionResponse(BaseModel):
+    """Response schema for execution state and progress."""
+
     execution_id: str
     status: str
     final_reason: str | None
@@ -212,6 +230,8 @@ class ExecutionResponse(BaseModel):
 
 
 def execution_response(record: ExecutionRecord) -> ExecutionResponse:
+    """Build an API response from an execution record."""
+
     exposure = record.exposure
     summary = record.summary
     return ExecutionResponse(
@@ -258,11 +278,15 @@ def execution_response(record: ExecutionRecord) -> ExecutionResponse:
 
 
 def unfilled_quantity(record: ExecutionRecord) -> Decimal:
+    """Return the remaining required quantity after confirmed fills."""
+
     remaining = record.required_quantity - record.exposure.confirmed_filled_quantity
     return remaining if remaining > Decimal("0") else Decimal("0")
 
 
 def request_response(record: ExecutionRecord) -> ExecutionRequestResponse:
+    """Build the API response snapshot for the original execution request."""
+
     request = record.request
     parameters = request.parameters
     return ExecutionRequestResponse(
@@ -286,12 +310,16 @@ def request_response(record: ExecutionRecord) -> ExecutionRequestResponse:
 
 
 def started_monotonic(record: ExecutionRecord) -> str | None:
+    """Return monotonic start time when exposure tracking exists, otherwise None."""
+
     if record.exposure_tracker is None:
         return None
     return decimal_to_string(record.started_monotonic)
 
 
 def json_safe(value: Any) -> Any:
+    """Convert nested response values into JSON-safe primitives."""
+
     if isinstance(value, Decimal):
         return decimal_to_string(value)
     if isinstance(value, Enum):

@@ -13,6 +13,22 @@ uv run python scripts/run_sim_cancel_race.py
 uv run python scripts/run_sim_create_timeout.py
 ```
 
+## Documentation
+
+The repository includes a Sphinx documentation site under `docs/source/`, organized like a compact Python package manual:
+
+- User Guide: assignment requirements, architecture, lifecycle, safety invariants, Chase, TWAP, Testnet evidence, observability, and limitations.
+- Examples: deterministic simulator and scenario-test proof cases.
+- API Reference: public modules for algorithms, execution, exchanges, risk, API/runtime, and observability.
+
+Build the HTML docs locally with:
+
+```bash
+uv run sphinx-build -b html docs/source docs/_build/html
+```
+
+Open `docs/_build/html/index.html` in a browser after the build completes.
+
 To run the simulation API locally:
 
 ```bash

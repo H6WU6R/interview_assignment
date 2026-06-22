@@ -1,3 +1,5 @@
+"""Writers for sanitized execution evidence artifacts."""
+
 from __future__ import annotations
 
 import csv
@@ -90,6 +92,8 @@ def write_execution_artifacts(
     extra_json_artifacts: Mapping[str, Any] | None = None,
     extra_csv_artifacts: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
 ) -> Path:
+    """Write sanitized execution artifacts for reviewer evidence."""
+
     output_dir = root / execution_id
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(output_dir / "request_snapshot.json", request_snapshot)

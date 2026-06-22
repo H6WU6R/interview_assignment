@@ -1,9 +1,13 @@
+"""Allowed parent execution and child order state transitions."""
+
 from __future__ import annotations
 
 from execution.models import ChildOrderStatus, ExecutionStatus
 
 
 class InvalidStateTransition(ValueError):
+    """Raised when a requested execution or child-order transition is illegal."""
+
     pass
 
 
@@ -66,12 +70,16 @@ CHILD_TRANSITIONS: dict[ChildOrderStatus, set[ChildOrderStatus]] = {
 
 
 def transition_execution(current: ExecutionStatus, target: ExecutionStatus) -> ExecutionStatus:
+    """Validate and return a legal parent execution state transition."""
+
     if target not in EXECUTION_TRANSITIONS.get(current, set()):
         raise InvalidStateTransition(f"execution transition {current} -> {target} is not allowed")
     return target
 
 
 def transition_child(current: ChildOrderStatus, target: ChildOrderStatus) -> ChildOrderStatus:
+    """Validate and return a legal child order state transition."""
+
     if target not in CHILD_TRANSITIONS.get(current, set()):
         raise InvalidStateTransition(f"child order transition {current} -> {target} is not allowed")
     return target

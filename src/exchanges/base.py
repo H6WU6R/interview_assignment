@@ -1,3 +1,5 @@
+"""Exchange adapter contract and shared exchange exceptions."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -13,26 +15,38 @@ from execution.models import (
 
 
 class NoFreshMarketData(RuntimeError):
+    """Raised when an adapter cannot provide a usable current market snapshot."""
+
     pass
 
 
 class OrderCreateTimeout(RuntimeError):
+    """Raised when order creation times out with an uncertain outcome."""
+
     pass
 
 
 class OrderCancelTimeout(RuntimeError):
+    """Raised when order cancellation times out with a pending outcome."""
+
     pass
 
 
 class OrderRejected(RuntimeError):
+    """Raised when an exchange rejects an order request."""
+
     pass
 
 
 class TerminalOrderRejected(OrderRejected):
+    """Raised when an order rejection should terminally fail the child order."""
+
     pass
 
 
 class ExchangeAdapter(ABC):
+    """Abstract exchange contract shared by the simulator and Binance adapter."""
+
     @abstractmethod
     async def get_symbol_rules(self, symbol: str) -> SymbolRules:
         raise NotImplementedError

@@ -1,3 +1,5 @@
+"""Application service facade for execution engine operations."""
+
 from __future__ import annotations
 
 from exchanges.base import ExchangeAdapter
@@ -7,6 +9,8 @@ from execution.models import Environment, ExecutionRequest, ReconciliationResult
 
 
 class ExecutionService:
+    """Application facade over the execution engine."""
+
     def __init__(self, adapter: ExchangeAdapter, clock: Clock | None = None) -> None:
         self._engine = ExecutionEngine(adapter, clock=clock or getattr(adapter, "clock", None) or ManualClock())
 

@@ -1,3 +1,5 @@
+"""FastAPI application factory for execution service endpoints."""
+
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
@@ -15,6 +17,8 @@ def create_app(
     *,
     background_tick_interval_seconds: float = 0.25,
 ) -> FastAPI:
+    """Create the FastAPI application and wire the execution runtime."""
+
     runtime = ExecutionRuntime(
         simulator_position=simulator_position,
         background_tick_interval_seconds=background_tick_interval_seconds,

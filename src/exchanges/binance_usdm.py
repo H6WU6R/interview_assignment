@@ -1,3 +1,5 @@
+"""Binance USD-M exchange adapter and payload translation helpers."""
+
 from __future__ import annotations
 
 import hmac
@@ -54,35 +56,51 @@ EXECUTION_CLIENT_ORDER_PREFIX_RE = re.compile(r"^ce_[0-9a-f]{12}_$")
 
 
 class MutationKind(StrEnum):
+    """Authenticated Binance mutation category used for timeout classification."""
+
     CREATE = "CREATE"
     CANCEL = "CANCEL"
 
 
 class ExchangeTerminalReject(TerminalOrderRejected):
+    """Terminal Binance rejection that should fail the child order."""
+
     pass
 
 
 class UnknownCreateOutcome(OrderCreateTimeout):
+    """Raised when a create-order mutation has an ambiguous outcome."""
+
     pass
 
 
 class PendingCancelOutcome(OrderCancelTimeout):
+    """Raised when a cancel-order mutation may still be pending."""
+
     pass
 
 
 class RetryableReadFailure(RuntimeError):
+    """Raised when a signed read can be retried safely."""
+
     pass
 
 
 class StreamHealthFailure(RuntimeError):
+    """Raised when Binance stream setup or health checks fail."""
+
     pass
 
 
 def decimal_to_api(value: Decimal) -> str:
+    """Serialize a Decimal for Binance REST parameters."""
+
     return format(value, "f")
 
 
 def classify_mutation_timeout(kind: MutationKind) -> str:
+    """Return a conservative reason for an ambiguous mutation timeout."""
+
     if kind is MutationKind.CREATE:
         return "UNKNOWN_CREATE_OUTCOME"
     if kind is MutationKind.CANCEL:
@@ -91,6 +109,8 @@ def classify_mutation_timeout(kind: MutationKind) -> str:
 
 
 def build_new_order_params(order_request: OrderRequest, rules: SymbolRules) -> dict[str, str]:
+    """Build Binance LIMIT order parameters from an internal order request."""
+
     if len(order_request.client_order_id) > 36 or not ids.CLIENT_ORDER_ID_RE.fullmatch(
         order_request.client_order_id
     ):
@@ -119,12 +139,16 @@ def build_new_order_params(order_request: OrderRequest, rules: SymbolRules) -> d
 
 
 def sign_params(params: dict[str, str], secret: str) -> dict[str, str]:
+    """Return Binance request parameters with an HMAC signature."""
+
     query = urlencode(params)
     signature = hmac.new(secret.encode(), query.encode(), sha256).hexdigest()
     return {**params, "signature": signature}
 
 
 def classify_http_status(status_code: int) -> str:
+    """Classify a Binance HTTP status into an execution handling category."""
+
     if status_code == 408:
         return "REQUEST_TIMEOUT_AMBIGUOUS"
     if status_code == 429:
@@ -139,6 +163,8 @@ def classify_http_status(status_code: int) -> str:
 
 
 def normalize_order_status(raw_status: str) -> ChildOrderStatus:
+    """Map Binance order status text to an internal child order status."""
+
     status_map = {
         "NEW": ChildOrderStatus.OPEN,
         "PARTIALLY_FILLED": ChildOrderStatus.PARTIALLY_FILLED,
@@ -153,6 +179,8 @@ def normalize_order_status(raw_status: str) -> ChildOrderStatus:
 
 
 def parse_symbol_rules_from_exchange_info(payload: Mapping[str, Any], symbol: str) -> SymbolRules:
+    """Extract symbol trading rules from a Binance exchangeInfo payload."""
+
     symbol_payload = _find_symbol_payload(payload, symbol)
     filters = {
         filter_payload["filterType"]: filter_payload
@@ -178,6 +206,8 @@ def parse_symbol_rules_from_exchange_info(payload: Mapping[str, Any], symbol: st
 
 
 def parse_exchange_info_rate_limits(payload: Mapping[str, Any]) -> dict[str, int]:
+    """Extract relevant request and order rate limits from exchangeInfo."""
+
     wanted = {"REQUEST_WEIGHT", "ORDERS"}
     return {
         str(rate_limit["rateLimitType"]): int(rate_limit["limit"])
@@ -188,6 +218,8 @@ def parse_exchange_info_rate_limits(payload: Mapping[str, Any]) -> dict[str, int
 
 @dataclass
 class BinanceUsdmAdapter(ExchangeAdapter):
+    """Binance USD-M adapter implementing the exchange contract with REST and stream helpers."""
+
     settings: Settings = field(default_factory=Settings)
     client: Any | None = None
     clock: Clock = field(default_factory=SystemClock)
@@ -561,6 +593,8 @@ def _serialize_param(value: Any) -> str:
 
 
 def parse_order(raw: Mapping[str, Any], fallback: ChildOrder | None = None) -> ChildOrder:
+    """Parse a Binance order payload into an internal child order."""
+
     client_order_id = str(raw.get("clientOrderId") or raw.get("origClientOrderId") or _fallback_attr(fallback, "client_order_id", ""))
     raw_status = str(raw.get("status", _fallback_attr(fallback, "raw_status", "UNKNOWN")))
     status = normalize_order_status(raw_status)
@@ -591,6 +625,8 @@ def parse_fill(
     client_order_id: str,
     cumulative_quantity: Decimal,
 ) -> Fill:
+    """Parse a Binance trade payload into an internal fill."""
+
     return Fill(
         client_order_id=client_order_id,
         trade_id=str(raw["id"]) if raw.get("id") is not None else None,
@@ -604,6 +640,8 @@ def parse_fill(
 
 
 def reconciliation_from_user_event(event: object) -> ReconciliationResult | None:
+    """Convert a Binance user stream order event into reconciliation data."""
+
     if not isinstance(event, Mapping):
         return None
 

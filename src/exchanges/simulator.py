@@ -1,3 +1,5 @@
+"""Deterministic in-memory exchange simulator for tests and demos."""
+
 from __future__ import annotations
 
 import asyncio
@@ -28,15 +30,21 @@ EXECUTION_CLIENT_ORDER_PREFIX_RE = re.compile(r"^ce_[0-9a-f]{12}_$")
 
 
 class SimulatorOrderRejected(OrderRejected):
+    """Simulator-specific order rejection."""
+
     pass
 
 
 class SimulatorOrderTimeout(OrderCreateTimeout):
+    """Simulator-specific order creation timeout."""
+
     pass
 
 
 @dataclass(frozen=True)
 class SimulatorOrderEvent:
+    """User stream event emitted by the deterministic simulator."""
+
     kind: Literal["order_opened", "order_cancelled", "fill"]
     client_order_id: str
     order: ChildOrder | None = None
@@ -45,6 +53,8 @@ class SimulatorOrderEvent:
 
 @dataclass
 class DeterministicSimulator(ExchangeAdapter):
+    """In-memory exchange simulator used for deterministic lifecycle and race tests."""
+
     clock: Clock = field(default_factory=ManualClock)
     position: Decimal = Decimal("0")
     stale_market_data_seconds: float = 1.5

@@ -17,7 +17,7 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _write_csv(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
-    rows = [sanitize_log_payload(row) for row in rows]
+    rows = [_csv_row(sanitize_log_payload(row)) for row in rows]
     if not rows:
         path.write_text("", encoding="utf-8")
         return
@@ -26,6 +26,16 @@ def _write_csv(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _csv_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: _csv_value(value) for key, value in row.items()}
+
+
+def _csv_value(value: Any) -> Any:
+    if isinstance(value, Mapping) or isinstance(value, list):
+        return json.dumps(value, sort_keys=True)
+    return value
 
 
 def write_execution_artifacts(
@@ -37,6 +47,7 @@ def write_execution_artifacts(
     child_orders: Iterable[Mapping[str, Any]],
     fills: Iterable[Mapping[str, Any]],
     timeline: Iterable[Mapping[str, Any]],
+    twap_slice_ledger: Iterable[Mapping[str, Any]] = (),
 ) -> Path:
     output_dir = root / execution_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -48,4 +59,5 @@ def write_execution_artifacts(
     _write_csv(output_dir / "child_orders.csv", child_orders)
     _write_csv(output_dir / "fills.csv", fills)
     _write_csv(output_dir / "timeline.csv", timeline)
+    _write_csv(output_dir / "twap_slice_ledger.csv", twap_slice_ledger)
     return output_dir

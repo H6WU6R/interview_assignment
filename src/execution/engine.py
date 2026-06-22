@@ -354,6 +354,9 @@ class ExecutionEngine:
                 record.final_reason = STREAM_HEALTH_DEGRADED_RECONCILED
                 await self._cancel_active_children_locked(record)
                 await self._reconcile_locked(record, exact_unknown_lookup=True)
+                if self._target_filled(record):
+                    self._complete_locked(record, TARGET_QUANTITY_FILLED)
+                    return self._snapshot(record)
                 self._terminalize_deadline_locked(record, STREAM_HEALTH_DEGRADED_RECONCILED)
                 return self._snapshot(record)
 
@@ -414,6 +417,9 @@ class ExecutionEngine:
                 if self._deadline_reached(record):
                     await self._cancel_active_children_locked(record)
                     await self._reconcile_locked(record, exact_unknown_lookup=True)
+                    if self._target_filled(record):
+                        self._complete_locked(record, TARGET_QUANTITY_FILLED)
+                        return self._snapshot(record)
                     self._terminalize_deadline_locked(record, MARKET_DATA_STALE_RECONCILED)
                 return self._snapshot(record)
 
@@ -437,6 +443,9 @@ class ExecutionEngine:
                     if self._deadline_reached(record):
                         await self._cancel_active_children_locked(record)
                         await self._reconcile_locked(record, exact_unknown_lookup=True)
+                        if self._target_filled(record):
+                            self._complete_locked(record, TARGET_QUANTITY_FILLED)
+                            return self._snapshot(record)
                         self._terminalize_deadline_locked(record, MARKET_DATA_STALE_RECONCILED)
                     return self._snapshot(record)
 

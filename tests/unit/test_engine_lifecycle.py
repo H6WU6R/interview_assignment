@@ -1734,6 +1734,23 @@ async def test_deadline_stream_health_check_is_single_decision() -> None:
     assert simulator.health_checks == 1
 
 
+async def test_unhealthy_deadline_completes_when_cancel_race_fills_target() -> None:
+    service, simulator, clock = await fresh_service()
+    execution = await service.create_execution(execution_request(duration=1))
+    opened = await service.run_once(execution.execution_id)
+    prefix = make_client_order_prefix(execution.execution_id)
+    simulator.script_fill_during_cancel(prefix, opened.child_orders[0].remaining_quantity)
+    simulator.set_stream_health(user_stream_healthy=False)
+    clock.advance(5)
+
+    terminal = await service.run_once(execution.execution_id)
+
+    assert terminal.status is ExecutionStatus.COMPLETED
+    assert terminal.final_reason == "TARGET_QUANTITY_FILLED"
+    assert terminal.exposure.confirmed_filled_quantity == terminal.required_quantity
+    assert terminal.summary is not None
+
+
 async def test_unhealthy_deadline_reserved_exposure_preserves_final_reason() -> None:
     service, simulator, clock = await fresh_service()
     execution = await service.create_execution(execution_request(duration=1))

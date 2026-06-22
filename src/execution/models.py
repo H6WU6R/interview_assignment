@@ -86,6 +86,7 @@ class ExecutionParameters:
     minimum_reprice_interval_ms: int = 500
     number_of_slices: int = 10
     child_order_timeout_seconds: int = 20
+    max_post_only_reject_retries: int = 3
     repricing_mode: RepricingMode = RepricingMode.ADVERSE_ONLY
 
 

@@ -46,6 +46,7 @@ class ExecutionParametersCreate(BaseModel):
     minimum_reprice_interval_ms: int = 500
     number_of_slices: int = 10
     child_order_timeout_seconds: int = 20
+    max_post_only_reject_retries: int = 3
     repricing_mode: RepricingMode = RepricingMode.ADVERSE_ONLY
 
     @field_validator("reprice_threshold_bps", mode="before")
@@ -77,12 +78,20 @@ class ExecutionParametersCreate(BaseModel):
             raise ValueError("child_order_timeout_seconds must be greater than 0")
         return value
 
+    @field_validator("max_post_only_reject_retries")
+    @classmethod
+    def validate_max_post_only_reject_retries(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("max_post_only_reject_retries must be greater than 0")
+        return value
+
     def to_domain(self) -> ExecutionParameters:
         return ExecutionParameters(
             reprice_threshold_bps=self.reprice_threshold_bps,
             minimum_reprice_interval_ms=self.minimum_reprice_interval_ms,
             number_of_slices=self.number_of_slices,
             child_order_timeout_seconds=self.child_order_timeout_seconds,
+            max_post_only_reject_retries=self.max_post_only_reject_retries,
             repricing_mode=self.repricing_mode,
         )
 
@@ -161,6 +170,7 @@ class ExecutionParametersResponse(BaseModel):
     minimum_reprice_interval_ms: int
     number_of_slices: int
     child_order_timeout_seconds: int
+    max_post_only_reject_retries: int
     repricing_mode: str
 
 
@@ -269,6 +279,7 @@ def request_response(record: ExecutionRecord) -> ExecutionRequestResponse:
             minimum_reprice_interval_ms=parameters.minimum_reprice_interval_ms,
             number_of_slices=parameters.number_of_slices,
             child_order_timeout_seconds=parameters.child_order_timeout_seconds,
+            max_post_only_reject_retries=parameters.max_post_only_reject_retries,
             repricing_mode=parameters.repricing_mode.value,
         ),
     )

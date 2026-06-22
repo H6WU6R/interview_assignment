@@ -6,7 +6,7 @@ from contextlib import suppress
 from dataclasses import asdict, is_dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from config import Settings, load_binance_usdm_credentials
 from exchanges.binance_usdm import BinanceUsdmAdapter
@@ -76,6 +76,9 @@ async def run(algorithm: Algorithm) -> Path:
     try:
         snapshot, market_task = await _start_market_stream(adapter, timeout_seconds=args.market_timeout_seconds)
         events.append(_runtime_event(adapter, "market_snapshot", snapshot=_jsonable(snapshot)))
+        symbol_rules = await adapter.get_symbol_rules(symbol)
+        symbol_rules_payload = _symbol_rules_payload(symbol, symbol_rules, adapter)
+        events.append(_runtime_event(adapter, "symbol_rules_loaded", symbol_rules=symbol_rules_payload))
         active_execution: dict[str, str] = {}
         user_task = await _start_user_stream(
             adapter,
@@ -147,6 +150,19 @@ async def run(algorithm: Algorithm) -> Path:
             fills=[_jsonable(fill) for fill in reconciliation.fills],
             timeline=events,
             twap_slice_ledger=_twap_slice_ledger(latest),
+            extra_json_artifacts={
+                "symbol_rules.json": symbol_rules_payload,
+                "evidence_manifest.json": _evidence_manifest(
+                    request=request,
+                    record=latest,
+                    reconciliation=reconciliation,
+                    events=events,
+                    adapter=adapter,
+                ),
+            },
+            extra_csv_artifacts={
+                "reconciliation_orders.csv": [_jsonable(order) for order in reconciliation.orders],
+            },
         )
         print(f"execution_id={latest.execution_id}")
         print(f"status={latest.status.value}")
@@ -317,3 +333,105 @@ def _twap_slice_ledger(record: Any) -> list[dict[str, Any]]:
     if record_summary is None:
         return []
     return record_summary.metrics.get("twap_slice_ledger", [])
+
+
+def _symbol_rules_payload(symbol: str, rules: Any, adapter: Any) -> dict[str, Any]:
+    supported_time_in_force = getattr(rules, "supported_time_in_force", ())
+    return {
+        "symbol": symbol,
+        "rules": {
+            "symbol": getattr(rules, "symbol", symbol),
+            "tick_size": _jsonable(getattr(rules, "tick_size", None)),
+            "quantity_step": _jsonable(getattr(rules, "quantity_step", None)),
+            "min_quantity": _jsonable(getattr(rules, "min_quantity", None)),
+            "min_notional": _jsonable(getattr(rules, "min_notional", None)),
+            "status": getattr(rules, "status", None),
+            "supported_time_in_force": sorted(str(value) for value in supported_time_in_force),
+        },
+        "rate_limits": _jsonable(getattr(adapter, "rate_limits", {})),
+    }
+
+
+def _evidence_manifest(
+    *,
+    request: ExecutionRequest,
+    record: Any,
+    reconciliation: Any,
+    events: list[dict[str, Any]],
+    adapter: Any,
+) -> dict[str, Any]:
+    reconciliation_orders = list(getattr(reconciliation, "orders", []))
+    reconciliation_fills = list(getattr(reconciliation, "fills", []))
+    child_orders = list(getattr(record, "child_orders", []))
+    client_order_ids = _unique_strings(
+        [
+            *(_order_client_id(order) for order in child_orders),
+            *(_order_client_id(order) for order in reconciliation_orders),
+            *(getattr(fill, "client_order_id", None) for fill in reconciliation_fills),
+        ]
+    )
+    exchange_order_ids = _unique_strings(
+        [
+            *(_exchange_order_id(order) for order in child_orders),
+            *(_exchange_order_id(order) for order in reconciliation_orders),
+        ]
+    )
+    reconciled_exchange_order_ids = _unique_strings(
+        _exchange_order_id(order) for order in reconciliation_orders
+    )
+    warnings = list(getattr(reconciliation, "warnings", []))
+    return {
+        "execution_id": getattr(record, "execution_id", None),
+        "environment": _jsonable(request.environment),
+        "symbol": request.symbol,
+        "algorithm": _jsonable(request.algorithm),
+        "final_status": _jsonable(getattr(record, "status", None)),
+        "reconciled_order_count": len(reconciliation_orders),
+        "reconciled_fill_count": len(reconciliation_fills),
+        "client_order_ids": client_order_ids,
+        "exchange_order_ids": exchange_order_ids,
+        "exchange_order_id_count": len(exchange_order_ids),
+        "reconciled_exchange_order_id_count": len(reconciled_exchange_order_ids),
+        "exchange_order_evidence_status": (
+            "reconciled_exchange_order_ids_observed"
+            if reconciled_exchange_order_ids
+            else "no_reconciled_exchange_order_ids"
+        ),
+        "has_private_user_stream_events": _has_event(events, "user_stream_event"),
+        "has_user_stream_applied_events": _has_event(events, "user_stream_applied"),
+        "warnings": warnings,
+        "final_reconciliation_counts": {
+            "order_count": len(reconciliation_orders),
+            "fill_count": len(reconciliation_fills),
+            "warning_count": len(warnings),
+        },
+        "rate_limits": _jsonable(getattr(adapter, "rate_limits", {})),
+    }
+
+
+def _order_client_id(order: Any) -> str | None:
+    value = getattr(order, "client_order_id", None)
+    return str(value) if value else None
+
+
+def _exchange_order_id(order: Any) -> str | None:
+    value = getattr(order, "exchange_order_id", None)
+    return str(value) if value else None
+
+
+def _unique_strings(values: Iterable[Any]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        text = str(value)
+        if text in seen:
+            continue
+        seen.add(text)
+        unique.append(text)
+    return unique
+
+
+def _has_event(events: Iterable[Mapping[str, Any]], event_name: str) -> bool:
+    return any(event.get("event") == event_name for event in events)

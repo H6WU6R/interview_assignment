@@ -306,6 +306,70 @@ async def test_runtime_applies_matching_user_event_without_rest_reconciliation(
 
 
 @pytest.mark.asyncio
+async def test_runtime_applies_matching_user_event_to_terminal_execution_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(simulator_position="0")
+    runtime = app.state.runtime
+    adapter = app.state.adapter
+    request = ExecutionCreateRequest.model_validate(
+        execution_payload(target_position="0.004")
+    ).to_domain()
+    created = await runtime.create_execution(request)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    opened = await runtime.run_once(created.execution_id)
+    child = opened.child_orders[0]
+    await adapter.push_fill(child.client_order_id, Decimal("0.004"), Decimal("95010.00"))
+
+    terminal = await runtime.run_once(created.execution_id)
+    assert terminal.status.value == "COMPLETED"
+    assert terminal.final_reason == "TARGET_QUANTITY_FILLED"
+    assert terminal.summary is not None
+    assert terminal.summary.metrics["execution_vwap"] == "95000"
+    assert terminal.summary.metrics["maker_fills"] == 0
+    assert terminal.summary.metrics["taker_fills"] == 0
+
+    async def unexpected_rest_reconcile(*_args: Any, **_kwargs: Any) -> ReconciliationResult:
+        raise AssertionError("REST reconciliation should not be used for a matching user event")
+
+    def parse_event(_event: object) -> ReconciliationResult:
+        return ReconciliationResult(
+            orders=[],
+            fills=[
+                Fill(
+                    client_order_id=child.client_order_id,
+                    trade_id="late-stream-trade",
+                    cumulative_filled_quantity=Decimal("0.004"),
+                    last_filled_quantity=Decimal("0.004"),
+                    last_fill_price=Decimal("95010.00"),
+                    event_time_ms=123,
+                    transaction_time_ms=124,
+                    is_maker=False,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(adapter, "reconcile_orders_and_fills", unexpected_rest_reconcile)
+    monkeypatch.setattr(adapter, "reconciliation_from_user_event", parse_event, raising=False)
+
+    applied = await runtime._apply_user_event_reconciliation(
+        Environment.SIMULATION,
+        {"event_type": "ORDER_TRADE_UPDATE", "event_time_ms": 123},
+    )
+    updated = await runtime.get_execution(created.execution_id)
+
+    assert applied is True
+    assert updated.status is terminal.status
+    assert updated.final_reason == terminal.final_reason
+    assert updated.completed_monotonic == terminal.completed_monotonic
+    assert updated.summary is not None
+    assert updated.summary.metrics["execution_vwap"] == "95010"
+    assert updated.summary.metrics["maker_fills"] == 0
+    assert updated.summary.metrics["taker_fills"] == 1
+    assert updated.summary.metrics["taker_filled_quantity"] == Decimal("0.004")
+
+
+@pytest.mark.asyncio
 async def test_runtime_starts_binance_stream_supervisors_and_renews_listen_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -469,14 +469,14 @@ class ExecutionRuntime:
         if not isinstance(result, ReconciliationResult):
             return False
 
-        try:
-            active_records = await service.active_executions()
-        except Exception as exc:
-            self._record_runtime_error(f"{environment.value}.active_executions", exc)
-            return True
+        candidate_records, active_lookup_failed = await self._direct_user_event_candidates(
+            environment,
+            service,
+            result,
+        )
 
         applied = False
-        for record in active_records:
+        for record in candidate_records:
             prefix = ids.make_client_order_prefix(record.execution_id)
             if not self._reconciliation_result_matches_prefix(result, prefix):
                 continue
@@ -488,7 +488,50 @@ class ExecutionRuntime:
             except Exception as exc:
                 self._record_runtime_error(record.execution_id, exc)
                 applied = True
-        return applied
+        return applied or active_lookup_failed
+
+    async def _direct_user_event_candidates(
+        self,
+        environment: Environment,
+        service: ExecutionService,
+        result: ReconciliationResult,
+    ) -> tuple[list[ExecutionRecord], bool]:
+        records: list[ExecutionRecord] = []
+        seen_execution_ids: set[str] = set()
+        client_order_ids = [
+            *(order.client_order_id for order in result.orders),
+            *(fill.client_order_id for fill in result.fills),
+        ]
+        for execution_id, known_environment in list(self._execution_environments.items()):
+            if known_environment is not environment:
+                continue
+            prefix = ids.make_client_order_prefix(execution_id)
+            if not any(client_order_id.startswith(prefix) for client_order_id in client_order_ids):
+                continue
+            try:
+                record = await service.get_execution(execution_id)
+            except UnknownExecution:
+                continue
+            except Exception as exc:
+                self._record_runtime_error(execution_id, exc)
+                continue
+            records.append(record)
+            seen_execution_ids.add(record.execution_id)
+
+        active_lookup_failed = False
+        try:
+            active_records = await service.active_executions()
+        except Exception as exc:
+            self._record_runtime_error(f"{environment.value}.active_executions", exc)
+            active_lookup_failed = True
+        else:
+            for record in active_records:
+                if record.execution_id in seen_execution_ids:
+                    continue
+                records.append(record)
+                seen_execution_ids.add(record.execution_id)
+
+        return records, active_lookup_failed
 
     @staticmethod
     def _reconciliation_result_matches_prefix(

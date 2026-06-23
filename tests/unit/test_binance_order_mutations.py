@@ -1494,7 +1494,7 @@ async def test_testnet_runner_exits_when_precreate_rate_limit_budget_exhausts(
     monkeypatch.setattr(module, "ExecutionService", FakeExecutionService)
     monkeypatch.setattr(module.asyncio, "sleep", capture_sleep)
 
-    with pytest.raises(ExchangeRateLimited, match="RATE_LIMIT_BACKOFF"):
+    with pytest.raises(SystemExit, match="RATE_LIMIT_BACKOFF"):
         await module.run(Algorithm.CHASE)
 
     assert adapter is not None
@@ -1870,7 +1870,7 @@ async def test_testnet_runner_applies_successful_post_run_reconciliation_before_
     ]
 
 
-async def test_testnet_runner_reraises_when_post_run_reconciliation_rate_limit_budget_exhausts(
+async def test_testnet_runner_exits_when_post_run_reconciliation_rate_limit_budget_exhausts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import importlib.util
@@ -1901,7 +1901,7 @@ async def test_testnet_runner_reraises_when_post_run_reconciliation_rate_limit_b
 
     events: list[dict[str, Any]] = []
     adapter = FakeAdapter()
-    with pytest.raises(ExchangeRateLimited, match="RATE_LIMIT_BACKOFF"):
+    with pytest.raises(SystemExit, match="RATE_LIMIT_BACKOFF"):
         await module._reconcile_orders_and_fills_with_rate_limit_backoff(
             adapter,
             "BTCUSDT",
@@ -1916,6 +1916,46 @@ async def test_testnet_runner_reraises_when_post_run_reconciliation_rate_limit_b
         "post_run_reconciliation_rate_limit_backoff",
         "post_run_reconciliation_rate_limit_backoff",
         "post_run_reconciliation_rate_limit_backoff",
+    ]
+
+
+async def test_testnet_runner_exits_cleanly_when_post_run_reconciliation_venue_ban_hard_stops() -> None:
+    import importlib.util
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock()
+            self.calls = 0
+
+        async def reconcile_orders_and_fills(self, *_args: Any, **_kwargs: Any) -> Any:
+            self.calls += 1
+            raise VenueBanHardStop("VENUE_BAN_HARD_STOP api-key=secret")
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    events: list[dict[str, Any]] = []
+    adapter = FakeAdapter()
+    with pytest.raises(SystemExit, match="VENUE_BAN_HARD_STOP api-key=\\[redacted\\]"):
+        await module._reconcile_orders_and_fills_with_rate_limit_backoff(
+            adapter,
+            "BTCUSDT",
+            client_order_prefix="ce_exec_123456_",
+            args=SimpleNamespace(max_runtime_seconds=30.0, poll_interval_seconds=0.0),
+            events=events,
+        )
+
+    assert adapter.calls == 1
+    assert events == [
+        {
+            "event": "post_run_reconciliation_venue_ban_hard_stop",
+            "utc_timestamp": events[0]["utc_timestamp"],
+            "monotonic_time": events[0]["monotonic_time"],
+            "reason": "VENUE_BAN_HARD_STOP api-key=[redacted]",
+        }
     ]
 
 
@@ -2378,6 +2418,55 @@ async def test_testnet_runner_user_stream_startup_retryable_failure_exhausts_cle
     assert adapter.started_count == 3
 
 
+async def test_testnet_runner_user_stream_startup_venue_ban_hard_stop_exits_cleanly() -> None:
+    import importlib.util
+
+    class FailingStartupAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock(current=10.0)
+            self.user_stream_healthy = False
+            self.started_count = 0
+
+        def stream_user_events(self):
+            async def events():
+                self.started_count += 1
+                raise StreamHealthFailure("LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=secret")
+                yield {"event_type": "noop"}
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.user_stream_healthy
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter = FailingStartupAdapter()
+    events: list[dict[str, Any]] = []
+
+    with pytest.raises(SystemExit, match="LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=\\[redacted\\]"):
+        await module._start_user_stream(
+            adapter,
+            SimpleNamespace(),
+            events,
+            {},
+            timeout_seconds=1.0,
+        )
+
+    assert adapter.started_count == 1
+    assert events == [
+        {
+            "event": "user_stream_venue_ban_hard_stop",
+            "utc_timestamp": events[0]["utc_timestamp"],
+            "monotonic_time": events[0]["monotonic_time"],
+            "reason": "LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=[redacted]",
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     "failure_reason",
     ["LISTEN_KEY_RATE_LIMIT_BACKOFF", "LISTEN_KEY_RETRYABLE_FAILURE"],
@@ -2457,6 +2546,80 @@ async def test_testnet_runner_user_stream_reconnect_retryable_failure_exhausts_c
 
     assert service.reconciliation_calls == [(execution_id, 65_000, 125_000)]
     assert adapter.started_count == 3
+
+
+async def test_testnet_runner_user_stream_reconnect_venue_ban_hard_stop_reconciles_then_exits_cleanly() -> None:
+    import importlib.util
+
+    execution_id = "exec_runner_hard_stop_reconnect"
+
+    async def fails_with_listen_key_hard_stop() -> None:
+        raise StreamHealthFailure("LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=secret")
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock(current=125.0)
+
+        def stream_user_events(self):
+            raise AssertionError("hard-stop recovery must not restart the user stream")
+
+        async def health_check_streams(self) -> bool:
+            raise AssertionError("hard-stop recovery must not check restart health")
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.reconciliation_calls: list[tuple[str, int | None, int | None]] = []
+
+        async def reconcile_execution(
+            self,
+            reconciled_execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> Any:
+            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            return SimpleNamespace(
+                execution_id=reconciled_execution_id,
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter = FakeAdapter()
+    service = FakeService()
+    events: list[dict[str, Any]] = []
+    user_task = asyncio.create_task(fails_with_listen_key_hard_stop())
+    with pytest.raises(StreamHealthFailure):
+        await user_task
+
+    with pytest.raises(SystemExit, match="LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=\\[redacted\\]"):
+        await module._recover_or_raise_stream_task_failure(
+            adapter=adapter,
+            service=service,
+            events=events,
+            active_execution={"execution_id": execution_id, "user_stream_started_ms": "10000"},
+            market_task=None,
+            user_task=user_task,
+            timeout_seconds=1.0,
+        )
+
+    assert service.reconciliation_calls == [(execution_id, 65_000, 125_000)]
+    assert [event["event"] for event in events] == [
+        "user_stream_disconnect_reconciled",
+        "user_stream_venue_ban_hard_stop",
+    ]
+    assert events[0]["reconciliation_window"] == {
+        "start_time_ms": 65_000,
+        "end_time_ms": 125_000,
+    }
+    assert events[1]["reason"] == "LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=[redacted]"
 
 
 async def test_testnet_runner_run_progresses_past_two_stream_health_gate(

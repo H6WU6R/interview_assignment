@@ -39,6 +39,7 @@ _USER_STREAM_LISTEN_KEY_EXPIRED = "listen_key_expired"
 _USER_EVENT_RECONCILIATION_LOOKBACK_MS = 60_000
 _USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS = 3
 _USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS = 0.1
+_LISTEN_KEY_VENUE_BAN_HARD_STOP = "LISTEN_KEY_VENUE_BAN_HARD_STOP"
 
 
 def parse_args(algorithm: Algorithm) -> argparse.Namespace:
@@ -307,16 +308,17 @@ async def _create_execution_with_rate_limit_backoff(
             )
             raise SystemExit(reason) from exc
         except ExchangeRateLimited as exc:
+            reason = _sanitize_exchange_reason(exc)
             events.append(
                 _runtime_event(
                     adapter,
                     "precreate_rate_limit_backoff",
-                    reason=_sanitize_exchange_reason(exc),
+                    reason=reason,
                     backoff_seconds=backoff_seconds,
                 )
             )
             if backoff_count >= max_backoffs or loop.time() + backoff_seconds > backoff_deadline + 1e-9:
-                raise
+                raise SystemExit(reason) from exc
             backoff_count += 1
             await asyncio.sleep(backoff_seconds)
 
@@ -342,17 +344,28 @@ async def _reconcile_orders_and_fills_with_rate_limit_backoff(
     while True:
         try:
             return await adapter.reconcile_orders_and_fills(symbol, client_order_prefix=client_order_prefix)
+        except VenueBanHardStop as exc:
+            reason = _sanitize_exchange_reason(exc)
+            events.append(
+                _runtime_event(
+                    adapter,
+                    "post_run_reconciliation_venue_ban_hard_stop",
+                    reason=reason,
+                )
+            )
+            raise SystemExit(reason) from exc
         except ExchangeRateLimited as exc:
+            reason = _sanitize_exchange_reason(exc)
             events.append(
                 _runtime_event(
                     adapter,
                     "post_run_reconciliation_rate_limit_backoff",
-                    reason=_sanitize_exchange_reason(exc),
+                    reason=reason,
                     backoff_seconds=backoff_seconds,
                 )
             )
             if backoff_count >= max_backoffs or loop.time() + backoff_seconds > backoff_deadline + 1e-9:
-                raise
+                raise SystemExit(reason) from exc
             backoff_count += 1
             await asyncio.sleep(backoff_seconds)
 
@@ -408,6 +421,16 @@ async def _start_user_stream(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if _is_listen_key_venue_ban_hard_stop(exc):
+                reason = _sanitize_exchange_reason(exc)
+                events.append(
+                    _runtime_event(
+                        adapter,
+                        "user_stream_venue_ban_hard_stop",
+                        reason=reason,
+                    )
+                )
+                raise SystemExit(reason) from exc
             if not _is_retryable_listen_key_stream_failure(exc):
                 raise
             reason = _sanitize_exchange_reason(exc)
@@ -501,6 +524,22 @@ async def _recover_or_raise_stream_task_failure(
         try:
             result = user_task.result()
         except Exception as exc:
+            if _is_listen_key_venue_ban_hard_stop(exc):
+                await _reconcile_user_stream_disconnect(
+                    adapter,
+                    service,
+                    events,
+                    active_execution,
+                )
+                reason = _sanitize_exchange_reason(exc)
+                events.append(
+                    _runtime_event(
+                        adapter,
+                        "user_stream_venue_ban_hard_stop",
+                        reason=reason,
+                    )
+                )
+                raise SystemExit(reason) from exc
             if not _is_retryable_listen_key_stream_failure(exc):
                 raise
             await _reconcile_user_stream_disconnect(
@@ -574,11 +613,18 @@ async def _reconcile_user_stream_disconnect(
 
 
 def _is_retryable_listen_key_stream_failure(exc: BaseException) -> bool:
-    if isinstance(exc, StreamHealthFailure):
-        code = exc.code
-    else:
-        code = str(exc).split(":", 1)[0]
+    code = _listen_key_stream_failure_code(exc)
     return code in {"LISTEN_KEY_RATE_LIMIT_BACKOFF", "LISTEN_KEY_RETRYABLE_FAILURE"}
+
+
+def _is_listen_key_venue_ban_hard_stop(exc: BaseException) -> bool:
+    return _listen_key_stream_failure_code(exc) == _LISTEN_KEY_VENUE_BAN_HARD_STOP
+
+
+def _listen_key_stream_failure_code(exc: BaseException) -> str:
+    if isinstance(exc, StreamHealthFailure):
+        return exc.code.split(None, 1)[0]
+    return str(exc).split(":", 1)[0].split(None, 1)[0]
 
 
 def _is_listen_key_expired_event(event: Any) -> bool:

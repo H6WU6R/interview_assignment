@@ -14,7 +14,6 @@
 - `README.md`
 - `AI_USAGE.md`
 - `reports/report_draft.md`
-- `reports/external_code_review_summary.md`
 - `reports/failure_case_log.md`
 - `reports/latex/report.pdf`
 - `reports/evidence/simulation/chase/exec_c8dc942476764355`
@@ -32,6 +31,7 @@
 - `.pytest_cache/`
 - `.DS_Store`
 - `docs/superpowers/`
+- `reports/external_code_review_summary.md`
 - local Testnet secret files
 - generated temporary artifacts outside the selected evidence bundle
 

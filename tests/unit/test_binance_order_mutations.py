@@ -24,6 +24,7 @@ from exchanges.binance_usdm import (
     MutationKind,
     PendingCancelOutcome,
     RetryableReadFailure,
+    StreamHealthFailure,
     UnknownCreateOutcome,
     build_new_order_params,
     classify_mutation_timeout,
@@ -769,6 +770,73 @@ async def test_user_stream_creates_listen_key_tracks_health_and_degrades_on_disc
     assert adapter.user_stream_healthy is False
     assert await adapter.health_check_streams() is False
     assert websocket.closed.is_set()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "payload", "match"),
+    [
+        (429, {"code": -1003, "msg": "Too many requests."}, "LISTEN_KEY_RATE_LIMIT_BACKOFF"),
+        (418, {"code": -1003, "msg": "IP banned."}, "LISTEN_KEY_VENUE_BAN_HARD_STOP"),
+        (408, {"code": -1007, "msg": "Timeout waiting for response."}, "LISTEN_KEY_RETRYABLE_FAILURE"),
+        (503, {"code": -1008, "msg": "Request throttled by system-level protection."}, "LISTEN_KEY_RETRYABLE_FAILURE"),
+    ],
+)
+async def test_listen_key_request_classifies_status_failures(
+    status_code: int,
+    payload: dict[str, Any],
+    match: str,
+) -> None:
+    adapter = authed_adapter(RecordingClient(FakeResponse(status_code, payload)))
+
+    with pytest.raises(StreamHealthFailure, match=match):
+        await adapter.create_listen_key()
+
+
+@pytest.mark.parametrize(
+    "transport_error",
+    [
+        httpx.ConnectError("connect failed"),
+        httpx.ReadError("read failed"),
+        httpx.TimeoutException("timed out"),
+    ],
+)
+async def test_listen_key_request_transport_errors_are_retryable(
+    transport_error: Exception,
+) -> None:
+    adapter = authed_adapter(RecordingClient(exception=transport_error))
+
+    with pytest.raises(StreamHealthFailure, match="LISTEN_KEY_RETRYABLE_FAILURE"):
+        await adapter.create_listen_key()
+
+
+@pytest.mark.parametrize(
+    ("response", "match"),
+    [
+        (FakeResponse(200, "not-json", json_error=ValueError("invalid json")), "LISTEN_KEY_INVALID_JSON"),
+        (FakeResponse(200, ["listen-1"]), "LISTEN_KEY_MALFORMED_RESPONSE"),
+        (FakeResponse(400, "not-json", json_error=ValueError("invalid json")), "LISTEN_KEY_ERROR_INVALID_JSON"),
+    ],
+)
+async def test_listen_key_request_malformed_payloads_fail_conservatively(
+    response: FakeResponse,
+    match: str,
+) -> None:
+    adapter = authed_adapter(RecordingClient(response))
+
+    with pytest.raises(StreamHealthFailure, match=match):
+        await adapter.create_listen_key()
+
+
+async def test_renew_listen_key_expired_payload_invalidates_latest_key() -> None:
+    client = RecordingClient(FakeResponse(400, {"code": -1125, "msg": "This listenKey does not exist."}))
+    adapter = authed_adapter(client)
+    adapter.latest_listen_key = "listen-1"
+
+    with pytest.raises(StreamHealthFailure, match="LISTEN_KEY_EXPIRED"):
+        await adapter.renew_listen_key("listen-1")
+
+    assert client.calls[0]["params"] is None
+    assert adapter.latest_listen_key is None
 
 
 def test_market_stream_url_uses_requested_symbol_and_public_route() -> None:

@@ -540,6 +540,43 @@ async def test_runtime_starts_binance_stream_supervisors_and_renews_listen_key(
 
 
 @pytest.mark.asyncio
+async def test_runtime_listen_key_keepalive_skips_after_invalidation() -> None:
+    import importlib
+
+    runtime_module = importlib.import_module("api.runtime")
+
+    class InvalidatingListenKeyAdapter:
+        def __init__(self) -> None:
+            self.latest_listen_key: str | None = "listen-1"
+            self.renewed_listen_keys: list[str] = []
+            self.invalidated = asyncio.Event()
+
+        async def renew_listen_key(self, listen_key: str) -> None:
+            self.renewed_listen_keys.append(listen_key)
+            self.latest_listen_key = None
+            self.invalidated.set()
+            raise RuntimeError("LISTEN_KEY_EXPIRED")
+
+    runtime = runtime_module.ExecutionRuntime(stream_keepalive_interval_seconds=0.01)
+    adapter = InvalidatingListenKeyAdapter()
+    runtime._started = True
+    runtime._adapters[Environment.TESTNET] = adapter
+    task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
+    try:
+        await asyncio.wait_for(adapter.invalidated.wait(), timeout=0.5)
+        await asyncio.sleep(0.05)
+
+        assert adapter.renewed_listen_keys == ["listen-1"]
+        assert runtime.runtime_errors["testnet.listen_key_keepalive"] == [
+            "RuntimeError: LISTEN_KEY_EXPIRED"
+        ]
+    finally:
+        runtime._started = False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_runtime_restarts_binance_user_stream_after_disconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

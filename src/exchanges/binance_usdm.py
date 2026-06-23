@@ -468,33 +468,50 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         return self.latest_listen_key
 
     async def renew_listen_key(self, listen_key: str) -> None:
-        await self._api_key_request("PUT", LISTEN_KEY_PATH, params={"listenKey": listen_key})
+        try:
+            await self._api_key_request("PUT", LISTEN_KEY_PATH, params=None)
+        except StreamHealthFailure as exc:
+            if str(exc).startswith("LISTEN_KEY_EXPIRED") and self.latest_listen_key == listen_key:
+                self.latest_listen_key = None
+            raise
 
     async def _api_key_request(
         self,
         method: str,
         path: str,
         params: Mapping[str, Any] | None,
-    ) -> Any:
+    ) -> Mapping[str, Any]:
         if not self.settings.binance_api_key:
             raise ValueError("Binance API key is required for listen-key requests")
         headers = {"X-MBX-APIKEY": self.settings.binance_api_key}
         timeout = httpx.Timeout(5.0)
         url = f"{self.base_url}{path}"
-        if self.client is None:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.request(method, url, params=params, headers=headers)
-        else:
-            response = await self.client.request(
-                method,
-                url,
-                params=params,
-                headers=headers,
-                timeout=timeout,
-            )
+        try:
+            if self.client is None:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.request(method, url, params=params, headers=headers)
+            else:
+                response = await self.client.request(
+                    method,
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=timeout,
+                )
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            raise StreamHealthFailure("LISTEN_KEY_RETRYABLE_FAILURE") from exc
+
         if response.status_code != 200:
-            raise StreamHealthFailure(f"LISTEN_KEY_HTTP_{response.status_code}")
-        return response.json()
+            payload = _listen_key_error_payload(response)
+            raise StreamHealthFailure(_listen_key_failure_reason(response.status_code, payload))
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise StreamHealthFailure("LISTEN_KEY_INVALID_JSON") from exc
+        if not isinstance(payload, Mapping):
+            raise StreamHealthFailure("LISTEN_KEY_MALFORMED_RESPONSE")
+        return payload
 
     def parse_book_ticker(self, message: Mapping[str, Any]) -> MarketSnapshot:
         payload = _stream_data(message)
@@ -779,6 +796,42 @@ def _terminal_reject_reason(status_code: int, payload: Any) -> str:
         if message is not None:
             return str(message)
     return f"BINANCE_HTTP_{status_code}"
+
+
+def _listen_key_error_payload(response: Any) -> Mapping[str, Any] | None:
+    if response.status_code in {408, 418, 429} or 500 <= response.status_code <= 599:
+        return None
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise StreamHealthFailure("LISTEN_KEY_ERROR_INVALID_JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise StreamHealthFailure("LISTEN_KEY_MALFORMED_ERROR_RESPONSE")
+    return payload
+
+
+def _listen_key_failure_reason(status_code: int, payload: Mapping[str, Any] | None) -> str:
+    if status_code == 429:
+        return "LISTEN_KEY_RATE_LIMIT_BACKOFF"
+    if status_code == 418:
+        return "LISTEN_KEY_VENUE_BAN_HARD_STOP"
+    if status_code == 408 or 500 <= status_code <= 599:
+        return "LISTEN_KEY_RETRYABLE_FAILURE"
+    if payload is not None and _is_listen_key_expired_payload(payload):
+        return "LISTEN_KEY_EXPIRED"
+    if payload is not None:
+        return f"LISTEN_KEY_TERMINAL_FAILURE:{_terminal_reject_reason(status_code, payload)}"
+    return f"LISTEN_KEY_TERMINAL_FAILURE:BINANCE_HTTP_{status_code}"
+
+
+def _is_listen_key_expired_payload(payload: Mapping[str, Any]) -> bool:
+    code = payload.get("code")
+    if code == -1125 or str(code) == "-1125":
+        return True
+    message = str(payload.get("msg", "")).casefold()
+    return "listenkey" in message and (
+        "does not exist" in message or "not exist" in message or "expired" in message
+    )
 
 
 def _is_specific_terminal_5xx_reject(reason: str) -> bool:

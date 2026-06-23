@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_EVIDENCE_ALGORITHMS = ("CHASE", "TWAP")
 MISSING_FINAL_REPORT_BYPASS = "missing_final_report"
 MISSING_TESTNET_EVIDENCE_BYPASS = "missing_testnet_evidence"
+NON_LIVE_TEST_COMMAND = ["uv", "run", "pytest", "-q", "tests/unit", "tests/simulation"]
+LIVE_INTEGRATION_TEST_COMMAND = ["uv", "run", "pytest", "-q", "tests/integration"]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,10 +34,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Warn instead of failing when accepted Testnet evidence is absent or incomplete.",
     )
+    parser.add_argument(
+        "--include-live-integration",
+        action="store_true",
+        help=(
+            "Also run tests/integration; these tests may use Binance Testnet credentials "
+            "and network access."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
-        run(["uv", "run", "pytest", "-q"])
+        run(NON_LIVE_TEST_COMMAND)
+        if args.include_live_integration:
+            run(LIVE_INTEGRATION_TEST_COMMAND)
         run(["uv", "run", "ruff", "check", "."])
         with tempfile.TemporaryDirectory(prefix="submission-dist-") as dist_tmp:
             wheel_path = build_wheel(Path(dist_tmp))

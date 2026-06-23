@@ -218,6 +218,10 @@ uv run python scripts/run_sim_cancel_race.py
 uv run python scripts/run_sim_create_timeout.py
 ```
 
+The submission verifier excludes live Binance Testnet integration tests by default:
+`uv run python scripts/verify_submission.py`. To include credentialed/networked contract
+tests, pass `--include-live-integration` explicitly.
+
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
 These read-only contract tests validate connectivity and parsing only; they do not satisfy the required accepted-order Chase/TWAP Testnet evidence.
 

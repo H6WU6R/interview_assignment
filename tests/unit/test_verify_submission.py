@@ -89,9 +89,61 @@ def test_missing_final_report_is_bypassable_only_with_final_report_flag(
     assert verify_submission.main(["--allow-missing-final-report"]) == 0
 
 
-def monkeypatch_verifier_gate(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+def test_default_verifier_runs_non_live_tests_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch_verifier_gate(monkeypatch, tmp_path, commands=commands)
+
+    assert (
+        verify_submission.main(
+            ["--allow-missing-final-report", "--allow-missing-testnet-evidence"]
+        )
+        == 0
+    )
+
+    assert ["uv", "run", "pytest", "-q", "tests/unit", "tests/simulation"] in commands
+    assert ["uv", "run", "pytest", "-q"] not in commands
+    assert not any("tests/integration" in command for command in commands)
+
+
+def test_include_live_integration_runs_integration_tests_after_non_live_tests(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch_verifier_gate(monkeypatch, tmp_path, commands=commands)
+
+    assert (
+        verify_submission.main(
+            [
+                "--allow-missing-final-report",
+                "--allow-missing-testnet-evidence",
+                "--include-live-integration",
+            ]
+        )
+        == 0
+    )
+
+    assert commands[:3] == [
+        ["uv", "run", "pytest", "-q", "tests/unit", "tests/simulation"],
+        ["uv", "run", "pytest", "-q", "tests/integration"],
+        ["uv", "run", "ruff", "check", "."],
+    ]
+
+
+def monkeypatch_verifier_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+    *,
+    commands: list[list[str]] | None = None,
+) -> None:
     monkeypatch.setattr(verify_submission, "ROOT", root)
-    monkeypatch.setattr(verify_submission, "run", lambda _cmd: None)
+    if commands is None:
+        monkeypatch.setattr(verify_submission, "run", lambda _cmd: None)
+    else:
+        monkeypatch.setattr(verify_submission, "run", lambda cmd: commands.append(cmd))
     monkeypatch.setattr(verify_submission, "build_wheel", lambda _dist_dir: root / "test.whl")
     monkeypatch.setattr(verify_submission, "verify_wheel", lambda _wheel_path: None)
 

@@ -88,6 +88,19 @@ def test_overfill_invariant_rejects_combined_exposure_over_target() -> None:
         exposure.check_can_submit(Decimal("0.21"))
 
 
+def test_explicit_tolerance_relaxes_invariant_but_not_available_quantity() -> None:
+    exposure = ExposureTracker(
+        target_quantity=Decimal("1"),
+        permitted_tolerance=Decimal("0.05"),
+    )
+    exposure.reserve_live_open(Decimal("1"))
+
+    assert exposure.available_to_submit() == Decimal("0")
+    exposure.check_can_submit(Decimal("0.05"))
+    with pytest.raises(ValidationError):
+        exposure.check_can_submit(Decimal("0.051"))
+
+
 @pytest.mark.parametrize(
     ("reserve", "bucket"),
     [

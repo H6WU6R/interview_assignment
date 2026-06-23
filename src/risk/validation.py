@@ -107,16 +107,23 @@ def check_exposure_invariant(
     exposure: Exposure,
     new_child_quantity: Decimal,
     normalized_target_trade_quantity: Decimal,
+    permitted_tolerance: Decimal = Decimal("0"),
 ) -> None:
     """Reject exposure that would exceed the normalized target trade quantity."""
 
+    if permitted_tolerance < Decimal("0"):
+        raise ValidationError(
+            f"permitted tolerance cannot be negative: {permitted_tolerance}"
+        )
     total = (
         exposure.confirmed_filled_quantity
         + exposure.reserved_exposure
         + new_child_quantity
     )
-    if total > normalized_target_trade_quantity:
+    permitted_limit = normalized_target_trade_quantity + permitted_tolerance
+    if total > permitted_limit:
         raise ValidationError(
             "confirmed fills plus reserved exposure plus new child quantity "
-            f"{total} exceeds target {normalized_target_trade_quantity}"
+            f"{total} exceeds target {normalized_target_trade_quantity} "
+            f"plus permitted tolerance {permitted_tolerance}"
         )

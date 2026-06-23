@@ -180,6 +180,30 @@ def test_exposure_invariant_rejects_over_reserved_quantity() -> None:
         check_exposure_invariant(exposure, Decimal("0.001"), Decimal("0.008"))
 
 
+def test_exposure_invariant_allows_explicit_permitted_tolerance() -> None:
+    exposure = Exposure(
+        confirmed_filled_quantity=Decimal("0.005"),
+        live_open_quantity=Decimal("0.003"),
+    )
+
+    check_exposure_invariant(
+        exposure,
+        Decimal("0.001"),
+        Decimal("0.008"),
+        permitted_tolerance=Decimal("0.001"),
+    )
+
+
+def test_exposure_invariant_rejects_negative_permitted_tolerance() -> None:
+    with pytest.raises(ValidationError, match="permitted tolerance"):
+        check_exposure_invariant(
+            Exposure(),
+            Decimal("0"),
+            Decimal("0.008"),
+            permitted_tolerance=Decimal("-0.001"),
+        )
+
+
 def test_exposure_invariant_counts_all_reserved_buckets() -> None:
     exposure = Exposure(
         confirmed_filled_quantity=Decimal("0.002"),

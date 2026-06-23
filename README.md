@@ -77,10 +77,10 @@ The `ExchangeAdapter` interface is narrow enough for deterministic tests. The si
 The main safety invariant is enforced before every child submit:
 
 ```text
-confirmed_filled + live_open + pending_submit + pending_cancel + unknown_order + new_child_quantity <= normalized_target_trade_quantity
+confirmed_filled + live_open + pending_submit + pending_cancel + unknown_order + new_child_quantity <= normalized_target_trade_quantity + permitted_tolerance
 ```
 
-This gate is shared by every submit path. Ambiguous create outcomes reserve `unknown_order_quantity` until reconciliation proves whether the child exists. Cancel ambiguity is tracked through `pending_cancel_quantity` until reconciliation refreshes reserved exposure.
+This gate is shared by every submit path. `permitted_tolerance` defaults to zero, so normal child sizing remains bounded by the normalized target quantity. Ambiguous create outcomes reserve `unknown_order_quantity` until reconciliation proves whether the child exists. Cancel ambiguity is tracked through `pending_cancel_quantity` until reconciliation refreshes reserved exposure.
 
 Other guardrails:
 

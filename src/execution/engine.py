@@ -95,11 +95,13 @@ class ExposureTracker:
     """Tracks filled and reserved exposure buckets for one parent execution."""
 
     target_quantity: Decimal
+    permitted_tolerance: Decimal = Decimal("0")
     exposure: Exposure = field(default_factory=Exposure)
     seen_trade_ids: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self._require_non_negative(self.target_quantity)
+        self._require_non_negative(self.permitted_tolerance)
 
     def available_to_submit(self) -> Decimal:
         available = (
@@ -115,6 +117,7 @@ class ExposureTracker:
             self.exposure,
             new_child_quantity,
             self.target_quantity,
+            permitted_tolerance=self.permitted_tolerance,
         )
 
     def reserve_live_open(self, quantity: Decimal) -> None:
@@ -1603,10 +1606,16 @@ class ExecutionEngine:
             record.max_reserved_exposure = record.exposure.reserved_exposure
 
     def _assert_exposure_invariant_locked(self, record: ExecutionRecord) -> None:
+        permitted_tolerance = (
+            record.exposure_tracker.permitted_tolerance
+            if record.exposure_tracker is not None
+            else Decimal("0")
+        )
         check_exposure_invariant(
             record.exposure,
             Decimal("0"),
             record.required_quantity,
+            permitted_tolerance=permitted_tolerance,
         )
 
     def _refresh_reserved_exposure_locked(self, record: ExecutionRecord) -> None:

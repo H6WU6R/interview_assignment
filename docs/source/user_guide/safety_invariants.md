@@ -9,8 +9,10 @@ confirmed_filled
 + pending_cancel
 + unknown_order
 + new_child_quantity
-<= normalized_target_trade_quantity
+<= normalized_target_trade_quantity + permitted_tolerance
 ```
+
+`permitted_tolerance` defaults to zero. It is an explicit accounting tolerance in the invariant gate, not extra quantity that normal Chase or TWAP sizing tries to submit.
 
 ## Reserved Buckets
 

@@ -1181,6 +1181,72 @@ def test_testnet_runner_normalizes_symbol_for_rest_and_stream_usage() -> None:
     assert module.normalize_symbol("ethusdt") == "ETHUSDT"
 
 
+def test_testnet_runner_default_runtime_guard_covers_requested_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monkeypatch.setattr(sys, "argv", ["run_testnet_twap.py"])
+
+    args = module.parse_args(Algorithm.TWAP)
+
+    assert args.duration_seconds == 60
+    assert args.max_runtime_seconds == 70.0
+
+
+def test_testnet_runner_rejects_runtime_guard_shorter_than_requested_duration(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_testnet_twap.py", "--duration-seconds", "60", "--max-runtime-seconds", "30"],
+    )
+
+    with pytest.raises(SystemExit):
+        module.parse_args(Algorithm.TWAP)
+
+    assert "--max-runtime-seconds must be at least --duration-seconds" in capsys.readouterr().err
+
+
+def test_testnet_runner_preserves_explicit_longer_runtime_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_testnet_twap.py", "--duration-seconds", "60", "--max-runtime-seconds", "90"],
+    )
+
+    args = module.parse_args(Algorithm.TWAP)
+
+    assert args.duration_seconds == 60
+    assert args.max_runtime_seconds == 90.0
+
+
 async def test_testnet_runner_keeps_market_stream_running_until_stopped() -> None:
     import importlib.util
 

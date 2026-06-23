@@ -61,7 +61,12 @@ def parse_args(algorithm: Algorithm) -> argparse.Namespace:
     parser.add_argument("--target-price-upper", help="Explicit Decimal upper price bound.")
     parser.add_argument("--duration-seconds", type=int, default=60, help="Execution target duration in seconds.")
     parser.add_argument("--number-of-slices", type=int, default=5, help="TWAP slice count.")
-    parser.add_argument("--max-runtime-seconds", type=float, default=30.0, help="Maximum runner runtime.")
+    parser.add_argument(
+        "--max-runtime-seconds",
+        type=float,
+        default=None,
+        help="Maximum runner runtime, default duration plus 10 seconds.",
+    )
     parser.add_argument("--poll-interval-seconds", type=float, default=1.0, help="Delay between engine ticks.")
     parser.add_argument("--market-timeout-seconds", type=float, default=10.0, help="Fresh market snapshot timeout.")
     parser.add_argument(
@@ -70,7 +75,12 @@ def parse_args(algorithm: Algorithm) -> argparse.Namespace:
         default=Path("/tmp/calais-binance-testnet"),
         help="Directory under which execution artifacts are written.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.max_runtime_seconds is None:
+        args.max_runtime_seconds = float(args.duration_seconds + 10)
+    elif args.max_runtime_seconds < args.duration_seconds:
+        parser.error("--max-runtime-seconds must be at least --duration-seconds")
+    return args
 
 
 async def run(algorithm: Algorithm) -> Path:

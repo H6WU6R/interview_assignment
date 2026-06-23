@@ -11,16 +11,16 @@ The deterministic simulator is mandatory because Testnet cannot reliably produce
 \toprule
 ID & Scenario & Evidence \\
 \midrule
-T1 & Normal Chase & \code{scripts/run\_sim\_chase.py}; engine and simulator order tests. \\
-T2 & Chase Reprice & Chase threshold/min-interval tests; summary metric coverage. \\
-T3 & Partial Fill + Cancel Race & \code{scripts/run\_sim\_cancel\_race.py}; cancel-race simulator tests. \\
-T4 & Create Timeout & \code{scripts/run\_sim\_create\_timeout.py}; exact lookup and unknown exposure tests. \\
-T5 & TWAP Carry-forward & TWAP absolute schedule and deficit tests. \\
-T6 & Tail Quantity & Decimal, dust, min-quantity, and step-size tests. \\
-T7 & Price Outside Range & Price-bound and deadline/outside-range tests. \\
-T8 & Stream Disconnect & Runtime stream restart, reconcile, and stale-market tests. \\
-T9 & Duplicate Event & Duplicate trade and cumulative-fill monotonicity tests. \\
-T10 & Cross-zero Position & Required-trade and account-position tests. \\
+T1 & Normal Chase & \url{tests/simulation/test_required_scenarios.py::test_t1_normal_chase_submits_passive_price_and_preserves_exposure_invariant}; artifact \url{simulation/chase/exec_c8dc942476764355}. \\
+T2 & Chase Reprice & \url{tests/simulation/test_required_scenarios.py::test_t2_chase_reprice_requires_threshold_and_minimum_interval}. \\
+T3 & Partial Fill + Cancel Race & \url{tests/simulation/test_required_scenarios.py::test_t3_cancel_fill_race_updates_confirmed_fills_before_replacement_sizing}; script test \url{tests/simulation/test_required_scenarios.py::test_cancel_race_script_writes_required_artifacts}; artifact \url{simulation/cancel-race/exec_6106c8ca78fa4659}. \\
+T4 & Create Timeout & \url{tests/simulation/test_required_scenarios.py::test_t4a_create_timeout_reconciles_to_open_order_without_new_client_order_id}; \url{tests/simulation/test_required_scenarios.py::test_t4b_create_timeout_not_found_releases_unknown_exposure_before_safe_retry}; script test \url{tests/simulation/test_required_scenarios.py::test_create_timeout_script_writes_terminal_summary_with_resolved_snapshot}; artifact \url{simulation/create-timeout/exec_048f48e8d58c4d2b}. \\
+T5 & TWAP Carry-forward & \url{tests/simulation/test_required_scenarios.py::test_t5_twap_carry_forward_deficit_includes_previous_unfilled_quantity}; \url{tests/simulation/test_required_scenarios.py::test_t5b_twap_does_not_submit_before_first_absolute_slice_boundary}; artifact \url{simulation/twap/exec_61fadac604f4440a}. \\
+T6 & Tail Quantity & \url{tests/simulation/test_required_scenarios.py::test_t6_tail_quantity_records_dust_and_never_rounds_up}. \\
+T7 & Price Outside Range & \url{tests/simulation/test_required_scenarios.py::test_t7_price_outside_range_waits_then_expires_without_invalid_order}; \url{tests/simulation/test_required_scenarios.py::test_t7b_cancel_remainder_deadline_terminalizes_unfilled_and_partial_results}; deadline metrics \url{tests/simulation/test_required_scenarios.py::test_twap_aggressive_deadline_reports_cleanup_separately} and \url{tests/simulation/test_required_scenarios.py::test_twap_cancel_remainder_deadline_has_no_post_deadline_submissions}. \\
+T8 & Stream Disconnect & \url{tests/simulation/test_required_scenarios.py::test_t8_stream_disconnect_pauses_submit_reconciles_then_resumes}. \\
+T9 & Duplicate Event & \url{tests/simulation/test_required_scenarios.py::test_t9_duplicate_fill_event_does_not_double_count_cumulative_fill}. \\
+T10 & Cross-zero Position & \url{tests/simulation/test_required_scenarios.py::test_t10_cross_zero_position_uses_target_minus_current_absolute_quantity}. \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -28,7 +28,7 @@ T10 & Cross-zero Position & Required-trade and account-position tests. \\
 Current reproducible non-live baseline verification passed:
 
 \begin{center}
-\code{uv run pytest -q tests/unit tests/simulation} \quad \(\rightarrow\) \quad \code{511 passed}
+\code{uv run pytest -q tests/unit tests/simulation} \quad \(\rightarrow\) \quad \code{513 passed}
 \end{center}
 
 Credentialed/network-enabled integration verification is separate: \code{uv run pytest -q tests/integration}. Those results should be reported only for a full credentialed local review where the Binance integration tests run successfully.
@@ -38,8 +38,8 @@ The four simulator scripts also ran successfully during this report build and wr
 \begin{itemize}[leftmargin=1.2em]
   \item \code{reports/evidence/simulation/chase/exec\_c8dc942476764355}
   \item \code{reports/evidence/simulation/twap/exec\_61fadac604f4440a}
-  \item \code{reports/evidence/simulation/cancel-race/exec\_669d47a536a94682}
-  \item \code{reports/evidence/simulation/create-timeout/exec\_3ddb8a47995348d0}
+  \item \code{reports/evidence/simulation/cancel-race/exec\_6106c8ca78fa4659}
+  \item \code{reports/evidence/simulation/create-timeout/exec\_048f48e8d58c4d2b}
 \end{itemize}
 
 The repository contains Binance Testnet runner scripts for Chase and TWAP. They require credentials and an explicit \code{--confirm-send-orders} flag and never fall back to simulation. Table~\ref{tab:testnet-evidence} summarizes the accepted sanitized Testnet evidence now included in the repository.

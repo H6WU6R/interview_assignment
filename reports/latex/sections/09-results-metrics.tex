@@ -15,8 +15,8 @@ Run & Result \\
 \midrule
 Normal Chase & \code{chase/exec\_c8dc942476764355}, child \code{ce\_c8dc94247676\_1}: one passive buy child for \(0.010\) BTC at \(50000.00\), then a simulator fill and reconciliation to \status{COMPLETED}. \\
 TWAP schedule & \code{twap/exec\_61fadac604f4440a}: five \(0.002\) BTC slices over 100 seconds filled and reconciled to \(0.010\) BTC total with \code{overfill\_quantity=0}. \\
-Cancel/fill race & \code{cancel-race/exec\_669d47a536a94682}: a \(0.004\) BTC fill arrived during cancel; replacement was \(0.006\) BTC, preserving total exposure at \(0.010\). \\
-Create timeout & \code{create-timeout/exec\_3ddb8a47995348d0}, child \code{ce\_3ddb8a479953\_1}: unknown exposure was \(0.010\) before exact reconciliation and \(0\) after the original order was found open; no fresh client order ID was used. \\
+Cancel/fill race & \code{cancel-race/exec\_6106c8ca78fa4659}: \code{execution\_snapshot.json} shows a \(0.004\) BTC fill during cancel and a \(0.006\) BTC replacement; terminal \code{execution\_summary.json} then completes \(0.010\) BTC with \code{overfill\_quantity=0}. \\
+Create timeout & \code{create-timeout/exec\_048f48e8d58c4d2b}, child \code{ce\_048f48e8d58c\_1}: \code{execution\_snapshot.json} shows exact lookup resolved the unknown order to live open without a fresh client order ID; terminal \code{execution\_summary.json} then completes \(0.010\) BTC. \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -35,9 +35,11 @@ Table~\ref{tab:testnet-results} gives the terminal metrics from the accepted Tes
 Metric & Chase & TWAP \\
 \midrule
 Execution ID & \code{exec\_3168600ee25b4193} & \code{exec\_85bef3985ea3431a} \\
+Artifact path & \url{reports/evidence/testnet/chase/exec_3168600ee25b4193} & \url{reports/evidence/testnet/twap/exec_85bef3985ea3431a} \\
 Initial to target position & \(0 \rightarrow 0.001\) BTC & \(0.0010 \rightarrow 0.005\) BTC \\
 Required / filled / unfilled & \(0.001 / 0.001 / 0\) BTC & \(0.004 / 0.004 / 0\) BTC \\
 Orders / cancels / reprices & \(1 / 0 / 0\) & \(2 / 1 / 0\) \\
+Maker / taker fills & \(1 / 0\); \(0.001 / 0\) BTC & \(0 / 1\); \(0 / 0.004\) BTC \\
 Arrival mid / VWAP & \(62213 / 62212.5\) & \(62092.35 / 62092.9\) \\
 Slippage bps & \(-0.0804\) & \(0.0886\) \\
 Overfill / price violations & \(0 / 0\) & \(0 / 0\) \\
@@ -52,7 +54,7 @@ Final status / reason & \status{COMPLETED}; \code{TARGET\_QUANTITY\_FILLED} & \s
 
 The accepted TWAP Testnet run used a \(12s\) requested scheduling window and a \(17.295s\) total lifecycle. The difference is deadline cleanup: the first passive child was cancelled, private user-stream events were applied, and a bounded IOC child completed the remaining target. No passive scheduled TWAP child was submitted after the \(12s\) scheduling deadline. One deadline-aggressive child was submitted during cleanup, inside the configured price range, and completed the target with \code{overfill\_quantity=0}.
 
-The cancel/fill race artifact is the clearest overfill evidence. The initial child was \(0.010\) BTC. During cancel, \(0.004\) BTC filled. The replacement child was only \(0.006\) BTC. The final summary showed:
+The cancel/fill race artifact is the clearest overfill evidence. The initial child was \(0.010\) BTC. During cancel, \(0.004\) BTC filled. The replacement child was only \(0.006\) BTC. The intermediate \code{execution\_snapshot.json} showed:
 
 \begin{center}
 \small
@@ -65,11 +67,11 @@ confirmed filled & \(0.004\) BTC \\
 live open & \(0.006\) BTC \\
 reserved exposure & \(0.006\) BTC \\
 unknown order & \(0\) BTC \\
-client order IDs & \code{ce\_669d47a536a9\_1}, \code{ce\_669d47a536a9\_2} \\
+client order IDs & \code{ce\_6106c8ca78fa\_1}, \code{ce\_6106c8ca78fa\_2} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The create-timeout artifact demonstrates idempotency. The first child entered \status{UNKNOWN}; a subsequent run before reconciliation did not generate a new client order ID. Exact lookup found the original order and moved exposure back to live open. The final reason was \code{CREATE\_TIMEOUT\_RECONCILED}.
+The create-timeout artifact demonstrates idempotency. The first child entered \status{UNKNOWN}; a subsequent run before reconciliation did not generate a new client order ID. Exact lookup found the original order and moved exposure back to live open in \code{execution\_snapshot.json} with \code{final\_reason=CREATE\_TIMEOUT\_RECONCILED}. The terminal \code{execution\_summary.json} then records the recovered child filling and ending with \code{TARGET\_QUANTITY\_FILLED}.
 
 These examples also explain why completion rate below 100 percent can be correct. If price bounds, deadline policy, minimum quantity, post-only rejection, or venue state prevent a legal completion, the system should return actual filled and unfilled quantity with a clear reason.

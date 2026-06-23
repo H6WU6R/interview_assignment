@@ -88,9 +88,7 @@ async def main() -> None:
         )
     )
     events.append(
-        log_event(
-            clock, completed, "result_summary", extra=summary_snapshot(completed)
-        )
+        log_event(clock, completed, "result_summary", extra=summary_snapshot(completed))
     )
 
     print(f"execution_id={completed.execution_id}")

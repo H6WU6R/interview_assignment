@@ -32,5 +32,3 @@ External-review hardening also improved several related paths:
   \item User stream events and disconnects trigger bounded execution-scoped reconciliation.
   \item Shutdown stops new child creation, cancels active orders, reconciles, and leaves no background execution task running.
 \end{itemize}
-
-This failure case is useful for live defense because it maps directly to a direct-deduction item in the brief and shows that the implementation was hardened against a concrete venue ambiguity, not just a theoretical edge case.

@@ -1,4 +1,0 @@
-child_order_count,child_order_id,child_status,client_order_id,client_order_ids,event,execution_id,filled_quantity,final_reason,final_status,monotonic_time,price,remaining_quantity,required_quantity,schedule,side,status,submitted_quantity,utc_timestamp
-,,,,,execution_created,exec_1da27294d07f47af,,,,0.0,,,0.010,absolute-time TWAP target over 100 seconds,,RUNNING,,1970-01-01T00:00:00+00:00
-,child_0001,OPEN,ce_1da27294d07f_1,,twap_order_submitted,exec_1da27294d07f47af,0,,,10.0,50000.00,0.001,0.010,,,RUNNING,0.001,1970-01-01T00:00:10+00:00
-1,,,,"[""ce_1da27294d07f_1""]",result_summary,exec_1da27294d07f47af,,,RUNNING,10.0,,,0.010,,BUY,RUNNING,,1970-01-01T00:00:10+00:00

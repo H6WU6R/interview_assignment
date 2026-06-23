@@ -1,4 +1,0 @@
-child_order_count,child_order_id,child_status,client_order_id,client_order_ids,event,execution_id,filled_quantity,final_reason,final_status,monotonic_time,price,remaining_quantity,required_quantity,side,status,submitted_quantity,utc_timestamp
-,,,,,execution_created,exec_d10652a300e544dc,,,,0.0,,,0.010,,RUNNING,,1970-01-01T00:00:00+00:00
-,child_0001,OPEN,ce_d10652a300e5_1,,chase_order_submitted,exec_d10652a300e544dc,0,,,0.0,50000.00,0.010,0.010,,RUNNING,0.010,1970-01-01T00:00:00+00:00
-1,,,,"[""ce_d10652a300e5_1""]",result_summary,exec_d10652a300e544dc,,,RUNNING,0.0,,,0.010,BUY,RUNNING,,1970-01-01T00:00:00+00:00

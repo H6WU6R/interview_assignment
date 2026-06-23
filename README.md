@@ -145,10 +145,10 @@ uv run python scripts/run_sim_create_timeout.py
 
 All four scripts print deterministic simulator state and write structured artifacts. The committed simulator evidence for this submission is:
 
-- Chase: `reports/evidence/simulation/chase/exec_d10652a300e544dc`
-- TWAP: `reports/evidence/simulation/twap/exec_1da27294d07f47af`
-- Cancel/fill race: `reports/evidence/simulation/cancel-race/exec_2d3534bffa694b40`
-- Create timeout: `reports/evidence/simulation/create-timeout/exec_a03dec73abde450b`
+- Chase: `reports/evidence/simulation/chase/exec_c8dc942476764355`
+- TWAP: `reports/evidence/simulation/twap/exec_61fadac604f4440a`
+- Cancel/fill race: `reports/evidence/simulation/cancel-race/exec_669d47a536a94682`
+- Create timeout: `reports/evidence/simulation/create-timeout/exec_3ddb8a47995348d0`
 
 Pass `--output-dir` to write fresh bundles elsewhere; otherwise scripts use their documented local defaults.
 

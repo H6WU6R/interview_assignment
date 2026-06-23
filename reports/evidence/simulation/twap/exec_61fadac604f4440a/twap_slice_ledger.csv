@@ -1,0 +1,6 @@
+cancelled_quantity,child_order_ids,client_order_ids,execution_id,filled_quantity,open_quantity,planned_cumulative_quantity,planned_slice_quantity,schedule_deficit,slice_end_seconds,slice_index,slice_start_seconds,submitted_quantity,unfilled_quantity
+0,"[""child_0001""]","[""ce_61fadac604f4_1""]",exec_61fadac604f4440a,0.002,0,0.002,0.002,0.000,20,1,0,0.002,0.000
+0,"[""child_0002""]","[""ce_61fadac604f4_2""]",exec_61fadac604f4440a,0.002,0,0.004,0.002,0.000,40,2,20,0.002,0.000
+0,"[""child_0003""]","[""ce_61fadac604f4_3""]",exec_61fadac604f4440a,0.002,0,0.006,0.002,0.000,60,3,40,0.002,0.000
+0,"[""child_0004""]","[""ce_61fadac604f4_4""]",exec_61fadac604f4440a,0.002,0,0.008,0.002,0.000,80,4,60,0.002,0.000
+0,"[""child_0005""]","[""ce_61fadac604f4_5""]",exec_61fadac604f4440a,0.002,0,0.010,0.002,0.000,100,5,80,0.002,0.000

@@ -639,6 +639,7 @@ def test_normal_chase_script_writes_required_artifacts(tmp_path: Path) -> None:
     )
 
     assert "SIMULATOR DEMO: Chase" in result.stdout
+    assert "status=ExecutionStatus.COMPLETED" in result.stdout
     artifact_line = next(
         line for line in result.stdout.splitlines() if line.startswith("artifact_dir=")
     )
@@ -649,6 +650,8 @@ def test_normal_chase_script_writes_required_artifacts(tmp_path: Path) -> None:
         algorithm="CHASE",
         expected_event="chase_order_submitted",
     )
+    summary = json.loads((artifact_dir / "execution_summary.json").read_text())
+    assert summary["final_status"] == "COMPLETED"
 
 
 def test_normal_twap_script_writes_required_artifacts(tmp_path: Path) -> None:
@@ -668,6 +671,7 @@ def test_normal_twap_script_writes_required_artifacts(tmp_path: Path) -> None:
     )
 
     assert "SIMULATOR DEMO: TWAP" in result.stdout
+    assert "status=ExecutionStatus.COMPLETED" in result.stdout
     artifact_line = next(
         line for line in result.stdout.splitlines() if line.startswith("artifact_dir=")
     )
@@ -678,6 +682,21 @@ def test_normal_twap_script_writes_required_artifacts(tmp_path: Path) -> None:
         algorithm="TWAP",
         expected_event="twap_order_submitted",
     )
+    summary = json.loads((artifact_dir / "execution_summary.json").read_text())
+    assert summary["final_status"] == "COMPLETED"
+    assert summary["child_order_count"] == 5
+    assert summary["metrics"]["filled_quantity"] == "0.01"
+    ledger_rows = list(csv.DictReader((artifact_dir / "twap_slice_ledger.csv").open()))
+    assert ledger_rows
+    assert len(ledger_rows) == 5
+    assert [row["slice_index"] for row in ledger_rows] == ["1", "2", "3", "4", "5"]
+    assert [row["slice_end_seconds"] for row in ledger_rows] == [
+        "20",
+        "40",
+        "60",
+        "80",
+        "100",
+    ]
 
 
 def test_simulator_demo_scripts_run_successfully_for_chase_and_cancel_race(tmp_path: Path) -> None:

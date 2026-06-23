@@ -17,10 +17,10 @@
 - `reports/external_code_review_summary.md`
 - `reports/failure_case_log.md`
 - `reports/latex/report.pdf`
-- `reports/evidence/simulation/chase/exec_d10652a300e544dc`
-- `reports/evidence/simulation/twap/exec_1da27294d07f47af`
-- `reports/evidence/simulation/cancel-race/exec_2d3534bffa694b40`
-- `reports/evidence/simulation/create-timeout/exec_a03dec73abde450b`
+- `reports/evidence/simulation/chase/exec_c8dc942476764355`
+- `reports/evidence/simulation/twap/exec_61fadac604f4440a`
+- `reports/evidence/simulation/cancel-race/exec_669d47a536a94682`
+- `reports/evidence/simulation/create-timeout/exec_3ddb8a47995348d0`
 - `reports/evidence/testnet/chase/exec_3168600ee25b4193`
 - `reports/evidence/testnet/twap/exec_85bef3985ea3431a`
 - `reports/evidence/testnet/chase/exec_85051310eb714ebe`
@@ -39,10 +39,10 @@
 
 Committed deterministic simulator artifact directories:
 
-- `reports/evidence/simulation/chase/exec_d10652a300e544dc`
-- `reports/evidence/simulation/twap/exec_1da27294d07f47af`
-- `reports/evidence/simulation/cancel-race/exec_2d3534bffa694b40`
-- `reports/evidence/simulation/create-timeout/exec_a03dec73abde450b`
+- `reports/evidence/simulation/chase/exec_c8dc942476764355`
+- `reports/evidence/simulation/twap/exec_61fadac604f4440a`
+- `reports/evidence/simulation/cancel-race/exec_669d47a536a94682`
+- `reports/evidence/simulation/create-timeout/exec_3ddb8a47995348d0`
 
 Accepted Binance Testnet artifacts:
 

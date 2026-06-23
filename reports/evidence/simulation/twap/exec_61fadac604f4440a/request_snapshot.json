@@ -1,13 +1,13 @@
 {
   "algorithm": "TWAP",
-  "deadline_policy": "CANCEL_REMAINDER",
+  "deadline_policy": "AGGRESSIVE_WITHIN_RANGE",
   "duration_seconds": 100,
   "environment": "simulation",
-  "execution_id": "exec_1da27294d07f47af",
+  "execution_id": "exec_61fadac604f4440a",
   "parameters": {
     "child_order_timeout_seconds": 20,
     "minimum_reprice_interval_ms": 500,
-    "number_of_slices": 10,
+    "number_of_slices": 5,
     "reprice_threshold_bps": "2.0",
     "repricing_mode": "ADVERSE_ONLY"
   },

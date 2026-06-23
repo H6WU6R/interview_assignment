@@ -1,0 +1,32 @@
+{
+  "accepted_exchange_order_evidence": true,
+  "algorithm": "CHASE",
+  "client_order_ids": [
+    "ce_3168600ee25b_1"
+  ],
+  "environment": "testnet",
+  "exchange_order_evidence_status": "reconciled_exchange_order_ids_observed",
+  "exchange_order_id_count": 1,
+  "exchange_order_ids": [
+    "16277695886"
+  ],
+  "execution_id": "exec_3168600ee25b4193",
+  "final_reconciliation_counts": {
+    "fill_count": 1,
+    "order_count": 1,
+    "warning_count": 0
+  },
+  "final_status": "COMPLETED",
+  "has_execution_matching_private_order_event": true,
+  "has_private_user_stream_events": true,
+  "has_user_stream_applied_events": true,
+  "rate_limits": {
+    "ORDERS": 300,
+    "REQUEST_WEIGHT": 6000
+  },
+  "reconciled_exchange_order_id_count": 1,
+  "reconciled_fill_count": 1,
+  "reconciled_order_count": 1,
+  "symbol": "BTCUSDT",
+  "warnings": []
+}

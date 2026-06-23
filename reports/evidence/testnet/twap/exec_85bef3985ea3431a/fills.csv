@@ -1,0 +1,2 @@
+client_order_id,cumulative_filled_quantity,event_time_ms,is_maker,last_fill_price,last_filled_quantity,trade_id,transaction_time_ms
+ce_85bef3985ea3_2,0.0040,1782220865235,False,62092.90,0.0040,508824339,1782220865235

@@ -1,0 +1,22 @@
+{
+  "rate_limits": {
+    "ORDERS": 300,
+    "REQUEST_WEIGHT": 6000
+  },
+  "rules": {
+    "min_notional": "50",
+    "min_quantity": "0.0001",
+    "quantity_step": "0.0001",
+    "status": "TRADING",
+    "supported_time_in_force": [
+      "FOK",
+      "GTC",
+      "GTD",
+      "GTX",
+      "IOC"
+    ],
+    "symbol": "BTCUSDT",
+    "tick_size": "0.10"
+  },
+  "symbol": "BTCUSDT"
+}

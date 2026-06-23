@@ -1,0 +1,6 @@
+cancelled_quantity,child_order_ids,client_order_ids,execution_id,filled_quantity,open_quantity,planned_cumulative_quantity,planned_slice_quantity,schedule_deficit,slice_end_seconds,slice_index,slice_start_seconds,submitted_quantity,unfilled_quantity
+0,[],[],exec_85bef3985ea3431a,0,0,0.0008,0.0008,0.0008,2.4,1,0.0,0,0.0008
+0,[],[],exec_85bef3985ea3431a,0,0,0.0016,0.0008,0.0016,4.8,2,2.4,0,0.0008
+0.0016,"[""child_0001""]","[""ce_85bef3985ea3_1""]",exec_85bef3985ea3431a,0,0,0.0024,0.0008,0.0024,7.2,3,4.8,0.0016,0.0008
+0,[],[],exec_85bef3985ea3431a,0,0,0.0032,0.0008,0.0032,9.6,4,7.2,0,0.0008
+0,"[""child_0002""]","[""ce_85bef3985ea3_2""]",exec_85bef3985ea3431a,0.004,0,0.0040,0.0008,0.0000,12.0,5,9.6,0.0040,0

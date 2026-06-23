@@ -1,0 +1,2 @@
+child_order_id,client_order_id,confirmed_filled_quantity,exchange_order_id,price,raw_status,side,status,submitted_quantity,symbol,terminal_reason
+ce_3168600ee25b_1,ce_3168600ee25b_1,0.0010,16277695886,62212.50,FILLED,BUY,FILLED,0.0010,BTCUSDT,

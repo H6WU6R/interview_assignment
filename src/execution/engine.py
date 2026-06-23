@@ -21,6 +21,7 @@ from exchanges.base import (
     OrderCreateTimeout,
     OrderRejected,
     TerminalOrderRejected,
+    VenueBanHardStop,
 )
 from execution.clock import Clock, ManualClock
 from execution import ids
@@ -322,6 +323,8 @@ class ExecutionEngine:
 
             await self._reconcile_locked(record, exact_unknown_lookup=True)
             await self._cancel_active_children_locked(record)
+            if record.status.is_terminal:
+                return self._snapshot(record)
             await self._reconcile_locked(record, exact_unknown_lookup=True)
             if self._target_filled(record):
                 self._complete_locked(record, TARGET_QUANTITY_FILLED)
@@ -361,6 +364,8 @@ class ExecutionEngine:
             if self._deadline_reached(record) and not stream_healthy:
                 record.final_reason = STREAM_HEALTH_DEGRADED_RECONCILED
                 await self._cancel_active_children_locked(record)
+                if record.status.is_terminal:
+                    return self._snapshot(record)
                 await self._refresh_order_states_exact_locked(record)
                 if self._target_filled(record):
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
@@ -378,6 +383,8 @@ class ExecutionEngine:
 
             if self._should_terminalize_cancel_remainder_deadline(record):
                 await self._cancel_active_children_locked(record)
+                if record.status.is_terminal:
+                    return self._snapshot(record)
                 await self._refresh_order_states_exact_locked(record)
                 if self._target_filled(record):
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
@@ -392,12 +399,16 @@ class ExecutionEngine:
 
             if self._should_cancel_for_aggressive_deadline(record):
                 await self._cancel_passive_children_for_aggressive_deadline_locked(record)
+                if record.status.is_terminal:
+                    return self._snapshot(record)
                 await self._refresh_order_states_exact_locked(record)
                 if self._target_filled(record):
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
                     return self._snapshot(record)
 
             if await self._cancel_timed_out_children_locked(record):
+                if record.status.is_terminal:
+                    return self._snapshot(record)
                 await self._refresh_order_states_exact_locked(record)
                 if self._target_filled(record):
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
@@ -420,6 +431,8 @@ class ExecutionEngine:
                 await self._refresh_order_states_exact_locked(record)
                 if self._deadline_reached(record):
                     await self._cancel_active_children_locked(record)
+                    if record.status.is_terminal:
+                        return self._snapshot(record)
                     await self._refresh_order_states_exact_locked(record)
                     if self._target_filled(record):
                         self._complete_locked(record, TARGET_QUANTITY_FILLED)
@@ -446,6 +459,8 @@ class ExecutionEngine:
                     await self._refresh_order_states_exact_locked(record)
                     if self._deadline_reached(record):
                         await self._cancel_active_children_locked(record)
+                        if record.status.is_terminal:
+                            return self._snapshot(record)
                         await self._refresh_order_states_exact_locked(record)
                         if self._target_filled(record):
                             self._complete_locked(record, TARGET_QUANTITY_FILLED)
@@ -594,6 +609,13 @@ class ExecutionEngine:
 
         try:
             submitted = await self._adapter.submit_limit_order(order_request)
+        except VenueBanHardStop as exc:
+            tracker.release_pending_submit(quantity)
+            self._set_child_status(child, ChildOrderStatus.REJECTED)
+            child.terminal_reason = str(exc)
+            self._fail_locked(record, str(exc))
+            self._assert_exposure_invariant_locked(record)
+            return child
         except OrderCreateTimeout as exc:
             tracker.release_pending_submit(quantity)
             self._set_child_status(child, ChildOrderStatus.UNKNOWN)
@@ -658,6 +680,8 @@ class ExecutionEngine:
         cancelled_any = False
         for child in list(record.child_orders):
             cancelled_any = await self._cancel_child_locked(record, child) or cancelled_any
+            if record.status.is_terminal:
+                break
         return cancelled_any
 
     async def _cancel_passive_children_for_aggressive_deadline_locked(
@@ -669,6 +693,8 @@ class ExecutionEngine:
             if not self._needs_aggressive_deadline_cancel(record, child):
                 continue
             cancelled_any = await self._cancel_child_locked(record, child) or cancelled_any
+            if record.status.is_terminal:
+                break
         return cancelled_any
 
     async def _cancel_timed_out_children_locked(self, record: ExecutionRecord) -> bool:
@@ -677,6 +703,8 @@ class ExecutionEngine:
             if not self._child_order_timed_out(record, child):
                 continue
             cancelled_any = await self._cancel_child_locked(record, child) or cancelled_any
+            if record.status.is_terminal:
+                break
         return cancelled_any
 
     async def _cancel_child_locked(self, record: ExecutionRecord, child: ChildOrder) -> bool:
@@ -694,6 +722,11 @@ class ExecutionEngine:
         self._set_child_status(child, ChildOrderStatus.PENDING_CANCEL)
         try:
             cancelled = await self._adapter.cancel_order(record.request.symbol, child.client_order_id)
+        except VenueBanHardStop as exc:
+            child.terminal_reason = str(exc)
+            self._fail_locked(record, str(exc))
+            self._assert_exposure_invariant_locked(record)
+            return True
         except OrderCancelTimeout as exc:
             child.terminal_reason = str(exc)
             self._assert_exposure_invariant_locked(record)

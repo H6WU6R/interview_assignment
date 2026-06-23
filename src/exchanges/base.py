@@ -38,6 +38,16 @@ class OrderRejected(RuntimeError):
     pass
 
 
+class VenueBanHardStop(RuntimeError):
+    """Raised when the venue bans trading and execution must not retry."""
+
+    code = "VENUE_BAN_HARD_STOP"
+
+    def __init__(self, reason: str = code) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class TerminalOrderRejected(OrderRejected):
     """Raised when an order rejection should terminally fail the child order."""
 

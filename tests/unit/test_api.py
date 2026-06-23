@@ -9,6 +9,7 @@ import pytest
 
 from api.app import create_app
 from api.schemas import ExecutionCreateRequest
+from exchanges.base import VenueBanHardStop
 from exchanges.binance_usdm import StreamHealthFailure
 from exchanges.simulator import DeterministicSimulator
 from execution import ids
@@ -1215,6 +1216,74 @@ async def test_background_loop_records_unexpected_failure_and_retries(
         assert calls >= 2
         assert "background loop boom" in app.state.runtime.runtime_errors[created["execution_id"]][-1]
         assert app.state.runtime.background_task_count == 1
+    finally:
+        await app.state.runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_loop_stops_when_run_once_raises_venue_ban_hard_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(simulator_position="0", background_tick_interval_seconds=0.01)
+    created_response = await post_json(app, "/executions", execution_payload())
+    created = created_response.json()
+    calls = 0
+
+    async def banned_run_once(execution_id: str):
+        nonlocal calls
+        calls += 1
+        raise VenueBanHardStop()
+
+    monkeypatch.setattr(app.state.service, "run_once", banned_run_once)
+    await app.state.runtime.start()
+    try:
+        await wait_for_execution(
+            app,
+            created["execution_id"],
+            lambda body: calls == 1 and app.state.runtime.background_task_count == 0,
+            timeout_seconds=1.0,
+        )
+
+        assert calls == 1
+        assert "VenueBanHardStop: VENUE_BAN_HARD_STOP" in app.state.runtime.runtime_errors[
+            created["execution_id"]
+        ][-1]
+        assert app.state.runtime.background_task_count == 0
+    finally:
+        await app.state.runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_loop_stops_when_engine_terminalizes_venue_ban_hard_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(simulator_position="0", background_tick_interval_seconds=0.01)
+    created_response = await post_json(app, "/executions", execution_payload())
+    created = created_response.json()
+    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    submissions = 0
+
+    async def banned_submit(order_request):
+        nonlocal submissions
+        submissions += 1
+        raise VenueBanHardStop()
+
+    monkeypatch.setattr(app.state.adapter, "submit_limit_order", banned_submit)
+    await app.state.runtime.start()
+    try:
+        failed = await wait_for_execution(
+            app,
+            created["execution_id"],
+            lambda body: (
+                body["status"] == "FAILED" and app.state.runtime.background_task_count == 0
+            ),
+            timeout_seconds=1.0,
+        )
+
+        assert submissions == 1
+        assert failed["final_reason"] == "VENUE_BAN_HARD_STOP"
+        assert failed["child_orders"][0]["terminal_reason"] == "VENUE_BAN_HARD_STOP"
+        assert app.state.runtime.background_task_count == 0
     finally:
         await app.state.runtime.stop()
 

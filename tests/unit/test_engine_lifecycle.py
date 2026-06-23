@@ -10,6 +10,7 @@ from exchanges.base import (
     OrderCreateTimeout,
     OrderRejected,
     TerminalOrderRejected,
+    VenueBanHardStop,
 )
 from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
@@ -884,6 +885,37 @@ async def test_terminal_exchange_reject_fails_execution_without_repeated_retry()
     assert second.status is ExecutionStatus.FAILED
 
 
+async def test_submit_venue_ban_hard_stop_fails_without_repeated_retry() -> None:
+    class VenueBanAdapter(DeterministicSimulator):
+        submissions: int
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = 0
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions += 1
+            raise VenueBanHardStop()
+
+    clock = ManualClock()
+    adapter = VenueBanAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    failed = await service.run_once(execution.execution_id)
+    second = await service.run_once(execution.execution_id)
+
+    assert adapter.submissions == 1
+    assert failed.status is ExecutionStatus.FAILED
+    assert failed.final_reason == "VENUE_BAN_HARD_STOP"
+    assert failed.child_orders[0].status is ChildOrderStatus.REJECTED
+    assert failed.child_orders[0].terminal_reason == "VENUE_BAN_HARD_STOP"
+    assert failed.exposure.reserved_exposure == Decimal("0")
+    assert second.status is ExecutionStatus.FAILED
+    assert len(second.child_orders) == 1
+
+
 async def test_retryable_order_reject_does_not_fail_parent_execution() -> None:
     class RetryableRejectAdapter(DeterministicSimulator):
         async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
@@ -1274,6 +1306,37 @@ async def test_adapter_level_cancel_timeout_keeps_pending_cancel_exposure_until_
     assert cancelled.exposure.pending_cancel_quantity == Decimal("0.010")
     assert cancelled.exposure.live_open_quantity == Decimal("0")
     assert cancelled.exposure.reserved_exposure == Decimal("0.010")
+
+
+async def test_cancel_venue_ban_hard_stop_fails_without_repeated_retry() -> None:
+    class VenueBanCancelAdapter(DeterministicSimulator):
+        cancel_attempts: int
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.cancel_attempts = 0
+
+        async def cancel_order(self, symbol: str, client_order_id: str) -> ChildOrder:
+            self.cancel_attempts += 1
+            raise VenueBanHardStop()
+
+    clock = ManualClock()
+    adapter = VenueBanCancelAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+
+    failed = await service.cancel_execution(opened.execution_id)
+    second = await service.run_once(opened.execution_id)
+
+    assert adapter.cancel_attempts == 1
+    assert failed.status is ExecutionStatus.FAILED
+    assert failed.final_reason == "VENUE_BAN_HARD_STOP"
+    assert failed.child_orders[0].terminal_reason == "VENUE_BAN_HARD_STOP"
+    assert failed.exposure.pending_cancel_quantity == Decimal("0.010")
+    assert second.status is ExecutionStatus.FAILED
+    assert adapter.cancel_attempts == 1
 
 
 async def test_child_order_timeout_cancels_stale_child_and_replaces_remaining_quantity() -> None:

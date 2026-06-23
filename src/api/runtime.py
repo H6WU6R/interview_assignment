@@ -8,6 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from config import Settings, load_allow_mainnet_trading, load_binance_usdm_credentials
+from exchanges.base import VenueBanHardStop
 from exchanges.binance_usdm import BinanceUsdmAdapter, StreamHealthFailure
 from exchanges.simulator import DeterministicSimulator
 from execution import ids
@@ -285,6 +286,9 @@ class ExecutionRuntime:
             except asyncio.CancelledError:
                 raise
             except UnknownExecution as exc:
+                self._record_runtime_error(execution_id, exc)
+                return
+            except VenueBanHardStop as exc:
                 self._record_runtime_error(execution_id, exc)
                 return
             except Exception as exc:

@@ -24,6 +24,7 @@ from exchanges.base import (
     OrderCreateTimeout,
     OrderRejected,
     TerminalOrderRejected,
+    VenueBanHardStop,
 )
 from execution.clock import Clock, SystemClock
 from execution import ids
@@ -316,7 +317,7 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         if response.status_code == 429:
             raise RetryableReadFailure("RATE_LIMIT_BACKOFF")
         if response.status_code == 418:
-            raise RuntimeError("VENUE_BAN_HARD_STOP")
+            raise VenueBanHardStop()
 
         error_payload = _json_payload_or_conservative_failure(response, mutation_kind)
         if 500 <= response.status_code <= 599:

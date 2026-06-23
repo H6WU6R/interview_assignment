@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from config import Settings
-from exchanges.base import OrderCreateTimeout, OrderRejected
+from exchanges.base import OrderCreateTimeout, OrderRejected, VenueBanHardStop
 from exchanges.binance_usdm import (
     LISTEN_KEY_PATH,
     ORDER_QUERY_PATH,
@@ -253,7 +253,7 @@ async def test_signed_request_transport_errors_map_by_operation(transport_error:
     ("status_code", "expected_exc", "match"),
     [
         (429, RetryableReadFailure, "RATE_LIMIT_BACKOFF"),
-        (418, RuntimeError, "VENUE_BAN_HARD_STOP"),
+        (418, VenueBanHardStop, "VENUE_BAN_HARD_STOP"),
     ],
 )
 async def test_signed_request_status_only_hard_stops_ignore_malformed_json(

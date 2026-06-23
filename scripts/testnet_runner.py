@@ -42,6 +42,12 @@ _USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS = 0.1
 _LISTEN_KEY_VENUE_BAN_HARD_STOP = "LISTEN_KEY_VENUE_BAN_HARD_STOP"
 
 
+class _UserStreamReconciliationHardStop(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def parse_args(algorithm: Algorithm) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=f"Run a real Binance USD-M testnet {algorithm.value} execution.")
     parser.add_argument("--symbol", default="BTCUSDT", help="USD-M symbol to trade, default BTCUSDT.")
@@ -420,6 +426,8 @@ async def _start_user_stream(
             )
         except asyncio.CancelledError:
             raise
+        except _UserStreamReconciliationHardStop as exc:
+            raise SystemExit(exc.reason) from exc.__cause__
         except Exception as exc:
             if _is_listen_key_venue_ban_hard_stop(exc):
                 reason = _sanitize_exchange_reason(exc)
@@ -472,10 +480,14 @@ async def _start_user_stream_once(
                         "start_time_ms": start_time_ms,
                         "end_time_ms": end_time_ms,
                     }
-                    updated = await service.reconcile_execution(
+                    updated = await _reconcile_execution_for_user_stream_recovery(
+                        adapter,
+                        service,
+                        events,
                         execution_id,
                         start_time_ms=start_time_ms,
                         end_time_ms=end_time_ms,
+                        failure_event_name="user_stream_listen_key_expired_reconciliation_failed",
                     )
                     events.append(
                         _runtime_event(
@@ -524,6 +536,8 @@ async def _recover_or_raise_stream_task_failure(
     if not user_task.cancelled():
         try:
             result = user_task.result()
+        except _UserStreamReconciliationHardStop as exc:
+            raise SystemExit(exc.reason) from exc.__cause__
         except Exception as exc:
             if _is_listen_key_venue_ban_hard_stop(exc):
                 await _reconcile_user_stream_disconnect(
@@ -635,11 +649,18 @@ async def _reconcile_user_stream_disconnect(
         "start_time_ms": start_time_ms,
         "end_time_ms": end_time_ms,
     }
-    updated = await service.reconcile_execution(
-        execution_id,
-        start_time_ms=start_time_ms,
-        end_time_ms=end_time_ms,
-    )
+    try:
+        updated = await _reconcile_execution_for_user_stream_recovery(
+            adapter,
+            service,
+            events,
+            execution_id,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+            failure_event_name="user_stream_disconnect_reconciliation_failed",
+        )
+    except _UserStreamReconciliationHardStop as exc:
+        raise SystemExit(exc.reason) from exc.__cause__
     events.append(
         _runtime_event(
             adapter,
@@ -649,6 +670,39 @@ async def _reconcile_user_stream_disconnect(
         )
     )
     return True
+
+
+async def _reconcile_execution_for_user_stream_recovery(
+    adapter: BinanceUsdmAdapter,
+    service: ExecutionService,
+    events: list[dict[str, Any]],
+    execution_id: str,
+    *,
+    start_time_ms: int | None,
+    end_time_ms: int | None,
+    failure_event_name: str,
+) -> Any:
+    reconciliation_window = {
+        "start_time_ms": start_time_ms,
+        "end_time_ms": end_time_ms,
+    }
+    try:
+        return await service.reconcile_execution(
+            execution_id,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
+    except (VenueBanHardStop, ExchangeRateLimited) as exc:
+        reason = _sanitize_exchange_reason(exc)
+        events.append(
+            _runtime_event(
+                adapter,
+                failure_event_name,
+                reconciliation_window=reconciliation_window,
+                reason=reason,
+            )
+        )
+        raise _UserStreamReconciliationHardStop(reason) from exc
 
 
 def _is_retryable_listen_key_stream_failure(exc: BaseException) -> bool:

@@ -2306,6 +2306,82 @@ async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_re
     assert adapter.second_closed.is_set()
 
 
+async def test_testnet_runner_listen_key_expired_reconciliation_rate_limit_exits_cleanly() -> None:
+    import importlib.util
+
+    execution_id = "exec_listen_key_expired_rate_limit"
+
+    class FakeUserAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock(current=10.0)
+            self.user_stream_healthy = False
+            self.closed = asyncio.Event()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_stream_healthy = True
+                try:
+                    self.clock.advance(5.0)
+                    yield {"event_type": "listenKeyExpired"}
+                    await asyncio.Event().wait()
+                finally:
+                    self.user_stream_healthy = False
+                    self.closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.user_stream_healthy
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.reconciliation_calls: list[tuple[str, int | None, int | None]] = []
+
+        async def reconcile_execution(
+            self,
+            reconciled_execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> Any:
+            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            raise ExchangeRateLimited("RATE_LIMIT_BACKOFF api-key=secret")
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter = FakeUserAdapter()
+    service = FakeService()
+    events: list[dict[str, Any]] = []
+
+    with pytest.raises(SystemExit, match="RATE_LIMIT_BACKOFF api-key=\\[redacted\\]") as exc_info:
+        await module._start_user_stream(
+            adapter,
+            service,
+            events,
+            {"execution_id": execution_id},
+            timeout_seconds=1.0,
+        )
+
+    assert type(exc_info.value.__cause__) is ExchangeRateLimited
+    assert type(exc_info.value).__name__ not in str(exc_info.value)
+    assert "secret" not in str(exc_info.value)
+    assert adapter.closed.is_set()
+    assert service.reconciliation_calls == [(execution_id, 10_000, 15_000)]
+    assert [event["event"] for event in events] == [
+        "user_stream_event",
+        "user_stream_listen_key_expired_reconciliation_failed",
+    ]
+    assert events[1]["reason"] == "RATE_LIMIT_BACKOFF api-key=[redacted]"
+    assert events[1]["reconciliation_window"] == {
+        "start_time_ms": 10_000,
+        "end_time_ms": 15_000,
+    }
+
+
 async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_reconcile() -> None:
     import importlib.util
 
@@ -2391,6 +2467,65 @@ async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_
         }
     finally:
         await module._stop_stream_task(restarted_task)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_reason"),
+    [
+        (VenueBanHardStop("VENUE_BAN_HARD_STOP api-key=secret"), "VENUE_BAN_HARD_STOP api-key=[redacted]"),
+        (ExchangeRateLimited("RATE_LIMIT_BACKOFF api-key=secret"), "RATE_LIMIT_BACKOFF api-key=[redacted]"),
+    ],
+)
+async def test_testnet_runner_user_stream_disconnect_reconciliation_hard_stops_exit_cleanly(
+    failure: Exception,
+    expected_reason: str,
+) -> None:
+    import importlib.util
+
+    execution_id = "exec_disconnect_reconcile_failure"
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.reconciliation_calls: list[tuple[str, int | None, int | None]] = []
+
+        async def reconcile_execution(
+            self,
+            reconciled_execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> Any:
+            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            raise failure
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter = SimpleNamespace(clock=ManualClock(current=125.0))
+    service = FakeService()
+    events: list[dict[str, Any]] = []
+
+    with pytest.raises(SystemExit, match=expected_reason.replace("[", "\\[").replace("]", "\\]")) as exc_info:
+        await module._reconcile_user_stream_disconnect(
+            adapter,
+            service,
+            events,
+            {"execution_id": execution_id, "user_stream_started_ms": "10000"},
+        )
+
+    assert exc_info.value.__cause__ is failure
+    assert type(failure).__name__ not in str(exc_info.value)
+    assert "secret" not in str(exc_info.value)
+    assert service.reconciliation_calls == [(execution_id, 65_000, 125_000)]
+    assert [event["event"] for event in events] == ["user_stream_disconnect_reconciliation_failed"]
+    assert events[0]["reason"] == expected_reason
+    assert events[0]["reconciliation_window"] == {
+        "start_time_ms": 65_000,
+        "end_time_ms": 125_000,
+    }
 
 
 async def test_testnet_runner_stream_recovery_helper_raises_on_unexpected_user_stream_exit_without_active_execution() -> None:

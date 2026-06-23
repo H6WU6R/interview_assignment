@@ -630,7 +630,7 @@ class ExecutionEngine:
             self._fail_locked(record, str(exc))
             self._assert_exposure_invariant_locked(record)
             return child
-        except OrderCreateTimeout as exc:
+        except OrderCreateTimeout:
             tracker.release_pending_submit(quantity)
             self._set_child_status(child, ChildOrderStatus.UNKNOWN)
             child.terminal_reason = CREATE_TIMEOUT_PENDING_RECONCILIATION

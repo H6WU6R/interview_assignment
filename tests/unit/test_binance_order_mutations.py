@@ -3058,7 +3058,6 @@ async def test_testnet_runner_user_stream_post_health_retryable_reconnects_are_b
 
         def stream_user_events(self):
             self.started_count += 1
-            stream_index = self.started_count - 1
             started = asyncio.Event()
             fail = asyncio.Event()
             self.started_events.append(started)

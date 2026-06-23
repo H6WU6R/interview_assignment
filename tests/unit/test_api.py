@@ -675,7 +675,7 @@ async def test_runtime_starts_binance_stream_supervisors_and_renews_listen_key(
         request = ExecutionCreateRequest.model_validate(
             execution_payload(environment="testnet", target_position="0.010")
         ).to_domain()
-        created = await runtime.create_execution(request)
+        await runtime.create_execution(request)
         adapter = constructed[0]
 
         await asyncio.wait_for(adapter.market_started.wait(), timeout=0.5)

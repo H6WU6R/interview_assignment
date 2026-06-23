@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping
 from decimal import Decimal
-from typing import Any
 
 from config import Settings, load_allow_mainnet_trading, load_binance_usdm_credentials
 from exchanges.base import VenueBanHardStop, is_exchange_rate_limited
@@ -290,7 +289,7 @@ class ExecutionRuntime:
 
         for environment, service in list(self._services.items()):
             try:
-                record = await service.get_execution(execution_id)
+                await service.get_execution(execution_id)
             except UnknownExecution:
                 continue
             self._execution_environments[execution_id] = environment

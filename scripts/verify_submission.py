@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import shlex
@@ -15,6 +16,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_EVIDENCE_ALGORITHMS = ("CHASE", "TWAP")
+MISSING_FINAL_REPORT_BYPASS = "missing_final_report"
+MISSING_TESTNET_EVIDENCE_BYPASS = "missing_testnet_evidence"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,35 +47,22 @@ def main(argv: list[str] | None = None) -> int:
         error(str(exc))
         return 1
 
-    failures = []
+    issues = []
     if missing_report := final_report_failure():
-        failures.append(missing_report)
-    failures.extend(testnet_evidence_failures())
+        issues.append(missing_report)
+    issues.extend(testnet_evidence_failures())
 
-    if failures:
-        if args.allow_missing_final_report and args.allow_missing_testnet_evidence:
-            for failure in failures:
-                warning(failure)
-        else:
-            strict_failures = [
-                failure
-                for failure in failures
-                if not (
-                    args.allow_missing_final_report
-                    and failure.startswith("missing final report:")
-                )
-                and not (
-                    args.allow_missing_testnet_evidence
-                    and failure.startswith("missing accepted Testnet evidence:")
-                )
-            ]
-            warning_failures = [failure for failure in failures if failure not in strict_failures]
-            for failure in warning_failures:
-                warning(failure)
-            if strict_failures:
-                for failure in strict_failures:
-                    error(failure)
-                return 1
+    if issues:
+        strict_issues = []
+        for issue in issues:
+            if issue_is_bypassed(issue, args):
+                warning(issue.message)
+            else:
+                strict_issues.append(issue)
+        if strict_issues:
+            for issue in strict_issues:
+                error(issue.message)
+            return 1
 
     print("submission_verification=ok")
     return 0
@@ -156,54 +146,72 @@ def verify_wheel(wheel_path: Path) -> None:
         )
 
 
-def final_report_failure() -> str | None:
+def final_report_failure() -> VerificationIssue | None:
     report_path = ROOT / "reports" / "latex" / "report.pdf"
     if report_path.is_file():
         return None
-    return "missing final report: reports/latex/report.pdf is required"
+    return VerificationIssue(
+        "missing final report: reports/latex/report.pdf is required",
+        bypass_kind=MISSING_FINAL_REPORT_BYPASS,
+    )
 
 
-def testnet_evidence_failures() -> list[str]:
+def testnet_evidence_failures() -> list[VerificationIssue]:
     evidence_root = ROOT / "reports" / "evidence" / "testnet"
     manifests = sorted(evidence_root.glob("**/evidence_manifest.json"))
     if not manifests:
         return [
-            "missing accepted Testnet evidence: no reports/evidence/testnet/**/"
-            "evidence_manifest.json files found"
+            VerificationIssue(
+                "missing accepted Testnet evidence: no reports/evidence/testnet/**/"
+                "evidence_manifest.json files found",
+                bypass_kind=MISSING_TESTNET_EVIDENCE_BYPASS,
+            )
         ]
 
     accepted: dict[str, list[Path]] = {algorithm: [] for algorithm in REQUIRED_EVIDENCE_ALGORITHMS}
-    invalid_manifests: list[str] = []
+    invalid_manifests: list[VerificationIssue] = []
     for manifest_path in manifests:
         try:
             payload = json.loads(manifest_path.read_text())
         except (OSError, json.JSONDecodeError) as exc:
-            invalid_manifests.append(f"{manifest_path.relative_to(ROOT)} ({exc})")
+            invalid_manifests.append(
+                VerificationIssue(
+                    f"invalid Testnet evidence manifest: {manifest_path.relative_to(ROOT)} ({exc})"
+                )
+            )
             continue
         if not isinstance(payload, dict):
-            invalid_manifests.append(f"{manifest_path.relative_to(ROOT)} (manifest is not an object)")
+            invalid_manifests.append(
+                VerificationIssue(
+                    f"invalid Testnet evidence manifest: {manifest_path.relative_to(ROOT)} "
+                    "(manifest is not an object)"
+                )
+            )
             continue
 
-        algorithm = str(payload.get("algorithm", "")).upper()
+        algorithm = _normalized_manifest_value(payload.get("algorithm")).upper()
         if algorithm not in accepted:
             continue
         if is_accepted_exchange_order_manifest(payload):
             accepted[algorithm].append(manifest_path)
 
     failures = [
-        f"missing accepted Testnet evidence: {algorithm} manifest must have "
-        "accepted_exchange_order_evidence=true and a non-empty exchange_order_id"
+        VerificationIssue(
+            f"missing accepted Testnet evidence: {algorithm} manifest must have "
+            "environment=testnet, accepted_exchange_order_evidence=true, and a non-empty "
+            "exchange_order_ids entry",
+            bypass_kind=MISSING_TESTNET_EVIDENCE_BYPASS,
+        )
         for algorithm, paths in accepted.items()
         if not paths
     ]
-    failures.extend(
-        f"missing accepted Testnet evidence: unreadable or invalid manifest {detail}"
-        for detail in invalid_manifests
-    )
+    failures.extend(invalid_manifests)
     return failures
 
 
 def is_accepted_exchange_order_manifest(payload: dict[str, Any]) -> bool:
+    if _normalized_manifest_value(payload.get("environment")) != "testnet":
+        return False
     if payload.get("accepted_exchange_order_evidence") is not True:
         return False
     exchange_order_ids = payload.get("exchange_order_ids")
@@ -213,6 +221,19 @@ def is_accepted_exchange_order_manifest(payload: dict[str, Any]) -> bool:
         isinstance(exchange_order_id, str) and bool(exchange_order_id.strip())
         for exchange_order_id in exchange_order_ids
     )
+
+
+def _normalized_manifest_value(value: Any) -> str:
+    normalized = str(value or "").strip().casefold()
+    return normalized.rsplit(".", maxsplit=1)[-1]
+
+
+def issue_is_bypassed(issue: VerificationIssue, args: argparse.Namespace) -> bool:
+    if issue.bypass_kind == MISSING_FINAL_REPORT_BYPASS:
+        return bool(args.allow_missing_final_report)
+    if issue.bypass_kind == MISSING_TESTNET_EVIDENCE_BYPASS:
+        return bool(args.allow_missing_testnet_evidence)
+    return False
 
 
 def warning(message: str) -> None:
@@ -225,6 +246,16 @@ def error(message: str) -> None:
 
 class VerificationFailure(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class VerificationIssue:
+    message: str
+    bypass_kind: str | None = None
+
+    @property
+    def is_bypassable(self) -> bool:
+        return self.bypass_kind is not None
 
 
 if __name__ == "__main__":

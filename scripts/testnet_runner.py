@@ -12,7 +12,11 @@ from typing import Any, Iterable, Mapping
 
 from config import Settings, load_binance_usdm_credentials
 from exchanges.base import ExchangeRateLimited, VenueBanHardStop
-from exchanges.binance_usdm import BinanceUsdmAdapter, ServerTimeSynchronizationFailure
+from exchanges.binance_usdm import (
+    BinanceUsdmAdapter,
+    ServerTimeSynchronizationFailure,
+    StreamHealthFailure,
+)
 from execution.ids import make_client_order_prefix
 from execution.models import (
     Algorithm,
@@ -33,6 +37,8 @@ _SANITIZED_REASON_MAX_CHARS = 200
 _SENSITIVE_REASON_VALUE_RE = re.compile(r"(?i)\b(api[-_ ]?key|secret|signature|token)=\S+")
 _USER_STREAM_LISTEN_KEY_EXPIRED = "listen_key_expired"
 _USER_EVENT_RECONCILIATION_LOOKBACK_MS = 60_000
+_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS = 3
+_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS = 0.1
 
 
 def parse_args(algorithm: Algorithm) -> argparse.Namespace:
@@ -389,6 +395,45 @@ async def _start_user_stream(
     *,
     timeout_seconds: float,
 ) -> asyncio.Task[Any]:
+    max_attempts = max(1, int(_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS))
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await _start_user_stream_once(
+                adapter,
+                service,
+                events,
+                active_execution,
+                timeout_seconds=timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not _is_retryable_listen_key_stream_failure(exc):
+                raise
+            reason = _sanitize_exchange_reason(exc)
+            events.append(
+                _runtime_event(
+                    adapter,
+                    "user_stream_retryable_failure",
+                    reason=reason,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                )
+            )
+            if attempt >= max_attempts:
+                raise SystemExit(reason) from exc
+            await asyncio.sleep(float(_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS))
+    raise RuntimeError("unreachable user stream retry loop")
+
+
+async def _start_user_stream_once(
+    adapter: BinanceUsdmAdapter,
+    service: ExecutionService,
+    events: list[dict[str, Any]],
+    active_execution: dict[str, Any],
+    *,
+    timeout_seconds: float,
+) -> asyncio.Task[Any]:
     async def pump() -> str | None:
         stream_started_ms = _clock_wall_ms(adapter)
         if stream_started_ms is not None:
@@ -453,7 +498,24 @@ async def _recover_or_raise_stream_task_failure(
     if user_task is None or not user_task.done():
         return user_task
     if not user_task.cancelled():
-        result = user_task.result()
+        try:
+            result = user_task.result()
+        except Exception as exc:
+            if not _is_retryable_listen_key_stream_failure(exc):
+                raise
+            await _reconcile_user_stream_disconnect(
+                adapter,
+                service,
+                events,
+                active_execution,
+            )
+            return await _start_user_stream(
+                adapter,
+                service,
+                events,
+                active_execution,
+                timeout_seconds=timeout_seconds,
+            )
         if result == _USER_STREAM_LISTEN_KEY_EXPIRED:
             return await _start_user_stream(
                 adapter,
@@ -462,28 +524,12 @@ async def _recover_or_raise_stream_task_failure(
                 active_execution,
                 timeout_seconds=timeout_seconds,
             )
-        execution_id = active_execution.get("execution_id")
-        if execution_id is not None:
-            end_time_ms = _clock_wall_ms(adapter)
-            start_time_ms = _coerce_optional_int(active_execution.get("user_stream_started_ms"))
-            start_time_ms = _bounded_user_stream_start_ms(start_time_ms, end_time_ms)
-            reconciliation_window = {
-                "start_time_ms": start_time_ms,
-                "end_time_ms": end_time_ms,
-            }
-            updated = await service.reconcile_execution(
-                execution_id,
-                start_time_ms=start_time_ms,
-                end_time_ms=end_time_ms,
-            )
-            events.append(
-                _runtime_event(
-                    adapter,
-                    "user_stream_disconnect_reconciled",
-                    reconciliation_window=reconciliation_window,
-                    execution=_record_summary(updated),
-                )
-            )
+        if await _reconcile_user_stream_disconnect(
+            adapter,
+            service,
+            events,
+            active_execution,
+        ):
             return await _start_user_stream(
                 adapter,
                 service,
@@ -493,6 +539,46 @@ async def _recover_or_raise_stream_task_failure(
             )
     _raise_if_stream_task_failed(user_task)
     return user_task
+
+
+async def _reconcile_user_stream_disconnect(
+    adapter: BinanceUsdmAdapter,
+    service: ExecutionService,
+    events: list[dict[str, Any]],
+    active_execution: dict[str, Any],
+) -> bool:
+    execution_id = active_execution.get("execution_id")
+    if execution_id is None:
+        return False
+    end_time_ms = _clock_wall_ms(adapter)
+    start_time_ms = _coerce_optional_int(active_execution.get("user_stream_started_ms"))
+    start_time_ms = _bounded_user_stream_start_ms(start_time_ms, end_time_ms)
+    reconciliation_window = {
+        "start_time_ms": start_time_ms,
+        "end_time_ms": end_time_ms,
+    }
+    updated = await service.reconcile_execution(
+        execution_id,
+        start_time_ms=start_time_ms,
+        end_time_ms=end_time_ms,
+    )
+    events.append(
+        _runtime_event(
+            adapter,
+            "user_stream_disconnect_reconciled",
+            reconciliation_window=reconciliation_window,
+            execution=_record_summary(updated),
+        )
+    )
+    return True
+
+
+def _is_retryable_listen_key_stream_failure(exc: BaseException) -> bool:
+    if isinstance(exc, StreamHealthFailure):
+        code = exc.code
+    else:
+        code = str(exc).split(":", 1)[0]
+    return code in {"LISTEN_KEY_RATE_LIMIT_BACKOFF", "LISTEN_KEY_RETRYABLE_FAILURE"}
 
 
 def _is_listen_key_expired_event(event: Any) -> bool:

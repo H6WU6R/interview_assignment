@@ -2329,6 +2329,136 @@ async def test_testnet_runner_stream_recovery_helper_raises_on_unexpected_user_s
         )
 
 
+@pytest.mark.parametrize(
+    "failure_reason",
+    ["LISTEN_KEY_RATE_LIMIT_BACKOFF", "LISTEN_KEY_RETRYABLE_FAILURE"],
+)
+async def test_testnet_runner_user_stream_startup_retryable_failure_exhausts_cleanly(
+    failure_reason: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    class FailingStartupAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock(current=10.0)
+            self.user_stream_healthy = False
+            self.started_count = 0
+
+        def stream_user_events(self):
+            async def events():
+                self.started_count += 1
+                raise StreamHealthFailure(failure_reason)
+                yield {"event_type": "noop"}
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.user_stream_healthy
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS", 3, raising=False)
+    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS", 0, raising=False)
+
+    adapter = FailingStartupAdapter()
+
+    with pytest.raises(SystemExit, match=failure_reason):
+        await module._start_user_stream(
+            adapter,
+            SimpleNamespace(),
+            [],
+            {},
+            timeout_seconds=1.0,
+        )
+
+    assert adapter.started_count == 3
+
+
+@pytest.mark.parametrize(
+    "failure_reason",
+    ["LISTEN_KEY_RATE_LIMIT_BACKOFF", "LISTEN_KEY_RETRYABLE_FAILURE"],
+)
+async def test_testnet_runner_user_stream_reconnect_retryable_failure_exhausts_cleanly(
+    failure_reason: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    execution_id = "exec_runner_retryable_reconnect"
+
+    async def fails_with_retryable_listen_key() -> None:
+        raise StreamHealthFailure(failure_reason)
+
+    class FailingRestartAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock(current=125.0)
+            self.user_stream_healthy = False
+            self.started_count = 0
+
+        def stream_user_events(self):
+            async def events():
+                self.started_count += 1
+                raise StreamHealthFailure(failure_reason)
+                yield {"event_type": "noop"}
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.user_stream_healthy
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.reconciliation_calls: list[tuple[str, int | None, int | None]] = []
+
+        async def reconcile_execution(
+            self,
+            reconciled_execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> Any:
+            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            return SimpleNamespace(
+                execution_id=reconciled_execution_id,
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS", 3, raising=False)
+    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS", 0, raising=False)
+
+    adapter = FailingRestartAdapter()
+    service = FakeService()
+    user_task = asyncio.create_task(fails_with_retryable_listen_key())
+    with pytest.raises(StreamHealthFailure):
+        await user_task
+
+    with pytest.raises(SystemExit, match=failure_reason):
+        await module._recover_or_raise_stream_task_failure(
+            adapter=adapter,
+            service=service,
+            events=[],
+            active_execution={"execution_id": execution_id, "user_stream_started_ms": "10000"},
+            market_task=None,
+            user_task=user_task,
+            timeout_seconds=1.0,
+        )
+
+    assert service.reconciliation_calls == [(execution_id, 65_000, 125_000)]
+    assert adapter.started_count == 3
+
+
 async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

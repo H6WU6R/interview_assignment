@@ -17,7 +17,7 @@ from exchanges.binance_usdm import (
 from exchanges.simulator import DeterministicSimulator
 from execution import ids
 from execution.clock import ManualClock, SystemClock
-from execution.engine import ExecutionRecord, UnknownExecution
+from execution.engine import RATE_LIMIT_BACKOFF, ExecutionRecord, UnknownExecution
 from execution.models import Environment, ExecutionRequest, ReconciliationResult
 from execution.service import ExecutionService
 
@@ -221,6 +221,8 @@ class ExecutionRuntime:
         )
         self._remember_execution(record)
         self._cancel_background_loop_if_terminal(record)
+        if record.final_reason == RATE_LIMIT_BACKOFF:
+            raise RuntimeUnavailableError(RATE_LIMIT_BACKOFF)
         return record
 
     def _register(
@@ -408,16 +410,19 @@ class ExecutionRuntime:
         stream_factory: Callable[[], AsyncIterator[object]],
     ) -> None:
         key = (environment, name)
+        retryable_listen_key_failures = 0
         while self._started and self._adapters.get(environment) is adapter:
             stream_started_ms = self._clock_wall_ms(environment)
             self._stream_started_wall_ms[key] = stream_started_ms
             stop_stream = False
             hard_stop_exc: BaseException | None = None
+            retryable_listen_key_exc: BaseException | None = None
             listen_key_expired_event = False
             try:
                 async for event in stream_factory():
                     if not self._started:
                         break
+                    retryable_listen_key_failures = 0
                     if name == "user":
                         if self._is_listen_key_expired_user_event(event):
                             await self._reconcile_stale_user_stream_window(environment)
@@ -434,6 +439,12 @@ class ExecutionRuntime:
                 stop_stream = name == "user" and self._is_listen_key_hard_stop(exc)
                 if stop_stream:
                     hard_stop_exc = exc
+                elif name == "user" and self._is_listen_key_retryable(exc):
+                    retryable_listen_key_failures += 1
+                    if retryable_listen_key_failures >= LISTEN_KEY_RETRYABLE_FAILURE_MAX_ATTEMPTS:
+                        retryable_listen_key_exc = exc
+                else:
+                    retryable_listen_key_failures = 0
 
             if stop_stream:
                 assert hard_stop_exc is not None
@@ -441,6 +452,13 @@ class ExecutionRuntime:
                     environment,
                     hard_stop_exc,
                     stop_user_stream=False,
+                )
+                break
+
+            if retryable_listen_key_exc is not None:
+                await self._mark_user_stream_retryable_unavailable(
+                    environment,
+                    retryable_listen_key_exc,
                 )
                 break
 
@@ -501,6 +519,17 @@ class ExecutionRuntime:
         self._unavailable_environments[environment] = reason
         self._record_runtime_error(f"{environment.value}.listen_key_keepalive.unavailable", exc)
         await self._stop_user_stream(environment)
+        await self._reconcile_stale_user_stream_window(environment)
+
+    async def _mark_user_stream_retryable_unavailable(
+        self,
+        environment: Environment,
+        exc: BaseException,
+    ) -> None:
+        reason = self._listen_key_failure_code(exc)
+        self._unavailable_environments[environment] = reason
+        self._record_runtime_error(f"{environment.value}.user_stream.unavailable", exc)
+        await self._stop_listen_key_keepalive(environment)
         await self._reconcile_stale_user_stream_window(environment)
 
     async def _mark_listen_key_hard_stop_unavailable(

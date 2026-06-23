@@ -3459,7 +3459,9 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
     assert evidence_manifest["exchange_order_id_count"] == 1
     assert evidence_manifest["reconciled_exchange_order_id_count"] == 1
     assert evidence_manifest["exchange_order_evidence_status"] == "reconciled_exchange_order_ids_observed"
+    assert evidence_manifest["accepted_exchange_order_evidence"] is True
     assert evidence_manifest["has_private_user_stream_events"] is True
+    assert evidence_manifest["has_execution_matching_private_order_event"] is False
     assert isinstance(evidence_manifest["has_user_stream_applied_events"], bool)
     assert evidence_manifest["warnings"] == []
     assert evidence_manifest["final_reconciliation_counts"] == {

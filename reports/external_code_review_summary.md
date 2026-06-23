@@ -1,6 +1,6 @@
 # External Code Review Summary
 
-Date: 2026-06-22
+Date: 2026-06-23
 
 Purpose: give an external reviewer a complete map of the repository, execution pipeline, project-brief coverage, verification status, and remaining submission gaps. This file is intentionally detailed so the reviewer can audit the code without first reconstructing the architecture from scattered notes.
 
@@ -20,7 +20,7 @@ git diff --check
 Results:
 
 ```text
-351 passed
+479 passed
 simulator Chase demo passed
 simulator TWAP demo passed
 simulator cancel/fill race demo passed

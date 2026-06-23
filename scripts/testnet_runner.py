@@ -44,6 +44,17 @@ _USER_STREAM_RECONCILIATION_HARD_STOP_REASONS = {
     ExchangeRateLimited.code,
     VenueBanHardStop.code,
 }
+_MISSING_ACCEPTED_EXCHANGE_ORDER_EVIDENCE_WARNING = "missing_accepted_exchange_order_evidence"
+_ACCEPTED_EXCHANGE_ORDER_STATUS_TOKENS = {
+    "OPEN",
+    "NEW",
+    "PARTIALLY_FILLED",
+    "FILLED",
+    "CANCELLED",
+    "CANCELED",
+    "EXPIRED",
+    "EXPIRED_IN_MATCH",
+}
 
 
 class _UserStreamReconciliationHardStop(Exception):
@@ -928,7 +939,19 @@ def _evidence_manifest(
     reconciled_exchange_order_ids = _unique_strings(
         _exchange_order_id(order) for order in reconciliation_orders
     )
-    warnings = list(getattr(reconciliation, "warnings", []))
+    reconciliation_warnings = list(getattr(reconciliation, "warnings", []))
+    accepted_exchange_order_evidence = _has_accepted_exchange_order_evidence(
+        [
+            *child_orders,
+            *reconciliation_orders,
+        ]
+    )
+    warnings = list(reconciliation_warnings)
+    if (
+        not accepted_exchange_order_evidence
+        and _MISSING_ACCEPTED_EXCHANGE_ORDER_EVIDENCE_WARNING not in warnings
+    ):
+        warnings.append(_MISSING_ACCEPTED_EXCHANGE_ORDER_EVIDENCE_WARNING)
     return {
         "execution_id": getattr(record, "execution_id", None),
         "environment": _jsonable(request.environment),
@@ -946,13 +969,18 @@ def _evidence_manifest(
             if reconciled_exchange_order_ids
             else "no_reconciled_exchange_order_ids"
         ),
+        "accepted_exchange_order_evidence": accepted_exchange_order_evidence,
         "has_private_user_stream_events": _has_event(events, "user_stream_event"),
+        "has_execution_matching_private_order_event": _has_execution_matching_private_order_event(
+            events,
+            getattr(record, "execution_id", None),
+        ),
         "has_user_stream_applied_events": _has_event(events, "user_stream_applied"),
         "warnings": warnings,
         "final_reconciliation_counts": {
             "order_count": len(reconciliation_orders),
             "fill_count": len(reconciliation_fills),
-            "warning_count": len(warnings),
+            "warning_count": len(reconciliation_warnings),
         },
         "rate_limits": _jsonable(getattr(adapter, "rate_limits", {})),
     }
@@ -965,7 +993,82 @@ def _order_client_id(order: Any) -> str | None:
 
 def _exchange_order_id(order: Any) -> str | None:
     value = getattr(order, "exchange_order_id", None)
-    return str(value) if value else None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _has_accepted_exchange_order_evidence(orders: Iterable[Any]) -> bool:
+    return any(
+        _exchange_order_id(order) is not None and _has_accepted_exchange_order_status(order)
+        for order in orders
+    )
+
+
+def _has_accepted_exchange_order_status(order: Any) -> bool:
+    return any(
+        token in _ACCEPTED_EXCHANGE_ORDER_STATUS_TOKENS
+        for status in (getattr(order, "status", None), getattr(order, "raw_status", None))
+        for token in _status_tokens(status)
+    )
+
+
+def _status_tokens(status: Any) -> set[str]:
+    values = [
+        status,
+        getattr(status, "value", None),
+        getattr(status, "name", None),
+    ]
+    tokens: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        token = str(value).strip().upper().replace("-", "_").replace(" ", "_")
+        if not token:
+            continue
+        tokens.add(token)
+        if "." in token:
+            tokens.add(token.rsplit(".", 1)[-1])
+    return tokens
+
+
+def _has_execution_matching_private_order_event(
+    events: Iterable[Mapping[str, Any]],
+    execution_id: Any,
+) -> bool:
+    if not execution_id:
+        return False
+    prefix = make_client_order_prefix(str(execution_id))
+    return any(
+        _is_execution_matching_private_order_event(event, prefix)
+        for event in events
+    )
+
+
+def _is_execution_matching_private_order_event(event: Mapping[str, Any], prefix: str) -> bool:
+    if event.get("event") != "user_stream_event":
+        return False
+    payload = event.get("user_event")
+    if not isinstance(payload, Mapping):
+        payload = event
+    raw = payload.get("raw")
+    if not isinstance(raw, Mapping):
+        raw = payload
+    event_type = payload.get("event_type") or raw.get("e")
+    if event_type != "ORDER_TRADE_UPDATE":
+        return False
+    client_order_id = _private_order_event_client_order_id(raw)
+    return client_order_id is not None and client_order_id.startswith(prefix)
+
+
+def _private_order_event_client_order_id(raw: Mapping[str, Any]) -> str | None:
+    order_payload = raw.get("o")
+    if isinstance(order_payload, Mapping) and order_payload.get("c"):
+        return str(order_payload["c"])
+    if raw.get("c"):
+        return str(raw["c"])
+    return None
 
 
 def _unique_strings(values: Iterable[Any]) -> list[str]:

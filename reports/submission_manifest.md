@@ -39,6 +39,8 @@ When Binance Testnet credentials and account margin are available, include Testn
 - `uv run python scripts/run_testnet_chase.py --confirm-send-orders ...`
 - `uv run python scripts/run_testnet_twap.py --confirm-send-orders ...`
 
-Each Testnet evidence bundle should include raw sanitized execution logs, request parameter snapshots, `symbol_rules.json`, order IDs, client order IDs, private order/trade events when available, `reconciliation_orders.csv`, fill records, `execution_summary.json`, and `evidence_manifest.json` with exchange-order evidence status.
+Each Testnet evidence bundle should include raw sanitized execution logs, request parameter snapshots, `symbol_rules.json`, order IDs, client order IDs, private order/trade events when available, `reconciliation_orders.csv`, fill records, `execution_summary.json`, and `evidence_manifest.json` with exchange-order evidence status and `accepted_exchange_order_evidence`.
 
-If Binance rejects before order acceptance, include the raw error artifact as connectivity evidence and clearly label accepted-order evidence as pending account funding/risk configuration. Do not substitute simulator output for Testnet evidence.
+Accepted Binance Testnet evidence requires at least one Chase artifact bundle and at least one TWAP artifact bundle whose `evidence_manifest.json` has `accepted_exchange_order_evidence: true` and at least one non-empty `exchange_order_id`.
+
+If Binance rejects before order acceptance, include the raw error artifact as connectivity evidence and clearly label accepted-order evidence as pending account funding/risk configuration. Do not substitute simulator output or optional read-only Testnet contract tests for accepted-order Testnet E2E artifacts.

@@ -195,7 +195,12 @@ The Testnet runner writes the standard execution bundle plus Testnet-specific ev
 
 - `symbol_rules.json`: exchange rule snapshot used for rounding and validation.
 - `reconciliation_orders.csv`: final reconciliation order rows scoped to the execution.
-- `evidence_manifest.json`: execution ID, order IDs, exchange-order evidence status, stream-event evidence flags, warning list, reconciliation counts, and rate-limit metadata.
+- `evidence_manifest.json`: execution ID, order IDs, exchange-order evidence status, `accepted_exchange_order_evidence`, stream-event evidence flags, warning list, reconciliation counts, and rate-limit metadata.
+
+Accepted Binance Testnet evidence for submission means both:
+
+- at least one Chase run whose `evidence_manifest.json` has `accepted_exchange_order_evidence: true` and at least one non-empty `exchange_order_id`;
+- at least one TWAP run whose `evidence_manifest.json` has `accepted_exchange_order_evidence: true` and at least one non-empty `exchange_order_id`.
 
 If the Testnet account is not funded or Binance rejects the order before acceptance, keep the raw artifact as connectivity/error evidence and rerun the same script once the account can accept a small BTCUSDT order.
 
@@ -214,8 +219,9 @@ uv run python scripts/run_sim_create_timeout.py
 ```
 
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
+These read-only contract tests validate connectivity and parsing only; they do not satisfy the required accepted-order Chase/TWAP Testnet evidence.
 
-Current local verification result from the latest local review run: `351 passed`.
+Current local verification result from the latest local review run: `479 passed`.
 
 ## Known Limitations
 

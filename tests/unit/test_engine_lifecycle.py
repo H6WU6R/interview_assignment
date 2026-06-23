@@ -258,11 +258,11 @@ async def test_create_execution_allows_sell_when_lower_bound_notional_is_low() -
     assert snapshot.child_orders[0].price == Decimal("101")
 
 
-async def test_create_execution_rejects_sell_below_min_notional_after_rounding_upper_to_tick() -> None:
+async def test_create_execution_allows_sell_when_min_notional_valid_above_upper_bound() -> None:
     service, simulator, _ = await fresh_service(
         position=Decimal("1"),
-        bid=Decimal("100"),
-        ask=Decimal("101"),
+        bid=Decimal("101"),
+        ask=Decimal("102"),
     )
     simulator.set_symbol_rules(
         SymbolRules(
@@ -281,15 +281,14 @@ async def test_create_execution_rejects_sell_below_min_notional_after_rounding_u
     )
     after_run = await service.run_once(execution.execution_id)
 
-    assert execution.status is ExecutionStatus.COMPLETED
-    assert execution.final_reason == "UNTRADEABLE_TARGET_DUST"
+    assert execution.status is ExecutionStatus.RUNNING
     assert execution.side is Side.SELL
     assert execution.required_quantity == Decimal("1")
-    assert execution.child_orders == []
-    assert execution.summary is not None
-    assert execution.summary.metrics["actual_duration_seconds"] == "0"
-    assert after_run.status is ExecutionStatus.COMPLETED
-    assert after_run.child_orders == []
+    assert after_run.status is ExecutionStatus.RUNNING
+    assert len(after_run.child_orders) == 1
+    assert after_run.child_orders[0].status is ChildOrderStatus.OPEN
+    assert after_run.child_orders[0].price == Decimal("102")
+    assert after_run.final_reason is None
 
 
 async def test_aggressive_deadline_submits_non_post_only_marketable_limit() -> None:

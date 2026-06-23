@@ -571,12 +571,7 @@ class ExecutionEngine:
                 passive=True,
             )
         if record.side is Side.SELL:
-            return round_price(
-                record.request.target_price_upper,
-                rules.tick_size,
-                Side.SELL,
-                passive=False,
-            )
+            return None
         return None
 
     async def _submit_child_locked(

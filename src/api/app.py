@@ -14,6 +14,7 @@ from api.runtime import (
     RuntimeUnavailableError,
 )
 from api.schemas import ExecutionCreateRequest, ExecutionResponse, execution_response
+from exchanges.base import VenueBanHardStop
 from execution.engine import ExecutionRecord, UnknownExecution
 
 
@@ -86,3 +87,5 @@ async def _get_or_404(
         return await operation(execution_id)
     except UnknownExecution as exc:
         raise HTTPException(status_code=404, detail="execution not found") from exc
+    except VenueBanHardStop as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

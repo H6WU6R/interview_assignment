@@ -1866,6 +1866,24 @@ async def test_run_once_creates_child_order_when_market_data_is_present() -> Non
 
 
 @pytest.mark.asyncio
+async def test_run_once_route_maps_raw_venue_ban_hard_stop_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(simulator_position="0")
+    created = (await post_json(app, "/executions", execution_payload())).json()
+
+    async def banned_run_once(execution_id: str):
+        raise VenueBanHardStop("VENUE_BAN_HARD_STOP")
+
+    monkeypatch.setattr(app.state.runtime, "run_once", banned_run_once)
+
+    response = await post_json(app, f"/executions/{created['execution_id']}/run-once")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "VENUE_BAN_HARD_STOP"
+
+
+@pytest.mark.asyncio
 async def test_terminal_response_serializes_rich_summary_metrics() -> None:
     app = create_app(simulator_position="0")
     created = (await post_json(app, "/executions", execution_payload(target_position="0.004"))).json()

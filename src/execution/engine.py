@@ -826,6 +826,9 @@ class ExecutionEngine:
                 client_order_prefix=prefix,
                 **reconciliation_kwargs,
             )
+        except VenueBanHardStop as exc:
+            self._fail_for_venue_ban_hard_stop_locked(record, exc)
+            return
         except Exception as exc:
             if is_exchange_rate_limited(exc):
                 self._record_rate_limit_backoff_locked(record, str(exc))
@@ -851,6 +854,9 @@ class ExecutionEngine:
                     record.request.symbol,
                     child.client_order_id,
                 )
+            except VenueBanHardStop as exc:
+                self._fail_for_venue_ban_hard_stop_locked(record, exc)
+                return
             except Exception as exc:
                 if is_exchange_rate_limited(exc):
                     self._record_rate_limit_backoff_locked(record, str(exc))
@@ -1011,6 +1017,9 @@ class ExecutionEngine:
                     record.request.symbol,
                     child.client_order_id,
                 )
+            except VenueBanHardStop as exc:
+                self._fail_for_venue_ban_hard_stop_locked(record, exc)
+                return
             except Exception as exc:
                 if is_exchange_rate_limited(exc):
                     self._record_rate_limit_backoff_locked(record, str(exc))
@@ -1350,6 +1359,18 @@ class ExecutionEngine:
             record.final_reason = reason
             record.completed_monotonic = self._now_decimal()
             record.summary = self._summary(record)
+
+    def _fail_for_venue_ban_hard_stop_locked(
+        self,
+        record: ExecutionRecord,
+        exc: VenueBanHardStop,
+    ) -> None:
+        reason = str(exc)
+        for child in record.child_orders:
+            if not child.status.is_terminal:
+                child.terminal_reason = reason
+        self._fail_locked(record, reason)
+        self._assert_exposure_invariant_locked(record)
 
     def _terminalize_deadline_locked(self, record: ExecutionRecord, reason: str) -> None:
         if record.status is not ExecutionStatus.RUNNING:

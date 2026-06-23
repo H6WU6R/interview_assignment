@@ -852,6 +852,83 @@ async def test_direct_reconcile_rate_limit_records_backoff_without_raising() -> 
     assert adapter.broad_reconciliation_calls == 1
 
 
+async def test_exact_lookup_venue_ban_hard_stop_fails_without_repeated_retry() -> None:
+    class ExactLookupVenueBanAdapter(DeterministicSimulator):
+        lookup_client_order_ids: list[str]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.lookup_client_order_ids = []
+
+        async def get_order_by_client_order_id(
+            self,
+            symbol: str,
+            client_order_id: str,
+        ) -> ChildOrder | None:
+            self.lookup_client_order_ids.append(client_order_id)
+            raise VenueBanHardStop()
+
+    clock = ManualClock()
+    adapter = ExactLookupVenueBanAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+
+    failed = await service.run_once(execution.execution_id)
+    second = await service.run_once(execution.execution_id)
+
+    assert adapter.lookup_client_order_ids == [opened.child_orders[0].client_order_id]
+    assert failed.status is ExecutionStatus.FAILED
+    assert failed.final_reason == "VENUE_BAN_HARD_STOP"
+    assert failed.child_orders[0].status is ChildOrderStatus.OPEN
+    assert failed.child_orders[0].terminal_reason == "VENUE_BAN_HARD_STOP"
+    assert failed.exposure.live_open_quantity == Decimal("0.010")
+    assert failed.exposure.reserved_exposure == Decimal("0.010")
+    assert second.status is ExecutionStatus.FAILED
+    assert adapter.lookup_client_order_ids == [opened.child_orders[0].client_order_id]
+
+
+async def test_direct_reconcile_venue_ban_hard_stop_fails_without_raising() -> None:
+    class BroadReconcileVenueBanAdapter(DeterministicSimulator):
+        broad_reconciliation_calls: int
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.broad_reconciliation_calls = 0
+
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ReconciliationResult:
+            self.broad_reconciliation_calls += 1
+            raise VenueBanHardStop()
+
+    clock = ManualClock()
+    adapter = BroadReconcileVenueBanAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+
+    failed = await service.reconcile_execution(opened.execution_id)
+    second = await service.run_once(opened.execution_id)
+
+    assert adapter.broad_reconciliation_calls == 1
+    assert failed.status is ExecutionStatus.FAILED
+    assert failed.final_reason == "VENUE_BAN_HARD_STOP"
+    assert failed.child_orders[0].status is ChildOrderStatus.OPEN
+    assert failed.child_orders[0].terminal_reason == "VENUE_BAN_HARD_STOP"
+    assert failed.exposure.live_open_quantity == Decimal("0.010")
+    assert failed.exposure.reserved_exposure == Decimal("0.010")
+    assert second.status is ExecutionStatus.FAILED
+    assert adapter.broad_reconciliation_calls == 1
+
+
 async def test_exact_create_timeout_lookup_not_found_clears_unknown_without_broad_warning() -> None:
     class ExactNotFoundAdapter(DeterministicSimulator):
         lookup_client_order_ids: list[str]

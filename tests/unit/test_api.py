@@ -228,6 +228,88 @@ async def test_testnet_request_maps_server_time_sync_failure_to_503(
 
 
 @pytest.mark.asyncio
+async def test_testnet_create_maps_precreate_get_position_rate_limit_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from config import BinanceUsdmCredentials
+
+    runtime_module = importlib.import_module("api.runtime")
+
+    class RateLimitedPositionBinanceAdapter(DeterministicSimulator):
+        def __init__(self, *, settings: Any, clock: Any) -> None:
+            super().__init__(clock=clock, position=Decimal("0.010"))
+            self.synchronized = False
+
+        async def synchronize_server_time(self) -> int:
+            self.synchronized = True
+            return 123
+
+        async def get_position(self, symbol: str) -> PositionSnapshot:
+            assert self.synchronized is True
+            raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
+
+    monkeypatch.setattr(
+        runtime_module,
+        "load_binance_usdm_credentials",
+        lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
+    )
+    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", RateLimitedPositionBinanceAdapter)
+    app = create_app()
+
+    response = await post_json(
+        app,
+        "/executions",
+        execution_payload(environment="testnet", target_position="0.010"),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "RATE_LIMIT_BACKOFF"
+
+
+@pytest.mark.asyncio
+async def test_testnet_create_maps_precreate_get_position_venue_ban_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from config import BinanceUsdmCredentials
+
+    runtime_module = importlib.import_module("api.runtime")
+
+    class BannedPositionBinanceAdapter(DeterministicSimulator):
+        def __init__(self, *, settings: Any, clock: Any) -> None:
+            super().__init__(clock=clock, position=Decimal("0.010"))
+            self.synchronized = False
+
+        async def synchronize_server_time(self) -> int:
+            self.synchronized = True
+            return 123
+
+        async def get_position(self, symbol: str) -> PositionSnapshot:
+            assert self.synchronized is True
+            raise VenueBanHardStop("VENUE_BAN_HARD_STOP")
+
+    monkeypatch.setattr(
+        runtime_module,
+        "load_binance_usdm_credentials",
+        lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
+    )
+    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", BannedPositionBinanceAdapter)
+    app = create_app()
+
+    response = await post_json(
+        app,
+        "/executions",
+        execution_payload(environment="testnet", target_position="0.010"),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "VENUE_BAN_HARD_STOP"
+
+
+@pytest.mark.asyncio
 async def test_mainnet_request_requires_explicit_allow_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

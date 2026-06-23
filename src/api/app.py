@@ -7,7 +7,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
-from api.runtime import ActiveExecutionConflict, ExecutionRuntime, RuntimeConfigurationError
+from api.runtime import (
+    ActiveExecutionConflict,
+    ExecutionRuntime,
+    RuntimeConfigurationError,
+    RuntimeUnavailableError,
+)
 from api.schemas import ExecutionCreateRequest, ExecutionResponse, execution_response
 from execution.engine import ExecutionRecord, UnknownExecution
 
@@ -45,6 +50,8 @@ def create_app(
         except ActiveExecutionConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except RuntimeConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except RuntimeUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return execution_response(record)
 

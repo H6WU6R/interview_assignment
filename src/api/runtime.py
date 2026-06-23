@@ -34,6 +34,12 @@ class RuntimeConfigurationError(RuntimeError):
     pass
 
 
+class RuntimeUnavailableError(RuntimeError):
+    """Raised when the requested runtime operation is temporarily unavailable."""
+
+    pass
+
+
 USER_EVENT_RECONCILIATION_LOOKBACK_MS = 60_000
 
 
@@ -163,7 +169,15 @@ class ExecutionRuntime:
                     f"{request.environment.value} {request.symbol}: {active.execution_id}"
                 )
 
-            record = await service.create_execution(request)
+            try:
+                record = await service.create_execution(request)
+            except VenueBanHardStop as exc:
+                raise RuntimeUnavailableError(exc.reason) from exc
+            except Exception as exc:
+                if is_exchange_rate_limited(exc):
+                    reason = getattr(exc, "reason", str(exc))
+                    raise RuntimeUnavailableError(reason) from exc
+                raise
             self._remember_execution(record)
             self._schedule_background_loop(record)
             return record

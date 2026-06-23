@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the Calais execution algorithm repository submission-ready from an interviewer perspective by committing sanitized accepted Binance Testnet evidence, removing stale "accepted evidence pending" claims, preventing private account data from being written to artifacts, keeping generated build noise out of the repo, and rerunning the full verification path.
+**Goal:** Make the Calais execution algorithm repository submission-ready from an interviewer perspective by fixing two verified correctness risks, committing sanitized accepted Binance Testnet evidence, removing stale "accepted evidence pending" claims, preventing private account data from being written to artifacts, keeping generated build noise out of the repo, and rerunning the full verification path.
 
-**Architecture:** Keep the current execution engine, API, simulator, and Binance adapter architecture intact. This plan touches only artifact hygiene, Testnet runner evidence output, documentation/reporting, one bounded reconciliation hardening point, simulator demo presentation, and submission packaging.
+**Architecture:** Keep the current execution engine, API, simulator, and Binance adapter architecture intact. This plan touches only targeted runtime reconciliation fallback behavior, directional SELL min-notional prevalidation, artifact hygiene, Testnet runner evidence output, documentation/reporting, one bounded reconciliation hardening point, simulator demo presentation, formatting, and submission packaging.
 
 **Tech Stack:** Python 3.11+, uv, pytest, Ruff, pydantic, httpx/websockets, Decimal arithmetic, LaTeX report source under `reports/latex`, Sphinx documentation under `docs/source`.
 
@@ -12,13 +12,32 @@
 
 ## Current Interviewer-Risk Ranking
 
-1. Accepted Testnet evidence is present in the working tree but untracked: `reports/evidence/testnet/chase/exec_3168600ee25b4193` and `reports/evidence/testnet/twap/exec_85bef3985ea3431a`.
-2. Those accepted artifacts contain raw Binance `ACCOUNT_UPDATE` balances and position fields in `execution_log.jsonl` and `timeline.csv`.
-3. README/report/manifest text still says accepted Binance Testnet evidence is pending.
-4. Generated LaTeX files are untracked and not ignored: `reports/latex/report.aux`, `report.blg`, `report.fdb_latexmk`, `report.fls`, and `report.out`.
-5. The corrected Binance Testnet WebSocket root is modified but not committed: `wss://demo-fstream.binance.com`.
-6. Normal simulator CHASE/TWAP demos produce useful placement artifacts but currently read as nonterminal `RUNNING` demos.
-7. Bounded Binance reconciliation can miss fill attribution if a user-stream reconnect window returns `userTrades` with only `orderId` and the bounded `allOrders` response omits the matching order needed to recover `clientOrderId`.
+1. Runtime user-event direct reconciliation can suppress bounded REST fallback when `apply_reconciliation_result()` fails or active-execution lookup fails.
+2. SELL permanent min-notional prevalidation uses `target_price_upper` even though SELL price-bound validation is directional and only enforces `price >= target_price_lower`.
+3. Accepted Testnet evidence is present in the working tree but untracked: `reports/evidence/testnet/chase/exec_3168600ee25b4193` and `reports/evidence/testnet/twap/exec_85bef3985ea3431a`.
+4. Those accepted artifacts contain raw Binance `ACCOUNT_UPDATE` balances and position fields in `execution_log.jsonl` and `timeline.csv`.
+5. README/report/manifest text still says accepted Binance Testnet evidence is pending.
+6. Generated LaTeX files are untracked and not ignored: `reports/latex/report.aux`, `report.blg`, `report.fdb_latexmk`, `report.fls`, and `report.out`.
+7. The corrected Binance Testnet WebSocket root is modified but not committed: `wss://demo-fstream.binance.com`.
+8. Normal simulator CHASE/TWAP demos produce useful placement artifacts but currently read as nonterminal `RUNNING` demos.
+9. `uv run ruff format --check .` reports 39 files would be reformatted; lint still passes.
+10. Final archives produced directly from the workspace or plain `git archive HEAD` include internal planning/review material unless `.gitattributes` excludes it.
+11. Bounded Binance reconciliation can miss fill attribution if a user-stream reconnect window returns `userTrades` with only `orderId` and the bounded `allOrders` response omits the matching order needed to recover `clientOrderId`.
+
+## Updated File Structure
+
+- Modify `src/api/runtime.py`: fix user-event direct reconciliation return semantics so failed direct application does not suppress bounded REST fallback.
+- Create `tests/unit/test_runtime_user_event_fallback.py`: add focused runtime tests for direct event application failure, active lookup failure, and successful direct event application.
+- Modify `src/execution/engine.py`: make permanent SELL min-notional prevalidation match directional SELL price-bound semantics.
+- Modify `tests/unit/test_engine_lifecycle.py`: add regression coverage for a SELL target that is min-notional-valid only above `target_price_upper`.
+- Modify `scripts/testnet_runner.py`: redact persisted `ACCOUNT_UPDATE` user-stream events while preserving order/trade events.
+- Create `scripts/sanitize_testnet_evidence.py`: reproducibly sanitize existing accepted Testnet evidence bundles.
+- Create `tests/unit/test_testnet_evidence_sanitizer.py`: test the evidence sanitizer without touching real evidence files.
+- Modify `README.md`, `reports/submission_manifest.md`, `reports/report_draft.md`, `reports/latex/sections/*.tex`, `docs/source/user_guide/*.md`, and `AI_USAGE.md`: update accepted Testnet evidence, verification claims, and privacy claims.
+- Modify `.gitignore`: ignore LaTeX auxiliary files.
+- Create `.gitattributes`: exclude internal planning/review material from release archives.
+- Modify `src/exchanges/binance_usdm.py`: cache order identity mappings for bounded reconciliation fallback.
+- Modify `scripts/run_sim_chase.py`, `scripts/run_sim_twap.py`, and `tests/simulation/test_required_scenarios.py`: make normal simulator demos produce terminal summaries.
 
 ## Task 0: Create A Clean Working Branch And Baseline
 
@@ -75,7 +94,343 @@ Expected output contains:
 passed
 ```
 
-## Task 1: Redact Private User-Stream Account Data At Artifact Source
+## Task 1: Fix Runtime User-Event REST Fallback Suppression
+
+**Files:**
+- Modify: `src/api/runtime.py`
+- Create: `tests/unit/test_runtime_user_event_fallback.py`
+
+- [ ] Write focused failing tests in `tests/unit/test_runtime_user_event_fallback.py`.
+
+```python
+from __future__ import annotations
+
+from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any
+
+from api.runtime import ExecutionRuntime
+from execution.ids import make_client_order_prefix
+from execution.models import Environment, ExecutionStatus, Fill, ReconciliationResult
+
+
+def runtime_record(execution_id: str = "exec_abcdef1234567890") -> Any:
+    return SimpleNamespace(
+        execution_id=execution_id,
+        request=SimpleNamespace(environment=Environment.SIMULATION, symbol="BTCUSDT"),
+        status=ExecutionStatus.RUNNING,
+    )
+
+
+def matching_result(execution_id: str = "exec_abcdef1234567890") -> ReconciliationResult:
+    prefix = make_client_order_prefix(execution_id)
+    return ReconciliationResult(
+        orders=[],
+        fills=[
+            Fill(
+                client_order_id=f"{prefix}1",
+                cumulative_filled_quantity=Decimal("0.001"),
+                last_filled_quantity=Decimal("0.001"),
+                last_fill_price=Decimal("50000"),
+                trade_id="trade-1",
+                event_time_ms=1_000,
+                transaction_time_ms=1_000,
+            )
+        ],
+    )
+
+
+class ParsingAdapter:
+    def __init__(self, result: ReconciliationResult) -> None:
+        self.result = result
+
+    def reconciliation_from_user_event(self, event: object) -> ReconciliationResult:
+        return self.result
+
+
+class RuntimeService:
+    def __init__(
+        self,
+        record: Any,
+        *,
+        apply_raises: bool = False,
+        active_lookup_raises: bool = False,
+    ) -> None:
+        self.record = record
+        self.apply_raises = apply_raises
+        self.active_lookup_raises = active_lookup_raises
+        self.apply_calls: list[str] = []
+        self.active_calls = 0
+
+    async def get_execution(self, execution_id: str) -> Any:
+        return self.record
+
+    async def active_executions(self) -> list[Any]:
+        self.active_calls += 1
+        if self.active_lookup_raises:
+            raise RuntimeError("active lookup failed")
+        return [self.record]
+
+    async def apply_reconciliation_result(
+        self,
+        execution_id: str,
+        result: ReconciliationResult,
+    ) -> Any:
+        self.apply_calls.append(execution_id)
+        if self.apply_raises:
+            raise RuntimeError("apply failed")
+        return self.record
+
+
+def install_runtime(runtime: ExecutionRuntime, service: RuntimeService, adapter: ParsingAdapter) -> None:
+    runtime._services[Environment.SIMULATION] = service
+    runtime._adapters[Environment.SIMULATION] = adapter
+    runtime._execution_environments[service.record.execution_id] = Environment.SIMULATION
+
+
+async def test_user_event_apply_failure_falls_back_to_bounded_rest_reconciliation() -> None:
+    runtime = ExecutionRuntime()
+    record = runtime_record()
+    service = RuntimeService(record, apply_raises=True)
+    install_runtime(runtime, service, ParsingAdapter(matching_result(record.execution_id)))
+    fallback_calls: list[dict[str, int | None]] = []
+
+    async def fallback(environment: Environment, *, start_time_ms: int | None, end_time_ms: int | None) -> None:
+        fallback_calls.append({"start_time_ms": start_time_ms, "end_time_ms": end_time_ms})
+
+    runtime._reconcile_active_executions_for_environment = fallback  # type: ignore[method-assign]
+
+    await runtime._reconcile_active_executions_for_user_event(
+        Environment.SIMULATION,
+        {"event_time_ms": 20_000},
+    )
+
+    assert service.apply_calls == [record.execution_id]
+    assert fallback_calls == [{"start_time_ms": 0, "end_time_ms": 20_000}]
+
+
+async def test_active_lookup_failure_falls_back_to_bounded_rest_reconciliation() -> None:
+    runtime = ExecutionRuntime()
+    record = runtime_record()
+    service = RuntimeService(record, active_lookup_raises=True)
+    install_runtime(runtime, service, ParsingAdapter(matching_result(record.execution_id)))
+    fallback_calls: list[dict[str, int | None]] = []
+
+    async def fallback(environment: Environment, *, start_time_ms: int | None, end_time_ms: int | None) -> None:
+        fallback_calls.append({"start_time_ms": start_time_ms, "end_time_ms": end_time_ms})
+
+    runtime._reconcile_active_executions_for_environment = fallback  # type: ignore[method-assign]
+
+    await runtime._reconcile_active_executions_for_user_event(
+        Environment.SIMULATION,
+        {"event_time_ms": 70_000},
+    )
+
+    assert fallback_calls == [{"start_time_ms": 10_000, "end_time_ms": 70_000}]
+
+
+async def test_successful_user_event_application_avoids_extra_rest_reconciliation() -> None:
+    runtime = ExecutionRuntime()
+    record = runtime_record()
+    service = RuntimeService(record)
+    install_runtime(runtime, service, ParsingAdapter(matching_result(record.execution_id)))
+    fallback_calls: list[dict[str, int | None]] = []
+
+    async def fallback(environment: Environment, *, start_time_ms: int | None, end_time_ms: int | None) -> None:
+        fallback_calls.append({"start_time_ms": start_time_ms, "end_time_ms": end_time_ms})
+
+    runtime._reconcile_active_executions_for_environment = fallback  # type: ignore[method-assign]
+
+    await runtime._reconcile_active_executions_for_user_event(
+        Environment.SIMULATION,
+        {"event_time_ms": 20_000},
+    )
+
+    assert service.apply_calls == [record.execution_id]
+    assert fallback_calls == []
+```
+
+- [ ] Run the new tests and verify they fail against the current implementation.
+
+```bash
+uv run pytest -q tests/unit/test_runtime_user_event_fallback.py
+```
+
+Expected output before implementation contains failures for the two fallback tests.
+
+- [ ] Update `_apply_user_event_reconciliation()` in `src/api/runtime.py`.
+
+Replace the current `applied` block with this logic:
+
+```python
+        direct_reconciliation_succeeded = False
+        fallback_required = active_lookup_failed
+        for record in candidate_records:
+            prefix = ids.make_client_order_prefix(record.execution_id)
+            if not self._reconciliation_result_matches_prefix(result, prefix):
+                continue
+            try:
+                updated = await service.apply_reconciliation_result(record.execution_id, result)
+            except Exception as exc:
+                self._record_runtime_error(record.execution_id, exc)
+                fallback_required = True
+                continue
+            self._remember_execution(updated)
+            self._cancel_background_loop_if_terminal(updated)
+            direct_reconciliation_succeeded = True
+        return direct_reconciliation_succeeded and not fallback_required
+```
+
+- [ ] Run the focused runtime tests again.
+
+```bash
+uv run pytest -q tests/unit/test_runtime_user_event_fallback.py
+```
+
+Expected output contains:
+
+```text
+passed
+```
+
+- [ ] Run nearby runtime/API tests.
+
+```bash
+uv run pytest -q tests/unit/test_runtime_user_event_fallback.py tests/unit/test_api.py
+```
+
+Expected output contains:
+
+```text
+passed
+```
+
+- [ ] Commit the runtime fallback fix.
+
+```bash
+git add src/api/runtime.py tests/unit/test_runtime_user_event_fallback.py
+git commit -m "Fix user-event fallback reconciliation"
+```
+
+Expected output contains:
+
+```text
+Fix user-event fallback reconciliation
+```
+
+## Task 2: Fix Directional SELL Min-Notional Prevalidation
+
+**Files:**
+- Modify: `src/execution/engine.py`
+- Modify: `tests/unit/test_engine_lifecycle.py`
+
+- [ ] Replace the existing SELL min-notional regression in `tests/unit/test_engine_lifecycle.py`.
+
+Replace `test_create_execution_rejects_sell_below_min_notional_after_rounding_upper_to_tick` with:
+
+```python
+async def test_create_execution_allows_sell_min_notional_above_upper_when_directional_bound_allows_it() -> None:
+    service, simulator, _ = await fresh_service(
+        position=Decimal("1"),
+        bid=Decimal("101"),
+        ask=Decimal("102"),
+    )
+    simulator.set_symbol_rules(
+        SymbolRules(
+            symbol=SYMBOL,
+            tick_size=Decimal("1"),
+            quantity_step=Decimal("1"),
+            min_quantity=Decimal("1"),
+            min_notional=Decimal("100.50"),
+            status="TRADING",
+            supported_time_in_force=frozenset({"GTC", "GTX", "IOC"}),
+        )
+    )
+
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0"), lower=Decimal("1"), upper=Decimal("100.99"))
+    )
+    after_run = await service.run_once(execution.execution_id)
+
+    assert execution.status is ExecutionStatus.RUNNING
+    assert execution.side is Side.SELL
+    assert execution.required_quantity == Decimal("1")
+    assert after_run.status is ExecutionStatus.RUNNING
+    assert after_run.final_reason is None
+    assert len(after_run.child_orders) == 1
+    assert after_run.child_orders[0].status is ChildOrderStatus.OPEN
+    assert after_run.child_orders[0].price == Decimal("102")
+```
+
+- [ ] Run the focused test and verify it fails before implementation.
+
+```bash
+uv run pytest -q tests/unit/test_engine_lifecycle.py::test_create_execution_allows_sell_min_notional_above_upper_when_directional_bound_allows_it
+```
+
+Expected output before implementation contains:
+
+```text
+FAILED
+```
+
+- [ ] Update `_highest_legal_price_within_request_band()` in `src/execution/engine.py`.
+
+Replace the SELL branch with:
+
+```python
+        if record.side is Side.SELL:
+            return None
+```
+
+The full method should be:
+
+```python
+    def _highest_legal_price_within_request_band(
+        self,
+        record: ExecutionRecord,
+        rules: SymbolRules,
+    ) -> Decimal | None:
+        if rules.tick_size <= Decimal("0"):
+            return None
+        if record.side is Side.BUY:
+            return round_price(
+                record.request.target_price_upper,
+                rules.tick_size,
+                Side.BUY,
+                passive=True,
+            )
+        if record.side is Side.SELL:
+            return None
+        return None
+```
+
+- [ ] Run min-notional and lifecycle tests.
+
+```bash
+uv run pytest -q tests/unit/test_engine_lifecycle.py tests/unit/test_engine_review_regressions.py
+```
+
+Expected output contains:
+
+```text
+passed
+```
+
+- [ ] Commit the SELL prevalidation fix.
+
+```bash
+git add src/execution/engine.py tests/unit/test_engine_lifecycle.py
+git commit -m "Align sell min-notional precheck with directional bounds"
+```
+
+Expected output contains:
+
+```text
+Align sell min-notional precheck with directional bounds
+```
+
+## Task 3: Redact Private User-Stream Account Data At Artifact Source
 
 - [ ] Add a small artifact-specific user-event sanitizer in `scripts/testnet_runner.py`.
 
@@ -209,7 +564,7 @@ Expected output contains:
 Redact Testnet account updates in artifacts
 ```
 
-## Task 2: Sanitize The Existing Accepted Testnet Evidence
+## Task 4: Sanitize The Existing Accepted Testnet Evidence
 
 - [ ] Add `scripts/sanitize_testnet_evidence.py`.
 
@@ -218,7 +573,7 @@ The script must:
 - Accept one or more evidence directory paths as positional arguments.
 - Rewrite `execution_log.jsonl` in place.
 - Rewrite `timeline.csv` in place.
-- Apply the same `ACCOUNT_UPDATE` redaction shape from Task 1 to any JSON object or CSV cell containing a `user_event` object.
+- Apply the same `ACCOUNT_UPDATE` redaction shape from Task 3 to any JSON object or CSV cell containing a `user_event` object.
 - Preserve `ORDER_TRADE_UPDATE` raw payloads so client order IDs, exchange order IDs, and private order/trade lifecycle evidence remain available.
 - Fail with exit code 1 if any rewritten file still contains private account/position keys.
 
@@ -295,7 +650,7 @@ Expected output contains:
 Add sanitized accepted Testnet evidence
 ```
 
-## Task 3: Update README, Manifest, Report, And Docs To Match The Accepted Evidence
+## Task 5: Update README, Manifest, Report, And Docs To Match The Accepted Evidence
 
 - [ ] Update `README.md`.
 
@@ -310,6 +665,11 @@ Required changes:
   - `reports/evidence/testnet/twap/exec_85bef3985ea3431a`
 - State that accepted artifacts are sanitized and keep order/trade evidence while redacting `ACCOUNT_UPDATE` balances and positions.
 - Keep the older `exec_85051310eb714ebe` and `exec_30ed2b4cac4346a1` runs only as rejected connectivity/error artifacts.
+- Replace any unconditional `491 passed` claim with environment-specific wording:
+  - Non-live command: `uv run pytest -q tests/unit tests/simulation`
+  - Current verified baseline before this plan: `489 passed`
+  - Credentialed/network-enabled integration command: `uv run pytest -q tests/integration`
+  - Full credentialed local review can report `491 passed` only when the two Binance integration tests run successfully.
 
 - [ ] Update `reports/submission_manifest.md`.
 
@@ -327,6 +687,7 @@ Required replacements:
 - Requirement table must mark accepted Testnet evidence as covered.
 - Testing evidence section must name the two accepted directories and their exchange order IDs.
 - Limitations must move Testnet account funding from "current submission risk" to "external operational dependency for reruns".
+- Verification section must distinguish non-live `489 passed` from credentialed integration results and must not use bare `uv run pytest -q` as the no-live command when a local `.env` may load Binance credentials.
 
 - [ ] Update LaTeX report sections:
 
@@ -349,6 +710,7 @@ Required replacements:
   - `16277899689`
 - The abstract says accepted Testnet artifacts are included and sanitized.
 - The limitations section says Testnet reruns depend on account configuration, not that accepted evidence is missing.
+- The testing section says the reproducible non-live command is `uv run pytest -q tests/unit tests/simulation` and records the verified pre-plan baseline as `489 passed`.
 
 - [ ] Update source documentation:
 
@@ -402,7 +764,11 @@ Expected output contains:
 Document accepted Testnet evidence
 ```
 
-## Task 4: Keep LaTeX Build Outputs Out Of Git
+## Task 6: Keep Build Outputs And Internal Working Material Out Of The Release Archive
+
+**Files:**
+- Modify: `.gitignore`
+- Create: `.gitattributes`
 
 - [ ] Add LaTeX generated-file patterns to `.gitignore`.
 
@@ -420,6 +786,32 @@ reports/latex/*.synctex.gz
 ```
 
 Do not ignore `reports/latex/report.pdf`; it is part of the final submission.
+
+- [ ] Create `.gitattributes` so release archives exclude internal planning and review material.
+
+Create `.gitattributes` with:
+
+```gitattributes
+docs/superpowers/ export-ignore
+reports/external_code_review_summary.md export-ignore
+.agents/ export-ignore
+.codex/ export-ignore
+.DS_Store export-ignore
+__MACOSX/ export-ignore
+```
+
+- [ ] Verify archive-exclusion attributes.
+
+```bash
+git check-attr export-ignore -- docs/superpowers/plans/2026-06-23-final-submission-readiness.md reports/external_code_review_summary.md
+```
+
+Expected output:
+
+```text
+docs/superpowers/plans/2026-06-23-final-submission-readiness.md: export-ignore: set
+reports/external_code_review_summary.md: export-ignore: set
+```
 
 - [ ] Remove generated untracked LaTeX files from the working tree.
 
@@ -445,20 +837,28 @@ git ls-files .env
 
 Expected output: no output.
 
-- [ ] Commit `.gitignore`.
+- [ ] Confirm a dry-run archive omits internal working material.
 
 ```bash
-git add .gitignore
-git commit -m "Ignore LaTeX build artifacts"
+git archive --format=tar HEAD | tar -tf - | rg '^docs/superpowers/|^reports/external_code_review_summary\.md$|^\.env$|^__MACOSX/'
+```
+
+Expected output: no matches.
+
+- [ ] Commit `.gitignore` and `.gitattributes`.
+
+```bash
+git add .gitignore .gitattributes
+git commit -m "Exclude build and planning artifacts from release"
 ```
 
 Expected output contains:
 
 ```text
-Ignore LaTeX build artifacts
+Exclude build and planning artifacts from release
 ```
 
-## Task 5: Harden Binance Reconciliation For Bounded Windows
+## Task 7: Harden Binance Reconciliation For Bounded Windows
 
 - [ ] Add an in-memory order identity cache in `src/exchanges/binance_usdm.py`.
 
@@ -543,7 +943,7 @@ Expected output contains:
 Harden bounded Binance fill reconciliation
 ```
 
-## Task 6: Make Simulator Demo Artifacts Read Cleanly
+## Task 8: Make Simulator Demo Artifacts Read Cleanly
 
 - [ ] Update `scripts/run_sim_chase.py` so the normal CHASE demo terminalizes.
 
@@ -628,7 +1028,71 @@ Expected output contains:
 Refresh terminal simulator demos
 ```
 
-## Task 7: Rebuild Report And Documentation
+## Task 9: Format The Source Tree
+
+**Files:**
+- Modify: Python files reported by `ruff format --check .`
+
+- [ ] Run the formatter check and capture the file count.
+
+```bash
+uv run ruff format --check .
+```
+
+Expected output before formatting currently contains:
+
+```text
+39 files would be reformatted
+```
+
+- [ ] Apply Ruff formatting in one mechanical pass.
+
+```bash
+uv run ruff format .
+```
+
+Expected output contains a count of reformatted files.
+
+- [ ] Verify format and lint both pass.
+
+```bash
+uv run ruff format --check .
+uv run ruff check .
+```
+
+Expected output:
+
+```text
+All checks passed!
+All checks passed!
+```
+
+- [ ] Run the non-live tests after formatting.
+
+```bash
+uv run pytest -q tests/unit tests/simulation
+```
+
+Expected output contains:
+
+```text
+passed
+```
+
+- [ ] Commit formatting separately.
+
+```bash
+git add scripts src tests
+git commit -m "Apply Ruff formatting"
+```
+
+Expected output contains:
+
+```text
+Apply Ruff formatting
+```
+
+## Task 10: Rebuild Report And Documentation
 
 - [ ] Rebuild the LaTeX PDF.
 
@@ -689,12 +1153,12 @@ or:
 nothing to commit
 ```
 
-## Task 8: Run Final Verification
+## Task 11: Run Final Verification
 
-- [ ] Run the full test suite.
+- [ ] Run the canonical non-live test suite.
 
 ```bash
-uv run pytest -q
+uv run pytest -q tests/unit tests/simulation
 ```
 
 Expected output contains:
@@ -703,13 +1167,27 @@ Expected output contains:
 passed
 ```
 
-Current pre-plan baseline was:
+Current pre-plan non-live baseline was:
 
 ```text
-491 passed
+489 passed
 ```
 
-The final count should increase if new sanitizer/reconciliation/script tests are added.
+The final count should increase after the new runtime fallback, sanitizer, reconciliation, and script tests are added.
+
+- [ ] Run Ruff lint and formatting gates.
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+```
+
+Expected output:
+
+```text
+All checks passed!
+All checks passed!
+```
 
 - [ ] Run the submission verifier.
 
@@ -729,13 +1207,15 @@ submission_verification=ok
 uv run pytest -q tests/integration
 ```
 
-Expected output when credentials are configured:
+Expected output when credentials and network access are configured:
 
 ```text
 passed
 ```
 
-Expected output when credentials are absent: tests are skipped because `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are not configured.
+Expected output when credentials are absent and local `.env` is absent: tests are skipped because `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are not configured.
+
+If local `.env` contains credentials but the environment has no network access, this command is expected to fail with a Binance connectivity error. Do not report that as a non-live regression; report it separately as "credentialed integration unavailable in restricted network."
 
 - [ ] Verify no stale pending claims remain.
 
@@ -775,7 +1255,7 @@ git status --short .env
 
 Expected output: no output.
 
-## Task 9: Final Submission Archive
+## Task 12: Final Submission Archive
 
 - [ ] Ensure the branch is clean after all commits.
 
@@ -806,6 +1286,14 @@ Expected output:
 - Contains both accepted evidence directories.
 - Contains no `.env`.
 
+- [ ] Inspect archive contents for excluded internal working material.
+
+```bash
+unzip -l /tmp/calais_execution_algorithm_submission.zip | rg 'docs/superpowers|external_code_review_summary|__MACOSX|\.DS_Store'
+```
+
+Expected output: no matches.
+
 - [ ] Run the verifier against the committed checkout one final time.
 
 ```bash
@@ -820,6 +1308,10 @@ submission_verification=ok
 
 ## Final Readiness Checklist
 
+- [ ] Runtime user-event application failures fall back to bounded REST reconciliation.
+- [ ] Active-execution lookup failures during user-event handling no longer suppress bounded REST reconciliation.
+- [ ] Successful user-event application still avoids unnecessary bounded REST reconciliation.
+- [ ] SELL min-notional permanent-dust classification matches directional SELL price-bound semantics.
 - [ ] Accepted CHASE evidence committed and sanitized.
 - [ ] Accepted TWAP evidence committed and sanitized.
 - [ ] `ACCOUNT_UPDATE` balances and positions redacted from accepted artifacts.
@@ -827,8 +1319,12 @@ submission_verification=ok
 - [ ] README, report, manifest, AI disclosure, and docs no longer say accepted Testnet evidence is pending.
 - [ ] Official Binance Testnet WebSocket root is `wss://demo-fstream.binance.com`.
 - [ ] LaTeX auxiliary files are ignored.
+- [ ] Internal plans and review notes are excluded from `git archive` output via `.gitattributes`.
 - [ ] `.env` is untracked and absent from the archive.
 - [ ] Normal simulator demos read cleanly as terminal or are explicitly documented as nonterminal probes.
-- [ ] Full pytest suite passes.
+- [ ] Ruff lint passes.
+- [ ] Ruff format check passes.
+- [ ] Non-live pytest suite passes.
+- [ ] Credentialed Binance integration tests are either passed in a network-enabled environment or explicitly reported as network-gated.
 - [ ] `scripts/verify_submission.py` returns `submission_verification=ok`.
 - [ ] Final zip is produced with `git archive`, not from the raw workspace directory.

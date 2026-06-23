@@ -30,6 +30,7 @@ _PRECREATE_RATE_LIMIT_MAX_BACKOFF_BUDGET_SECONDS = 5.0
 _PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS = 0.1
 _SANITIZED_REASON_MAX_CHARS = 200
 _SENSITIVE_REASON_VALUE_RE = re.compile(r"(?i)\b(api[-_ ]?key|secret|signature|token)=\S+")
+_USER_STREAM_LISTEN_KEY_EXPIRED = "listen_key_expired"
 
 
 def parse_args(algorithm: Algorithm) -> argparse.Namespace:
@@ -116,12 +117,13 @@ async def run(algorithm: Algorithm) -> Path:
             deadline_policy=DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE,
             parameters=ExecutionParameters(number_of_slices=args.number_of_slices),
         )
-        execution = await _create_execution_with_rate_limit_backoff(
+        execution, user_task = await _create_execution_with_rate_limit_backoff(
             service,
             request,
             adapter,
             args=args,
             events=events,
+            active_execution=active_execution,
             market_task=market_task,
             user_task=user_task,
         )
@@ -137,17 +139,49 @@ async def run(algorithm: Algorithm) -> Path:
             ExecutionStatus.CANCELLED,
             ExecutionStatus.FAILED,
         }:
-            _raise_if_stream_task_failed(market_task, user_task)
+            user_task = await _recover_or_raise_stream_task_failure(
+                adapter,
+                service,
+                events,
+                active_execution,
+                market_task=market_task,
+                user_task=user_task,
+                timeout_seconds=args.market_timeout_seconds,
+            )
             latest = await service.run_once(execution.execution_id)
-            _raise_if_stream_task_failed(market_task, user_task)
+            user_task = await _recover_or_raise_stream_task_failure(
+                adapter,
+                service,
+                events,
+                active_execution,
+                market_task=market_task,
+                user_task=user_task,
+                timeout_seconds=args.market_timeout_seconds,
+            )
             events.append(_runtime_event(adapter, "run_once", execution=_record_summary(latest)))
             if latest.status.is_terminal:
                 break
             await asyncio.sleep(args.poll_interval_seconds)
-            _raise_if_stream_task_failed(market_task, user_task)
+            user_task = await _recover_or_raise_stream_task_failure(
+                adapter,
+                service,
+                events,
+                active_execution,
+                market_task=market_task,
+                user_task=user_task,
+                timeout_seconds=args.market_timeout_seconds,
+            )
 
         if not latest.status.is_terminal:
-            _raise_if_stream_task_failed(market_task, user_task)
+            user_task = await _recover_or_raise_stream_task_failure(
+                adapter,
+                service,
+                events,
+                active_execution,
+                market_task=market_task,
+                user_task=user_task,
+                timeout_seconds=args.market_timeout_seconds,
+            )
             latest = await service.cancel_execution(execution.execution_id)
             events.append(_runtime_event(adapter, "cancel_requested", execution=_record_summary(latest)))
             latest = await service.reconcile_execution(execution.execution_id)
@@ -204,9 +238,10 @@ async def _create_execution_with_rate_limit_backoff(
     *,
     args: argparse.Namespace,
     events: list[dict[str, Any]],
+    active_execution: dict[str, str],
     market_task: asyncio.Task[Any] | None,
     user_task: asyncio.Task[Any] | None,
-) -> Any:
+) -> tuple[Any, asyncio.Task[Any] | None]:
     loop = asyncio.get_running_loop()
     backoff_seconds = max(float(args.poll_interval_seconds), _PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS)
     backoff_budget_seconds = min(
@@ -218,9 +253,17 @@ async def _create_execution_with_rate_limit_backoff(
     backoff_count = 0
 
     while True:
-        _raise_if_stream_task_failed(market_task, user_task)
+        user_task = await _recover_or_raise_stream_task_failure(
+            adapter,
+            service,
+            events,
+            active_execution,
+            market_task=market_task,
+            user_task=user_task,
+            timeout_seconds=args.market_timeout_seconds,
+        )
         try:
-            return await service.create_execution(request)
+            return await service.create_execution(request), user_task
         except ExchangeRateLimited as exc:
             events.append(
                 _runtime_event(
@@ -274,10 +317,21 @@ async def _start_user_stream(
     *,
     timeout_seconds: float,
 ) -> asyncio.Task[Any]:
-    async def pump() -> None:
+    async def pump() -> str | None:
         async for event in adapter.stream_user_events():
             events.append(_runtime_event(adapter, "user_stream_event", user_event=_jsonable(event)))
             execution_id = active_execution.get("execution_id")
+            if _is_listen_key_expired_event(event):
+                if execution_id is not None:
+                    updated = await service.reconcile_execution(execution_id)
+                    events.append(
+                        _runtime_event(
+                            adapter,
+                            "user_stream_listen_key_expired_reconciled",
+                            execution=_record_summary(updated),
+                        )
+                    )
+                return _USER_STREAM_LISTEN_KEY_EXPIRED
             if execution_id is None:
                 continue
             parser = getattr(adapter, "reconciliation_from_user_event", None)
@@ -297,6 +351,42 @@ async def _start_user_stream(
     except BaseException:
         await _stop_stream_task(task)
         raise
+
+
+async def _recover_or_raise_stream_task_failure(
+    adapter: BinanceUsdmAdapter,
+    service: ExecutionService,
+    events: list[dict[str, Any]],
+    active_execution: dict[str, str],
+    *,
+    market_task: asyncio.Task[Any] | None,
+    user_task: asyncio.Task[Any] | None,
+    timeout_seconds: float,
+) -> asyncio.Task[Any] | None:
+    _raise_if_stream_task_failed(market_task)
+    if user_task is None or not user_task.done():
+        return user_task
+    if not user_task.cancelled():
+        result = user_task.result()
+        if result == _USER_STREAM_LISTEN_KEY_EXPIRED:
+            return await _start_user_stream(
+                adapter,
+                service,
+                events,
+                active_execution,
+                timeout_seconds=timeout_seconds,
+            )
+    _raise_if_stream_task_failed(user_task)
+    return user_task
+
+
+def _is_listen_key_expired_event(event: Any) -> bool:
+    if not isinstance(event, Mapping):
+        return False
+    if event.get("event_type") == "listenKeyExpired" or event.get("e") == "listenKeyExpired":
+        return True
+    raw = event.get("raw")
+    return isinstance(raw, Mapping) and raw.get("e") == "listenKeyExpired"
 
 
 async def _wait_for_stream_health(adapter: BinanceUsdmAdapter, task: asyncio.Task[Any]) -> None:

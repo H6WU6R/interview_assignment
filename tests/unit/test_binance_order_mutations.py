@@ -1655,6 +1655,150 @@ async def test_testnet_runner_user_stream_logs_and_applies_matching_event() -> N
     assert adapter.closed.is_set()
 
 
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"event_type": "listenKeyExpired"},
+        {"raw": {"e": "listenKeyExpired"}},
+    ],
+)
+def test_testnet_runner_detects_listen_key_expired_user_events(event: dict[str, Any]) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module._is_listen_key_expired_event(event) is True
+
+
+async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_restarting() -> None:
+    import importlib.util
+
+    execution_id = "exec_1234567890abcdef"
+
+    class FakeUserAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock(current=10.0)
+            self.user_stream_healthy = False
+            self.started_count = 0
+            self.first_closed = asyncio.Event()
+            self.second_started = asyncio.Event()
+            self.second_closed = asyncio.Event()
+
+        def stream_user_events(self):
+            self.started_count += 1
+            stream_number = self.started_count
+
+            async def events():
+                self.user_stream_healthy = True
+                try:
+                    if stream_number == 1:
+                        yield {"event_type": "listenKeyExpired"}
+                        await asyncio.Event().wait()
+                    else:
+                        self.second_started.set()
+                        await asyncio.Event().wait()
+                finally:
+                    self.user_stream_healthy = False
+                    if stream_number == 1:
+                        self.first_closed.set()
+                    else:
+                        self.second_closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.user_stream_healthy
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.reconciled_execution_ids: list[str] = []
+
+        async def reconcile_execution(self, reconciled_execution_id: str) -> Any:
+            self.reconciled_execution_ids.append(reconciled_execution_id)
+            return SimpleNamespace(
+                execution_id=reconciled_execution_id,
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter = FakeUserAdapter()
+    service = FakeService()
+    events: list[dict[str, Any]] = []
+    active_execution = {"execution_id": execution_id}
+    user_task = await module._start_user_stream(
+        adapter,
+        service,
+        events,
+        active_execution,
+        timeout_seconds=1.0,
+    )
+
+    await asyncio.wait_for(user_task, timeout=1.0)
+    assert adapter.first_closed.is_set()
+
+    restarted_task = await module._recover_or_raise_stream_task_failure(
+        adapter,
+        service,
+        events,
+        active_execution,
+        market_task=None,
+        user_task=user_task,
+        timeout_seconds=1.0,
+    )
+
+    try:
+        await asyncio.wait_for(adapter.second_started.wait(), timeout=1.0)
+        assert restarted_task is not user_task
+        assert adapter.started_count == 2
+        assert service.reconciled_execution_ids == [execution_id]
+        assert [event["event"] for event in events] == [
+            "user_stream_event",
+            "user_stream_listen_key_expired_reconciled",
+        ]
+    finally:
+        await module._stop_stream_task(restarted_task)
+    assert adapter.second_closed.is_set()
+
+
+async def test_testnet_runner_stream_recovery_helper_raises_on_unexpected_user_stream_exit() -> None:
+    import importlib.util
+
+    async def exits_normally() -> None:
+        return None
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    user_task = asyncio.create_task(exits_normally())
+    await user_task
+
+    with pytest.raises(RuntimeError, match="stream task exited unexpectedly"):
+        await module._recover_or_raise_stream_task_failure(
+            adapter=SimpleNamespace(),
+            service=SimpleNamespace(),
+            events=[],
+            active_execution={},
+            market_task=None,
+            user_task=user_task,
+            timeout_seconds=1.0,
+        )
+
+
 async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

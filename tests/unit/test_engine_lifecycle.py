@@ -255,6 +255,40 @@ async def test_create_execution_allows_sell_when_lower_bound_notional_is_low() -
     assert snapshot.child_orders[0].price == Decimal("101")
 
 
+async def test_create_execution_rejects_sell_below_min_notional_after_rounding_upper_to_tick() -> None:
+    service, simulator, _ = await fresh_service(
+        position=Decimal("1"),
+        bid=Decimal("100"),
+        ask=Decimal("101"),
+    )
+    simulator.set_symbol_rules(
+        SymbolRules(
+            symbol=SYMBOL,
+            tick_size=Decimal("1"),
+            quantity_step=Decimal("1"),
+            min_quantity=Decimal("1"),
+            min_notional=Decimal("100.50"),
+            status="TRADING",
+            supported_time_in_force=frozenset({"GTC", "GTX", "IOC"}),
+        )
+    )
+
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0"), lower=Decimal("1"), upper=Decimal("100.99"))
+    )
+    after_run = await service.run_once(execution.execution_id)
+
+    assert execution.status is ExecutionStatus.COMPLETED
+    assert execution.final_reason == "UNTRADEABLE_TARGET_DUST"
+    assert execution.side is Side.SELL
+    assert execution.required_quantity == Decimal("1")
+    assert execution.child_orders == []
+    assert execution.summary is not None
+    assert execution.summary.metrics["actual_duration_seconds"] == "0"
+    assert after_run.status is ExecutionStatus.COMPLETED
+    assert after_run.child_orders == []
+
+
 async def test_aggressive_deadline_submits_non_post_only_marketable_limit() -> None:
     class RecordingSimulator(DeterministicSimulator):
         submissions: list[OrderRequest]

@@ -280,7 +280,7 @@ class ExecutionEngine:
             if (
                 side is Side.NO_ACTION
                 or required_quantity == Decimal("0")
-                or self._target_cannot_meet_min_quantity_or_buy_min_notional(record, rules)
+                or self._target_cannot_meet_min_quantity_or_min_notional(record, rules)
             ):
                 record.status = transition_execution(record.status, ExecutionStatus.COMPLETED)
                 record.final_reason = (
@@ -511,7 +511,7 @@ class ExecutionEngine:
             raise UnknownExecution(execution_id)
         return record, actor
 
-    def _target_cannot_meet_min_quantity_or_buy_min_notional(
+    def _target_cannot_meet_min_quantity_or_min_notional(
         self,
         record: ExecutionRecord,
         rules: SymbolRules | None,
@@ -521,19 +521,34 @@ class ExecutionEngine:
         if record.required_quantity < rules.min_quantity:
             return True
 
-        if record.side is not Side.BUY:
+        highest_legal_price = self._highest_legal_price_within_request_band(record, rules)
+        if highest_legal_price is None:
             return False
 
+        return record.required_quantity * highest_legal_price < rules.min_notional
+
+    def _highest_legal_price_within_request_band(
+        self,
+        record: ExecutionRecord,
+        rules: SymbolRules,
+    ) -> Decimal | None:
         if rules.tick_size <= Decimal("0"):
-            return False
-
-        highest_legal_buy_price = round_price(
-            record.request.target_price_upper,
-            rules.tick_size,
-            Side.BUY,
-            passive=True,
-        )
-        return record.required_quantity * highest_legal_buy_price < rules.min_notional
+            return None
+        if record.side is Side.BUY:
+            return round_price(
+                record.request.target_price_upper,
+                rules.tick_size,
+                Side.BUY,
+                passive=True,
+            )
+        if record.side is Side.SELL:
+            return round_price(
+                record.request.target_price_upper,
+                rules.tick_size,
+                Side.SELL,
+                passive=False,
+            )
+        return None
 
     async def _submit_child_locked(
         self,
@@ -977,7 +992,7 @@ class ExecutionEngine:
                         post_only=post_only,
                     )
                 except ValidationError as shape_exc:
-                    if not self._is_temporary_order_shape_error(record, shape_exc):
+                    if not self._is_temporary_order_shape_error(record, shape_exc, rules):
                         self._expire_for_validation_locked(record, shape_exc)
                         return None
 
@@ -987,7 +1002,7 @@ class ExecutionEngine:
                     record.final_reason = WAITING_FOR_PRICE_RANGE
                 return None
 
-            if self._is_temporary_order_shape_error(record, exc):
+            if self._is_temporary_order_shape_error(record, exc, rules):
                 if self._deadline_reached(record):
                     self._terminalize_deadline_locked(
                         record,
@@ -1069,8 +1084,17 @@ class ExecutionEngine:
         reason = str(exc)
         return "exceeds upper bound" in reason or "below lower bound" in reason
 
-    def _is_temporary_order_shape_error(self, record: ExecutionRecord, exc: ValidationError) -> bool:
-        return record.side is Side.SELL and "below min notional" in str(exc)
+    def _is_temporary_order_shape_error(
+        self,
+        record: ExecutionRecord,
+        exc: ValidationError,
+        rules: SymbolRules,
+    ) -> bool:
+        return (
+            record.side is Side.SELL
+            and "below min notional" in str(exc)
+            and not self._target_cannot_meet_min_quantity_or_min_notional(record, rules)
+        )
 
     def _deadline_without_demand_reason(self, record: ExecutionRecord) -> str:
         if record.final_reason == WAITING_FOR_PRICE_RANGE:

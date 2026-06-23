@@ -24,10 +24,14 @@ The architecture is organized around one rule: the engine owns trading correctne
 \label{fig:architecture}
 \end{figure}
 
+\textbf{Design rule.} Algorithms propose a price, schedule quantity, or reprice decision; the engine decides whether the resulting child order is safe to submit. This rule keeps the most dangerous responsibilities--filled quantity, live exposure, pending cancel quantity, unknown create outcomes, and terminal state--inside one component instead of spreading them across runtime callbacks and algorithm helpers.
+
 \code{ExecutionRuntime} is the API-facing supervisor. It builds the correct environment, rejects concurrent active executions for the same environment and symbol, advances nonterminal executions, supervises market and private streams for Binance-like adapters, renews listen keys, and reconciles after stream events or disconnects.
 
 \code{ExecutionService} is deliberately thin. It delegates execution lifecycle to \code{ExecutionEngine}, which owns parent execution state, child order state, exposure buckets, fill accounting, cancel flow, create-timeout handling, deadline behavior, and terminal summaries. This boundary keeps correctness checks in one place.
 
 \code{Chase} and \code{TWAP} helpers do not submit orders. Chase computes the passive desired price and whether repricing is due. TWAP computes schedule progress and deficit. Both route through the engine's submit path, so price checks, exposure checks, Decimal normalization, and unknown-order reservations remain common.
 
-\code{ExchangeAdapter} gives the simulator and Binance adapter the same shape: symbol rules, position, best bid/ask, submit, cancel, exact order lookup, stream events, reconciliation, and stream health. This is important because deterministic simulator tests exercise the same engine logic used by the Binance Testnet runner.
+The concurrency model is intentionally single-process. The runtime rejects a second active execution for the same environment and symbol, and the engine serializes mutations on each execution record so \code{run\_once}, manual cancel, stream-event application, and reconciliation do not race each other inside the process. This does not claim production-grade distributed ownership; it gives the assignment a clear correctness boundary that can be tested deterministically.
+
+\code{ExchangeAdapter} gives the simulator and Binance adapter the same narrow contract: symbol rules, position, best bid/ask, submit, cancel, exact order lookup, stream events, reconciliation, and stream health. This is important because deterministic simulator tests exercise the same engine logic used by the Binance Testnet runner. The simulator is therefore a programmable venue for forced races, not a separate happy-path mock.

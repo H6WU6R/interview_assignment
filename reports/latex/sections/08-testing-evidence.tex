@@ -2,7 +2,7 @@
 
 The deterministic simulator is mandatory because Testnet cannot reliably produce all failure modes. It can script market data, partial fills, fill during cancel, cancel delay, post-only rejection, create timeout where the order actually exists, duplicate or lower cumulative fill snapshots, stale market data, stream disconnects, and reconciliation snapshots. These tests are repeatable and run without credentials.
 
-\begin{table}[t]
+\begin{table}[htbp]
 \caption{Required scenario coverage. File names identify the main evidence source; many scenarios also have unit-level regressions.}
 \label{tab:test-map}
 \centering
@@ -42,6 +42,23 @@ The four simulator scripts also ran successfully during this report build and wr
   \item \code{reports/evidence/simulation/create-timeout/exec\_3ddb8a47995348d0}
 \end{itemize}
 
-The repository contains Binance Testnet runner scripts for Chase and TWAP. They require credentials and an explicit \code{--confirm-send-orders} flag and never fall back to simulation. Accepted sanitized Testnet artifacts are included at \code{reports/evidence/testnet/chase/exec\_3168600ee25b4193} and \code{reports/evidence/testnet/twap/exec\_85bef3985ea3431a}. The Chase manifest records exchange order ID \code{16277695886}. The TWAP manifest records exchange order IDs \code{16277882286} and \code{16277899689}. These accepted artifacts preserve order/trade evidence while redacting \code{ACCOUNT\_UPDATE} balance and position fields.
+The repository contains Binance Testnet runner scripts for Chase and TWAP. They require credentials and an explicit \code{--confirm-send-orders} flag and never fall back to simulation. Table~\ref{tab:testnet-evidence} summarizes the accepted sanitized Testnet evidence now included in the repository.
 
-The older credentialed raw Testnet artifacts \code{reports/evidence/testnet/chase/exec\_85051310eb714ebe} and \code{reports/evidence/testnet/twap/exec\_30ed2b4cac4346a1} are retained only as rejected connectivity/error artifacts. Both reached Binance and failed before order acceptance with \code{BINANCE\_-2019:Margin is insufficient.}; both manifests have \code{accepted\_exchange\_order\_evidence=false} and empty \code{exchange\_order\_ids}.
+\begin{center}
+\refstepcounter{table}
+\label{tab:testnet-evidence}
+\small\textbf{Table~\thetable: Accepted Binance Testnet evidence.}
+
+\vspace{0.4em}
+\scriptsize
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.13\linewidth} >{\raggedright\arraybackslash}p{0.30\linewidth} X}
+\toprule
+Algorithm & Evidence bundle & What it proves \\
+\midrule
+Chase & \code{testnet/chase/exec\_3168600ee25b4193}; client ID \code{ce\_3168600ee25b\_1}; exchange order ID \code{16277695886}. & Accepted order lifecycle evidence: private user-stream events were observed, execution-matching order events were applied, final reconciliation found one order and one fill, and the execution completed with \status{COMPLETED}. \\
+TWAP & \code{testnet/twap/exec\_85bef3985ea3431a}; client IDs \code{ce\_85bef3985ea3\_1}, \code{ce\_85bef3985ea3\_2}; exchange order IDs \code{16277882286}, \code{16277899689}. & Accepted TWAP evidence: two exchange orders were observed, private user-stream events were applied, the slice ledger shows carried-forward schedule deficit, final reconciliation found two orders and one fill, and the execution completed with \status{COMPLETED}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+These accepted artifacts preserve request snapshots, symbol rules, execution logs, timelines, child-order rows, fills, reconciliation output, evidence manifests, and terminal summaries while redacting \code{ACCOUNT\_UPDATE} balance and position fields. The older credentialed raw Testnet runs under \code{reports/evidence/testnet/chase} and \code{reports/evidence/testnet/twap} are retained only as rejected connectivity/error artifacts. Both reached Binance and failed before order acceptance with \code{BINANCE\_-2019:Margin is insufficient.}; both manifests have \code{accepted\_exchange\_order\_evidence=false} and empty \code{exchange\_order\_ids}.

@@ -4,6 +4,24 @@ The most important failure case found during development was ambiguous Binance c
 
 The fix was to classify create HTTP 408 and transport timeout as unknown mutation outcomes. The child stays in \status{UNKNOWN}; its quantity remains in \code{unknown\_order\_quantity}; the engine blocks new child creation that would violate the invariant; and reconciliation queries the exact \code{origClientOrderId}. If the order is found, it is promoted back to live open or filled state. If exact lookup proves it does not exist, unknown exposure is cleared. Broad prefix scans are useful diagnostics, but they are not proof that a specific timed-out order does not exist.
 
+\begin{center}
+\refstepcounter{table}
+\label{tab:create-timeout-hardening}
+\small\textbf{Table~\thetable: Create-timeout hardening.}
+
+\vspace{0.4em}
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.32\linewidth} X}
+\toprule
+Unsafe behavior & Implemented correction \\
+\midrule
+Treat timeout as failure and submit a replacement with a fresh client order ID. & Keep the child in \status{UNKNOWN}, reserve its quantity, and block any replacement that would exceed the exposure invariant. \\
+Clear unknown exposure using only a broad prefix scan or stale order list. & Query the exact original client order ID and reconcile that child before releasing or moving exposure. \\
+Assume user stream and REST responses arrive in causal order. & Apply cumulative fills monotonically and allow REST reconciliation to repair stream gaps or out-of-order delivery. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
 External-review hardening also improved several related paths:
 
 \begin{itemize}[leftmargin=1.2em]

@@ -2,10 +2,12 @@
 
 Each execution summary is intended to reconstruct quantity, price, order, time, and safety behavior. Table~\ref{tab:sim-results} shows selected deterministic run outputs from the committed evidence bundle under \code{reports/evidence/simulation}.
 
-\begin{table}[t]
-\caption{Selected simulator results from current verification.}
+\begin{center}
+\refstepcounter{table}
 \label{tab:sim-results}
-\centering
+\small\textbf{Table~\thetable: Selected simulator results from current verification.}
+
+\vspace{0.4em}
 \small
 \begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.18\linewidth} X}
 \toprule
@@ -17,7 +19,32 @@ Cancel/fill race & \code{cancel-race/exec\_669d47a536a94682}: a \(0.004\) BTC fi
 Create timeout & \code{create-timeout/exec\_3ddb8a47995348d0}, child \code{ce\_3ddb8a479953\_1}: unknown exposure was \(0.010\) before exact reconciliation and \(0\) after the original order was found open; no fresh client order ID was used. \\
 \bottomrule
 \end{tabularx}
-\end{table}
+\end{center}
+
+Table~\ref{tab:testnet-results} gives the terminal metrics from the accepted Testnet summaries. These are not substitutes for the deterministic race tests; they prove that the same service path can read Binance rules and quotes, submit exchange-accepted orders, receive private events, reconcile by client/exchange order identifiers, and produce final execution metrics.
+
+\begin{center}
+\refstepcounter{table}
+\label{tab:testnet-results}
+\small\textbf{Table~\thetable: Accepted Testnet terminal metrics.}
+
+\vspace{0.4em}
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.27\linewidth} >{\raggedright\arraybackslash}p{0.32\linewidth} X}
+\toprule
+Metric & Chase & TWAP \\
+\midrule
+Execution ID & \code{exec\_3168600ee25b4193} & \code{exec\_85bef3985ea3431a} \\
+Initial to target position & \(0 \rightarrow 0.001\) BTC & \(0.0010 \rightarrow 0.005\) BTC \\
+Required / filled / unfilled & \(0.001 / 0.001 / 0\) BTC & \(0.004 / 0.004 / 0\) BTC \\
+Orders / cancels / reprices & \(1 / 0 / 0\) & \(2 / 1 / 0\) \\
+Arrival mid / VWAP & \(62213 / 62212.5\) & \(62092.35 / 62092.9\) \\
+Slippage bps & \(-0.0804\) & \(0.0886\) \\
+Overfill / price violations & \(0 / 0\) & \(0 / 0\) \\
+Final status / reason & \status{COMPLETED}; \code{TARGET\_QUANTITY\_FILLED} & \status{COMPLETED}; \code{TARGET\_QUANTITY\_FILLED} \\
+\bottomrule
+\end{tabularx}
+\end{center}
 
 The cancel/fill race artifact is the clearest overfill evidence. The initial child was \(0.010\) BTC. During cancel, \(0.004\) BTC filled. The replacement child was only \(0.006\) BTC. The final summary showed:
 

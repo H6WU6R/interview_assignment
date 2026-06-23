@@ -52,3 +52,5 @@ Terminal & none & \status{COMPLETED}, \status{PARTIALLY COMPLETED}, \status{EXPI
 \end{figure}
 
 The child state machine is designed for disagreement between REST responses and user-stream events. A fill can arrive after a cancel request. A create request can time out while the exchange still accepts the order. A REST snapshot can be older than a private stream event. The engine therefore treats cumulative fills as monotonic, keeps pending-cancel and unknown-create exposure reserved, and uses exact client-order lookup to repair ambiguous create outcomes.
+
+\textbf{Auditability.} Parent execution IDs, internal child order IDs, and Binance client order IDs are intentionally related. A parent execution such as \code{exec\_3168600ee25b4193} produces client order IDs with a short deterministic prefix such as \code{ce\_3168600ee25b\_1}. This makes logs, child-order CSVs, fill CSVs, reconciliation rows, and Binance order evidence joinable without relying on timestamps alone. It also scopes reconciliation to the execution under review; broad prefix scans can help diagnostics, but exact client-order lookup is the proof used for ambiguous create outcomes.

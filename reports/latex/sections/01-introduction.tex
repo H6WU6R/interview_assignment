@@ -10,7 +10,25 @@ A negative-to-positive target therefore requires trading through zero. For examp
 
 The second important interpretation is that price, time, and quantity cannot all be guaranteed across every market path. If a buy price range ends at an upper bound, the implementation cannot legally force a fill above that bound. If the market never becomes executable within the interval, a correct result may be partial or fully unfilled. The report therefore evaluates the project by whether the system reports actual outcome and preserves safety, not whether every run reaches 100 percent completion.
 
-The implementation follows a ``small and correct'' strategy. It avoids multi-asset routing, durable production recovery, and mainnet automation. In exchange, the core order lifecycle is explicit, deterministic tests cover abnormal event ordering, and every child submit passes through the same exposure gate.
+The implementation follows a ``small and correct'' strategy. It avoids multi-asset routing, durable production recovery, and mainnet automation. In exchange, the core order lifecycle is explicit, deterministic tests cover abnormal event ordering, and every child submit passes through the same exposure gate. The central objective is not to guarantee completion under every market path. It is to ensure that any completion, partial completion, expiry, or cancellation is bounded by the user's price interval, traceable to order evidence, and free of predictable overfill.
+
+\begin{table}[t]
+\caption{Submission status on the final report branch.}
+\label{tab:submission-status}
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.27\linewidth} X}
+\toprule
+Area & Status \\
+\midrule
+Core implementation & FastAPI service, execution engine, Chase, TWAP, simulator, Binance USD-M adapter, structured artifacts, and verification scripts are implemented. \\
+Deterministic safety evidence & Simulator artifacts cover normal Chase, TWAP schedule, cancel/fill race, create-timeout reconciliation, duplicate events, stale data, price bounds, dust, and cross-zero target handling. \\
+Accepted Binance Testnet evidence & Sanitized Chase and TWAP bundles contain non-empty Binance exchange order IDs, client order IDs, private stream events, reconciliation outputs, and terminal summaries. \\
+Rejected connectivity artifacts & Older insufficient-margin Testnet attempts are retained only as connectivity/error evidence and are not counted as accepted order-lifecycle proof. \\
+Submission controls & Mainnet mutation is hard-disabled by default; Testnet order sends require credentials and an explicit confirmation flag. \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
 The scoring rubric makes this emphasis natural. Execution correctness and edge cases dominate the score, while report writing is a smaller but important communication channel. The report is therefore structured as a correctness defense. It starts with requirements and ownership boundaries, then spends most of its space on state, safety invariants, failure cases, and evidence. The goal is to make the implementation easy to challenge in an interview: each important claim should point to a module boundary, invariant, test, artifact, or limitation.
 

@@ -1,7 +1,24 @@
 \section{Limitations and Future Work}
 
-The implementation is intentionally compact. It uses in-memory state, so process restart loses execution records. It targets BTCUSDT and one-way mode. Hedge mode is rejected rather than fully supported. Runtime stream supervision is sufficient for this take-home but is not a production operations system with durable replay, leader election, alerting, or dashboards. Mainnet is configuration-compatible but hard disabled by default and should not be demonstrated as an automated trading system.
+The implementation is intentionally compact. Table~\ref{tab:limitations} separates accepted take-home scope from production work that should not be hidden inside this submission.
 
-Accepted sanitized Binance Testnet evidence is included for both Chase and TWAP, but future Testnet reruns remain externally dependent on account funding, permissions, and Binance risk configuration. The older raw credentialed rejection artifacts under \code{reports/evidence/testnet/chase/exec\_85051310eb714ebe} and \code{reports/evidence/testnet/twap/exec\_30ed2b4cac4346a1} are retained only as rejected connectivity/error artifacts. Simulator artifacts should not be substituted for accepted Testnet artifacts.
+\begin{table}[htbp]
+\caption{Known limitations and next steps.}
+\label{tab:limitations}
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.25\linewidth} >{\raggedright\arraybackslash}p{0.32\linewidth} X}
+\toprule
+Limitation & Current consequence & Professional next step \\
+\midrule
+In-memory execution state & Process restart loses execution records and cannot replay partially completed jobs. & Add durable event storage, startup replay, and restart-safe reconciliation before production use. \\
+Single-process ownership & No distributed symbol/account lock or multi-worker leader election. & Add explicit execution ownership, lease renewal, and failover semantics. \\
+BTCUSDT / one-way mode only & Hedge-mode position-side semantics are rejected rather than modeled. & Design a separate target-position invariant for hedge mode before enabling it. \\
+Limited operational surface & Stream supervision and artifact logs exist, but there are no production dashboards, alerts, or runbooks. & Add health metrics, alerting, operator actions, and documented incident procedures. \\
+Testnet dependency & Future live reruns depend on Binance Testnet funding, permissions, symbol state, and risk checks. & Keep deterministic simulator as the race oracle and maintain accepted Testnet bundles as venue-integration evidence. \\
+Mainnet disabled by default & Mainnet configuration compatibility exists, but automated live trading is intentionally not demonstrated. & Require a separate production readiness review, controls, and rollout plan before mainnet mutation. \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
-Future work should prioritize durable event storage and replay, restart recovery, broader symbol support, richer operational monitoring, and formalizing a production runbook. Hedge-mode support could be added, but it should not be mixed into the current one-way invariant without a separate design pass because position-side semantics change the target-position calculation.
+The older raw credentialed rejection artifacts under \code{reports/evidence/testnet/chase} and \code{reports/evidence/testnet/twap} are retained only as rejected connectivity/error artifacts. Simulator artifacts should not be substituted for accepted Testnet artifacts, and accepted Testnet artifacts should not be overstated as deterministic race coverage. The two evidence sources answer different questions: the simulator forces edge cases; Testnet proves real venue integration on accepted orders.

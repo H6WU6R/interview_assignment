@@ -13,6 +13,25 @@ The central correctness claim is the submit gate:
 
 This is stronger than recomputing a simple remaining quantity. \code{confirmed\_filled} is parent-level cumulative filled quantity. \code{live\_open} can still trade at the venue. \code{pending\_submit} protects the interval between local intent and exchange response. \code{pending\_cancel} protects the period where a cancel request has been sent but fills can still arrive. \code{unknown\_order} protects ambiguous create outcomes. \code{new\_child\_quantity} is the proposed order.
 
+\begin{table}[t]
+\caption{Exposure buckets used by the submit gate.}
+\label{tab:exposure-buckets}
+\centering
+\small
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.22\linewidth} >{\raggedright\arraybackslash}p{0.34\linewidth} X}
+\toprule
+Bucket & Meaning & When it is released or moved \\
+\midrule
+\code{confirmed\_filled} & Parent cumulative fill already executed at the venue. & Never decreases; contributes to completion and reduces remaining target quantity. \\
+\code{live\_open} & Accepted order quantity still executable at the venue. & Moves to confirmed fill after fill events, or is released after cancel/reconciliation proves it is no longer live. \\
+\code{pending\_submit} & Local submit intent before a definitive venue response. & Moves to live open, rejected, or unknown after the submit response or timeout classification. \\
+\code{pending\_cancel} & Quantity on an order with a cancel request in flight. & Stays reserved until cancel, fill, or reconciliation gives a terminal child state. \\
+\code{unknown\_order} & Quantity from an ambiguous create outcome. & Released only after exact \code{origClientOrderId} lookup proves absence, or moved back to live/filled if found. \\
+\code{new\_child\_quantity} & The proposed additional child order. & Accepted only if Equation~\ref{eq:invariant} remains within the normalized target quantity. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
 The two most important buckets are \code{pending\_cancel} and \code{unknown\_order}. If the system releases \code{pending\_cancel} too early, it can submit a replacement while the old order is still fillable. If it releases \code{unknown\_order} after a create timeout, it can retry with a fresh client order ID even though the original order may be live. Both cases can create predictable overfill. Equation~\ref{eq:invariant} prevents this by reserving exposure until reconciliation proves it is gone.
 
 Other invariants support this gate:

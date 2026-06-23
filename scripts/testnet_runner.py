@@ -486,6 +486,7 @@ async def _start_user_stream_once(
                         )
                     )
                 return _USER_STREAM_LISTEN_KEY_EXPIRED
+            active_execution["user_stream_retryable_reconnect_attempts"] = 0
             if execution_id is None:
                 continue
             parser = getattr(adapter, "reconciliation_from_user_event", None)
@@ -542,17 +543,12 @@ async def _recover_or_raise_stream_task_failure(
                 raise SystemExit(reason) from exc
             if not _is_retryable_listen_key_stream_failure(exc):
                 raise
-            await _reconcile_user_stream_disconnect(
+            return await _recover_retryable_user_stream_failure(
                 adapter,
                 service,
                 events,
                 active_execution,
-            )
-            return await _start_user_stream(
-                adapter,
-                service,
-                events,
-                active_execution,
+                exc,
                 timeout_seconds=timeout_seconds,
             )
         if result == _USER_STREAM_LISTEN_KEY_EXPIRED:
@@ -578,6 +574,49 @@ async def _recover_or_raise_stream_task_failure(
             )
     _raise_if_stream_task_failed(user_task)
     return user_task
+
+
+async def _recover_retryable_user_stream_failure(
+    adapter: BinanceUsdmAdapter,
+    service: ExecutionService,
+    events: list[dict[str, Any]],
+    active_execution: dict[str, Any],
+    exc: BaseException,
+    *,
+    timeout_seconds: float,
+) -> asyncio.Task[Any]:
+    await _reconcile_user_stream_disconnect(
+        adapter,
+        service,
+        events,
+        active_execution,
+    )
+    max_attempts = max(1, int(_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS))
+    attempt = _coerce_optional_int(active_execution.get("user_stream_retryable_reconnect_attempts")) or 0
+    attempt += 1
+    active_execution["user_stream_retryable_reconnect_attempts"] = attempt
+    reason = _sanitize_exchange_reason(exc)
+    backoff_seconds = float(_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS)
+    events.append(
+        _runtime_event(
+            adapter,
+            "user_stream_retryable_reconnect",
+            reason=reason,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            backoff_seconds=backoff_seconds,
+        )
+    )
+    if attempt >= max_attempts:
+        raise SystemExit(reason) from exc
+    await asyncio.sleep(backoff_seconds)
+    return await _start_user_stream(
+        adapter,
+        service,
+        events,
+        active_execution,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 async def _reconcile_user_stream_disconnect(

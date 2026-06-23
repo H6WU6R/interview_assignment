@@ -2548,6 +2548,168 @@ async def test_testnet_runner_user_stream_reconnect_retryable_failure_exhausts_c
     assert adapter.started_count == 3
 
 
+async def test_testnet_runner_user_stream_post_health_retryable_reconnects_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    execution_id = "exec_runner_post_health_retryable_reconnect"
+    failure_reason = "LISTEN_KEY_RATE_LIMIT_BACKOFF"
+
+    async def fails_with_retryable_listen_key() -> None:
+        raise StreamHealthFailure(failure_reason)
+
+    class HealthyThenFailingAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock(current=125.0)
+            self.user_stream_healthy = False
+            self.started_count = 0
+            self.started_events: list[asyncio.Event] = []
+            self.fail_events: list[asyncio.Event] = []
+
+        def stream_user_events(self):
+            self.started_count += 1
+            stream_index = self.started_count - 1
+            started = asyncio.Event()
+            fail = asyncio.Event()
+            self.started_events.append(started)
+            self.fail_events.append(fail)
+
+            async def events():
+                self.user_stream_healthy = True
+                started.set()
+                try:
+                    await fail.wait()
+                    raise StreamHealthFailure(failure_reason)
+                    yield {"event_type": "noop"}
+                finally:
+                    self.user_stream_healthy = False
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.user_stream_healthy
+
+        async def fail_started_stream(
+            self,
+            stream_index: int,
+            task: asyncio.Task[Any],
+        ) -> asyncio.Task[Any]:
+            await asyncio.wait_for(self.started_events[stream_index].wait(), timeout=1.0)
+            self.clock.advance(10.0)
+            self.fail_events[stream_index].set()
+            with pytest.raises(StreamHealthFailure, match=failure_reason):
+                await task
+            return task
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.reconciliation_calls: list[tuple[str, int | None, int | None]] = []
+
+        async def reconcile_execution(
+            self,
+            reconciled_execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> Any:
+            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            return SimpleNamespace(
+                execution_id=reconciled_execution_id,
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS", 3, raising=False)
+    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS", 0.25, raising=False)
+    original_sleep = asyncio.sleep
+    sleep_calls: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        if delay != 0.01:
+            sleep_calls.append(delay)
+        await original_sleep(0)
+
+    monkeypatch.setattr(module.asyncio, "sleep", record_sleep)
+
+    adapter = HealthyThenFailingAdapter()
+    service = FakeService()
+    events: list[dict[str, Any]] = []
+    active_execution = {"execution_id": execution_id, "user_stream_started_ms": "10000"}
+    user_task = asyncio.create_task(fails_with_retryable_listen_key())
+    with pytest.raises(StreamHealthFailure, match=failure_reason):
+        await user_task
+
+    for restart_index in range(2):
+        user_task = await module._recover_or_raise_stream_task_failure(
+            adapter=adapter,
+            service=service,
+            events=events,
+            active_execution=active_execution,
+            market_task=None,
+            user_task=user_task,
+            timeout_seconds=1.0,
+        )
+        assert user_task is not None
+        user_task = await adapter.fail_started_stream(restart_index, user_task)
+
+    with pytest.raises(SystemExit, match=failure_reason):
+        await module._recover_or_raise_stream_task_failure(
+            adapter=adapter,
+            service=service,
+            events=events,
+            active_execution=active_execution,
+            market_task=None,
+            user_task=user_task,
+            timeout_seconds=1.0,
+        )
+
+    assert adapter.started_count == 2
+    assert sleep_calls == [0.25, 0.25]
+    assert service.reconciliation_calls == [
+        (execution_id, 65_000, 125_000),
+        (execution_id, 125_000, 135_000),
+        (execution_id, 135_000, 145_000),
+    ]
+    retry_events = [event for event in events if event["event"] == "user_stream_retryable_reconnect"]
+    assert retry_events == [
+        {
+            "event": "user_stream_retryable_reconnect",
+            "utc_timestamp": retry_events[0]["utc_timestamp"],
+            "monotonic_time": retry_events[0]["monotonic_time"],
+            "reason": failure_reason,
+            "attempt": 1,
+            "max_attempts": 3,
+            "backoff_seconds": 0.25,
+        },
+        {
+            "event": "user_stream_retryable_reconnect",
+            "utc_timestamp": retry_events[1]["utc_timestamp"],
+            "monotonic_time": retry_events[1]["monotonic_time"],
+            "reason": failure_reason,
+            "attempt": 2,
+            "max_attempts": 3,
+            "backoff_seconds": 0.25,
+        },
+        {
+            "event": "user_stream_retryable_reconnect",
+            "utc_timestamp": retry_events[2]["utc_timestamp"],
+            "monotonic_time": retry_events[2]["monotonic_time"],
+            "reason": failure_reason,
+            "attempt": 3,
+            "max_attempts": 3,
+            "backoff_seconds": 0.25,
+        },
+    ]
+
+
 async def test_testnet_runner_user_stream_reconnect_venue_ban_hard_stop_reconciles_then_exits_cleanly() -> None:
     import importlib.util
 

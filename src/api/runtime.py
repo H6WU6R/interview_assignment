@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from decimal import Decimal
 from typing import Any
 
@@ -380,11 +380,16 @@ class ExecutionRuntime:
             stream_started_ms = self._clock_wall_ms(environment)
             self._stream_started_wall_ms[key] = stream_started_ms
             stop_stream = False
+            listen_key_expired_event = False
             try:
                 async for event in stream_factory():
                     if not self._started:
                         break
                     if name == "user":
+                        if self._is_listen_key_expired_user_event(event):
+                            await self._reconcile_stale_user_stream_window(environment)
+                            listen_key_expired_event = True
+                            break
                         await self._reconcile_active_executions_for_user_event(
                             environment,
                             event,
@@ -400,7 +405,7 @@ class ExecutionRuntime:
                 break
 
             if self._started and self._adapters.get(environment) is adapter:
-                if name == "user":
+                if name == "user" and not listen_key_expired_event:
                     await self._reconcile_active_executions_for_environment(
                         environment,
                         start_time_ms=stream_started_ms,
@@ -690,6 +695,15 @@ class ExecutionRuntime:
             "LISTEN_KEY_RETRYABLE_FAILURE",
             "LISTEN_KEY_RATE_LIMIT_BACKOFF",
         }
+
+    @staticmethod
+    def _is_listen_key_expired_user_event(event: object) -> bool:
+        if not isinstance(event, Mapping):
+            return False
+        if event.get("event_type") == "listenKeyExpired":
+            return True
+        raw = event.get("raw")
+        return isinstance(raw, Mapping) and raw.get("e") == "listenKeyExpired"
 
     def _listen_key_retry_delay_seconds(self) -> float:
         return min(self._stream_restart_delay_seconds, self._stream_keepalive_interval_seconds)

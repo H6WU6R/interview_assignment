@@ -279,6 +279,8 @@ async def test_testnet_create_maps_precreate_get_position_venue_ban_to_503(
     runtime_module = importlib.import_module("api.runtime")
 
     class BannedPositionBinanceAdapter(DeterministicSimulator):
+        get_position_calls = 0
+
         def __init__(self, *, settings: Any, clock: Any) -> None:
             super().__init__(clock=clock, position=Decimal("0.010"))
             self.synchronized = False
@@ -289,6 +291,7 @@ async def test_testnet_create_maps_precreate_get_position_venue_ban_to_503(
 
         async def get_position(self, symbol: str) -> PositionSnapshot:
             assert self.synchronized is True
+            type(self).get_position_calls += 1
             raise VenueBanHardStop("VENUE_BAN_HARD_STOP")
 
     monkeypatch.setattr(
@@ -307,6 +310,17 @@ async def test_testnet_create_maps_precreate_get_position_venue_ban_to_503(
 
     assert response.status_code == 503
     assert response.json()["detail"] == "VENUE_BAN_HARD_STOP"
+    assert BannedPositionBinanceAdapter.get_position_calls == 1
+
+    second_response = await post_json(
+        app,
+        "/executions",
+        execution_payload(environment="testnet", target_position="0.010"),
+    )
+
+    assert second_response.status_code == 503
+    assert second_response.json()["detail"] == "VENUE_BAN_HARD_STOP"
+    assert BannedPositionBinanceAdapter.get_position_calls == 1
 
 
 @pytest.mark.asyncio

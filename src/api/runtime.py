@@ -180,6 +180,7 @@ class ExecutionRuntime:
             try:
                 record = await service.create_execution(request)
             except VenueBanHardStop as exc:
+                self._unavailable_environments[request.environment] = exc.reason
                 raise RuntimeUnavailableError(exc.reason) from exc
             except Exception as exc:
                 if is_exchange_rate_limited(exc):

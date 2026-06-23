@@ -6,7 +6,7 @@ The central correctness claim is the submit gate:
 \begin{split}
 &confirmed\_filled + live\_open + pending\_submit \\
 &+ pending\_cancel + unknown\_order + new\_child\_quantity \\
-&\le normalized\_target\_trade\_quantity.
+&\le normalized\_target\_trade\_quantity + permitted\_tolerance.
 \end{split}
 \label{eq:invariant}
 \end{equation}

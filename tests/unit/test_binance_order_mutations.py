@@ -1060,9 +1060,16 @@ async def test_testnet_runner_starts_and_stops_market_and_user_stream_tasks(
             self.user_started = asyncio.Event()
             self.market_closed = asyncio.Event()
             self.user_closed = asyncio.Event()
+            self.synchronized = False
+            self.call_order: list[str] = []
 
         def set_market_stream_symbol(self, _symbol: str) -> None:
             pass
+
+        async def synchronize_server_time(self) -> int:
+            self.synchronized = True
+            self.call_order.append("synchronize_server_time")
+            return 0
 
         def stream_market_data(self):
             async def events():
@@ -1104,6 +1111,8 @@ async def test_testnet_runner_starts_and_stops_market_and_user_stream_tasks(
             self.adapter = adapter
 
         async def create_execution(self, _request: Any) -> Any:
+            self.adapter.call_order.append("create_execution")
+            assert self.adapter.synchronized
             return SimpleNamespace(
                 execution_id="exec_1234567890abcdef",
                 status=ExecutionStatus.RUNNING,
@@ -1159,8 +1168,97 @@ async def test_testnet_runner_starts_and_stops_market_and_user_stream_tasks(
         await module.run(Algorithm.CHASE)
 
     assert adapter is not None
+    assert adapter.call_order[:2] == ["synchronize_server_time", "create_execution"]
     assert adapter.market_closed.is_set()
     assert adapter.user_closed.is_set()
+
+
+async def test_testnet_runner_stops_before_service_flow_when_server_time_sync_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    class SyncFailed(RuntimeError):
+        pass
+
+    class FakeRunnerAdapter:
+        def __init__(self, settings: Settings) -> None:
+            self.settings = settings
+            self.clock = ManualClock()
+            self.market_started = False
+            self.user_started = False
+            self.submitted_orders: list[OrderRequest] = []
+
+        def set_market_stream_symbol(self, _symbol: str) -> None:
+            pass
+
+        async def synchronize_server_time(self) -> int:
+            raise SyncFailed("server time unavailable")
+
+        def stream_market_data(self):
+            self.market_started = True
+            raise AssertionError("market stream started after failed server-time sync")
+
+        def stream_user_events(self):
+            self.user_started = True
+            raise AssertionError("user stream started after failed server-time sync")
+
+        async def get_symbol_rules(self, _symbol: str) -> SymbolRules:
+            raise AssertionError("symbol rules loaded after failed server-time sync")
+
+        async def submit_limit_order(self, order_request: OrderRequest):
+            self.submitted_orders.append(order_request)
+            raise AssertionError("order submitted after failed server-time sync")
+
+    class FakeExecutionService:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("service created after failed server-time sync")
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter: FakeRunnerAdapter | None = None
+
+    def make_adapter(settings: Settings) -> FakeRunnerAdapter:
+        nonlocal adapter
+        adapter = FakeRunnerAdapter(settings)
+        return adapter
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda _algorithm: SimpleNamespace(
+            symbol="BTCUSDT",
+            confirm_send_orders=True,
+            target_position="0.100",
+            target_price_lower="90",
+            target_price_upper="110",
+            duration_seconds=60,
+            number_of_slices=1,
+            max_runtime_seconds=30.0,
+            poll_interval_seconds=0.0,
+            market_timeout_seconds=1.0,
+            output_dir=Path("/tmp"),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_binance_usdm_credentials",
+        lambda: SimpleNamespace(is_configured=True, api_key="key", api_secret="secret"),
+    )
+    monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
+    monkeypatch.setattr(module, "ExecutionService", FakeExecutionService)
+
+    with pytest.raises(SyncFailed, match="server time unavailable"):
+        await module.run(Algorithm.CHASE)
+
+    assert adapter is not None
+    assert not adapter.market_started
+    assert not adapter.user_started
+    assert adapter.submitted_orders == []
 
 
 async def test_testnet_runner_user_stream_logs_and_applies_matching_event() -> None:
@@ -1267,9 +1365,16 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
             self.health_checks: list[bool] = []
             self.submitted_orders: list[OrderRequest] = []
             self.symbol_rule_calls = 0
+            self.synchronized = False
+            self.call_order: list[str] = []
 
         def set_market_stream_symbol(self, symbol: str) -> None:
             self._market_stream_symbol = symbol
+
+        async def synchronize_server_time(self) -> int:
+            self.synchronized = True
+            self.call_order.append("synchronize_server_time")
+            return 0
 
         def stream_market_data(self):
             async def events():
@@ -1311,7 +1416,14 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
             self.rate_limits = {"REQUEST_WEIGHT": 2400, "ORDERS": 1200}
             return await super().get_symbol_rules(symbol)
 
+        async def get_position(self, symbol: str):
+            self.call_order.append("get_position")
+            assert self.synchronized
+            return await super().get_position(symbol)
+
         async def submit_limit_order(self, order_request: OrderRequest):
+            self.call_order.append("submit_limit_order")
+            assert self.synchronized
             self.submitted_orders.append(order_request)
             submitted = await super().submit_limit_order(order_request)
             await asyncio.sleep(0)
@@ -1368,9 +1480,14 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
     assert adapter.health_checks
     assert any(adapter.health_checks)
     assert adapter.submitted_orders
+    assert adapter.call_order[0] == "synchronize_server_time"
+    assert adapter.call_order.index("synchronize_server_time") < adapter.call_order.index("get_position")
+    assert adapter.call_order.index("synchronize_server_time") < adapter.call_order.index("submit_limit_order")
     assert adapter.symbol_rule_calls >= 1
     assert adapter.market_closed.is_set()
     assert adapter.user_closed.is_set()
+
+    assert artifact_call["log_events"][0]["event"] == "server_time_synchronized"
 
     assert artifact_call["extra_json_artifacts"]["symbol_rules.json"] == {
         "symbol": "BTCUSDT",
@@ -1438,9 +1555,14 @@ async def test_testnet_runner_stops_before_next_tick_when_stream_task_fails(
             self.user_closed = asyncio.Event()
             self.fail_user_stream = asyncio.Event()
             self.run_once_calls = 0
+            self.synchronized = False
 
         def set_market_stream_symbol(self, _symbol: str) -> None:
             pass
+
+        async def synchronize_server_time(self) -> int:
+            self.synchronized = True
+            return 0
 
         def stream_market_data(self):
             async def events():
@@ -1485,6 +1607,7 @@ async def test_testnet_runner_stops_before_next_tick_when_stream_task_fails(
             self.adapter = adapter
 
         async def create_execution(self, _request: Any) -> Any:
+            assert self.adapter.synchronized
             return SimpleNamespace(
                 execution_id="exec_1234567890abcdef",
                 status=ExecutionStatus.RUNNING,
@@ -1575,9 +1698,14 @@ async def test_testnet_runner_cleanup_stops_market_when_user_task_already_failed
             self.market_closed = asyncio.Event()
             self.user_closed = asyncio.Event()
             self.allow_market_exit = asyncio.Event()
+            self.synchronized = False
 
         def set_market_stream_symbol(self, _symbol: str) -> None:
             pass
+
+        async def synchronize_server_time(self) -> int:
+            self.synchronized = True
+            return 0
 
         def stream_market_data(self):
             async def events():
@@ -1620,6 +1748,7 @@ async def test_testnet_runner_cleanup_stops_market_when_user_task_already_failed
             self.adapter = adapter
 
         async def create_execution(self, _request: Any) -> Any:
+            assert self.adapter.synchronized
             self.adapter.fail_user_stream.set()
             await self.adapter.user_failed.wait()
             raise AssertionError("runner reached execution creation after stream task failure")

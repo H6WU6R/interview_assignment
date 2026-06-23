@@ -68,8 +68,16 @@ async def run(algorithm: Algorithm) -> Path:
         )
     )
     adapter.set_market_stream_symbol(symbol)
-    service = ExecutionService(adapter, clock=adapter.clock)
     events: list[dict[str, Any]] = []
+    server_time_offset_ms = await adapter.synchronize_server_time()
+    events.append(
+        _runtime_event(
+            adapter,
+            "server_time_synchronized",
+            server_time_offset_ms=server_time_offset_ms,
+        )
+    )
+    service = ExecutionService(adapter, clock=adapter.clock)
 
     market_task: asyncio.Task[Any] | None = None
     user_task: asyncio.Task[Any] | None = None

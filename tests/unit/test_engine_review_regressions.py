@@ -172,7 +172,11 @@ async def test_split_batch_out_of_order_actual_trade_repairs_vwap_without_exposu
 
     assert after_second.exposure.confirmed_filled_quantity == Decimal("0.006")
     assert after_second.summary is not None
-    assert after_second.summary.metrics["execution_vwap"] == "95010"
+    expected_after_second_vwap = (
+        Decimal("95000") * Decimal("0.004")
+        + Decimal("95010") * Decimal("0.002")
+    ) / Decimal("0.006")
+    assert Decimal(after_second.summary.metrics["execution_vwap"]) == expected_after_second_vwap
 
     first_fill_late = Fill(
         client_order_id=child.client_order_id,
@@ -373,7 +377,11 @@ async def test_overlapping_stale_unique_trade_does_not_poison_vwap_or_block_repa
 
     assert after_second.exposure.confirmed_filled_quantity == Decimal("0.006")
     assert after_second.summary is not None
-    assert after_second.summary.metrics["execution_vwap"] == "95010"
+    expected_after_second_vwap = (
+        Decimal("95000") * Decimal("0.004")
+        + Decimal("95010") * Decimal("0.002")
+    ) / Decimal("0.006")
+    assert Decimal(after_second.summary.metrics["execution_vwap"]) == expected_after_second_vwap
 
     stale_overlapping_fill = Fill(
         client_order_id=child.client_order_id,
@@ -392,7 +400,7 @@ async def test_overlapping_stale_unique_trade_does_not_poison_vwap_or_block_repa
 
     assert after_stale.exposure.confirmed_filled_quantity == Decimal("0.006")
     assert after_stale.summary is not None
-    assert after_stale.summary.metrics["execution_vwap"] == "95010"
+    assert Decimal(after_stale.summary.metrics["execution_vwap"]) == expected_after_second_vwap
     assert after_stale.summary.metrics["maker_filled_quantity"] == Decimal("0")
     assert after_stale.summary.metrics["taker_filled_quantity"] == Decimal("0.002")
 
@@ -588,7 +596,11 @@ async def test_snapshot_then_older_actual_trade_repairs_provisional_summary() ->
     assert after_actual.exposure.confirmed_filled_quantity == Decimal("0.006")
     assert after_actual.child_orders[0].confirmed_filled_quantity == Decimal("0.006")
     assert after_actual.summary is not None
-    assert after_actual.summary.metrics["execution_vwap"] == "94990"
+    expected_vwap = (
+        Decimal("94990") * Decimal("0.004")
+        + Decimal("95000") * Decimal("0.002")
+    ) / Decimal("0.006")
+    assert Decimal(after_actual.summary.metrics["execution_vwap"]) == expected_vwap
     assert after_actual.summary.metrics["maker_filled_quantity"] == Decimal("0.004")
     assert after_actual.summary.metrics["taker_filled_quantity"] == Decimal("0")
     assert after_actual.metric_counts.get("duplicate_events_ignored", 0) == 0

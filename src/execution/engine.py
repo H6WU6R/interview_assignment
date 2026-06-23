@@ -1653,7 +1653,7 @@ class ExecutionEngine:
     def _summary_metrics(self, record: ExecutionRecord) -> dict[str, Any]:
         arrival_bid = record.arrival_bid if record.arrival_bid is not None else Decimal("0")
         arrival_ask = record.arrival_ask if record.arrival_ask is not None else Decimal("0")
-        vwap_inputs = record.fill_vwap_inputs or self._provisional_fill_vwap_inputs(record)
+        vwap_inputs = self._summary_vwap_inputs(record)
         vwap = execution_vwap(vwap_inputs) if vwap_inputs else Decimal("0")
         completed_at = record.completed_monotonic if record.completed_monotonic is not None else self._now_decimal()
         actual_duration = completed_at - record.started_monotonic
@@ -1715,6 +1715,42 @@ class ExecutionEngine:
             for child in record.child_orders
             if child.confirmed_filled_quantity > Decimal("0")
         ]
+
+    def _summary_vwap_inputs(self, record: ExecutionRecord) -> list[tuple[Decimal, Decimal]]:
+        if not record.fill_vwap_inputs:
+            return self._provisional_fill_vwap_inputs(record)
+
+        vwap_inputs = list(record.fill_vwap_inputs)
+        for child in record.child_orders:
+            uncovered_quantity = child.confirmed_filled_quantity - self._covered_interval_quantity(
+                record.child_authoritative_fill_intervals.get(child.client_order_id, []),
+                child.confirmed_filled_quantity,
+            )
+            if uncovered_quantity > Decimal("0"):
+                vwap_inputs.append((child.price, uncovered_quantity))
+        return vwap_inputs
+
+    @staticmethod
+    def _covered_interval_quantity(
+        intervals: list[tuple[Decimal, Decimal]],
+        confirmed_quantity: Decimal,
+    ) -> Decimal:
+        covered = Decimal("0")
+        covered_until = Decimal("0")
+        for start, end in sorted(intervals):
+            clipped_start = max(start, Decimal("0"))
+            clipped_end = min(end, confirmed_quantity)
+            if clipped_end <= clipped_start:
+                continue
+            if clipped_start < covered_until:
+                clipped_start = covered_until
+            if clipped_end <= clipped_start:
+                continue
+            covered += clipped_end - clipped_start
+            covered_until = clipped_end
+            if covered_until >= confirmed_quantity:
+                break
+        return covered
 
     def _twap_slice_ledger(self, record: ExecutionRecord) -> list[dict[str, Any]]:
         if (

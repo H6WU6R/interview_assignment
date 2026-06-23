@@ -5,7 +5,7 @@ AI assistance was used during this take-home project for implementation planning
 AI-generated suggestions were treated as drafts, not accepted as authority. The candidate reviewed the design, checked it against the project brief, corrected unsafe or incomplete behavior, and verified the repository with local tests and simulator scripts. The main verification commands are:
 
 ```bash
-uv run pytest -q
+uv run pytest -q tests/unit tests/simulation
 uv run python scripts/run_sim_chase.py
 uv run python scripts/run_sim_twap.py
 uv run python scripts/run_sim_cancel_race.py
@@ -14,4 +14,4 @@ uv run python scripts/run_sim_create_timeout.py
 
 Important corrections and review focus areas included create-timeout handling, UNKNOWN order exposure, cancel/fill race safety, cumulative fill monotonicity, duplicate event handling, Decimal-only price/quantity paths, TWAP schedule carry-forward, and documentation alignment with the Calais project brief.
 
-No secrets, credentials, request signatures, listen keys, or private Binance account data are included in the repository. Binance Testnet execution requires user-provided environment variables at runtime. The candidate remains responsible for understanding, explaining, modifying, and defending every submitted file.
+No secrets, credentials, request signatures, listen keys, or private Binance account data are included in the repository. Accepted Binance Testnet evidence artifacts redact `ACCOUNT_UPDATE` balance and position fields while preserving order/trade updates needed to prove exchange acceptance. Binance Testnet execution requires user-provided environment variables at runtime. The candidate remains responsible for understanding, explaining, modifying, and defending every submitted file.

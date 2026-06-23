@@ -25,11 +25,13 @@ T10 & Cross-zero Position & Required-trade and account-position tests. \\
 \end{tabularx}
 \end{table}
 
-Current local baseline verification passed:
+Current reproducible non-live baseline verification passed before the final evidence cleanup plan:
 
 \begin{center}
-\code{uv run pytest -q} \quad \(\rightarrow\) \quad \code{491 passed}
+\code{uv run pytest -q tests/unit tests/simulation} \quad \(\rightarrow\) \quad \code{489 passed}
 \end{center}
+
+Credentialed/network-enabled integration verification is separate: \code{uv run pytest -q tests/integration}. A full credentialed local review can report \code{491 passed} only when the two Binance integration tests run successfully.
 
 The four simulator scripts also ran successfully during this report build and wrote committed structured artifacts:
 
@@ -40,4 +42,6 @@ The four simulator scripts also ran successfully during this report build and wr
   \item \code{reports/evidence/simulation/create-timeout/exec\_a03dec73abde450b}
 \end{itemize}
 
-The repository contains Binance Testnet runner scripts for Chase and TWAP. They require credentials and an explicit \code{--confirm-send-orders} flag and never fall back to simulation. The current credentialed raw Testnet artifacts are \code{reports/evidence/testnet/chase/exec\_85051310eb714ebe} and \code{reports/evidence/testnet/twap/exec\_30ed2b4cac4346a1}. Both reached Binance and failed before order acceptance with \code{BINANCE\_-2019:Margin is insufficient.}; both manifests have \code{accepted\_exchange\_order\_evidence=false} and empty \code{exchange\_order\_ids}. Accepted-order Testnet evidence therefore remains pending account funding or margin configuration.
+The repository contains Binance Testnet runner scripts for Chase and TWAP. They require credentials and an explicit \code{--confirm-send-orders} flag and never fall back to simulation. Accepted sanitized Testnet artifacts are included at \code{reports/evidence/testnet/chase/exec\_3168600ee25b4193} and \code{reports/evidence/testnet/twap/exec\_85bef3985ea3431a}. The Chase manifest records exchange order ID \code{16277695886}. The TWAP manifest records exchange order IDs \code{16277882286} and \code{16277899689}. These accepted artifacts preserve order/trade evidence while redacting \code{ACCOUNT\_UPDATE} balance and position fields.
+
+The older credentialed raw Testnet artifacts \code{reports/evidence/testnet/chase/exec\_85051310eb714ebe} and \code{reports/evidence/testnet/twap/exec\_30ed2b4cac4346a1} are retained only as rejected connectivity/error artifacts. Both reached Binance and failed before order acceptance with \code{BINANCE\_-2019:Margin is insufficient.}; both manifests have \code{accepted\_exchange\_order\_evidence=false} and empty \code{exchange\_order\_ids}.

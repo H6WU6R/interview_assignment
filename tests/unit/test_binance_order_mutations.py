@@ -1165,7 +1165,7 @@ def test_market_stream_url_uses_requested_symbol_and_public_route() -> None:
 
     assert adapter._market_stream_symbol == "ETHUSDT"
     assert adapter.market_stream_url("ETHUSDT") == (
-        "wss://fstream.binancefuture.com/public/ws/ethusdt@bookTicker"
+        "wss://demo-fstream.binance.com/public/ws/ethusdt@bookTicker"
     )
 
 

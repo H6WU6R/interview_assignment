@@ -45,7 +45,7 @@ from execution.models import (
 
 BINANCE_USDM_TESTNET_BASE_URL = "https://demo-fapi.binance.com"
 BINANCE_USDM_MAINNET_BASE_URL = "https://fapi.binance.com"
-BINANCE_USDM_TESTNET_WS_ROOT = "wss://fstream.binancefuture.com"
+BINANCE_USDM_TESTNET_WS_ROOT = "wss://demo-fstream.binance.com"
 BINANCE_USDM_MAINNET_WS_ROOT = "wss://fstream.binance.com"
 ORDER_REST_PATH = "/fapi/v1/order"
 ORDER_QUERY_PATH = ORDER_REST_PATH

@@ -6,7 +6,7 @@ Compact Binance USD-M execution service for the Calais take-home. The project is
 
 ```bash
 uv sync
-uv run pytest -q
+uv run pytest -q tests/unit tests/simulation
 uv run python scripts/run_sim_chase.py
 uv run python scripts/run_sim_twap.py
 uv run python scripts/run_sim_cancel_race.py
@@ -167,7 +167,7 @@ Artifacts contain:
 The Binance adapter uses:
 
 - Testnet REST base `https://demo-fapi.binance.com`.
-- Testnet WebSocket root `wss://fstream.binancefuture.com` with routed `/public/ws/...` and `/private/ws/...` paths.
+- Testnet WebSocket root `wss://demo-fstream.binance.com` with routed `/public/ws/...` and `/private/ws/...` paths.
 - Signed REST requests with `timestamp`, `recvWindow`, and sanitized logging behavior.
 - `POST /fapi/v1/order`, `DELETE /fapi/v1/order`, and `GET /fapi/v1/order` with `newClientOrderId` or `origClientOrderId`.
 - Reconciliation via `GET /fapi/v1/openOrders`, `GET /fapi/v1/allOrders`, `GET /fapi/v1/userTrades`, and exact order lookup by client order ID.
@@ -210,16 +210,21 @@ Accepted Binance Testnet evidence for submission means both:
 - at least one Chase run whose `evidence_manifest.json` has `accepted_exchange_order_evidence: true` and at least one non-empty `exchange_order_id`;
 - at least one TWAP run whose `evidence_manifest.json` has `accepted_exchange_order_evidence: true` and at least one non-empty `exchange_order_id`.
 
-If the Testnet account is not funded or Binance rejects the order before acceptance, keep the raw artifact as connectivity/error evidence and rerun the same script once the account can accept a small BTCUSDT order. The committed credentialed Testnet artifacts currently show connectivity and explicit send attempts, but Binance rejected both Chase and TWAP before acceptance with `BINANCE_-2019:Margin is insufficient.` Accepted exchange-order evidence remains pending account funding or margin configuration.
+Accepted sanitized Binance Testnet evidence is included in:
+
+- `reports/evidence/testnet/chase/exec_3168600ee25b4193`
+- `reports/evidence/testnet/twap/exec_85bef3985ea3431a`
+
+These accepted artifacts preserve order/trade evidence needed to prove exchange acceptance while redacting `ACCOUNT_UPDATE` balance and position fields. The older runs `reports/evidence/testnet/chase/exec_85051310eb714ebe` and `reports/evidence/testnet/twap/exec_30ed2b4cac4346a1` are retained only as rejected connectivity/error artifacts because Binance rejected them before acceptance with `BINANCE_-2019:Margin is insufficient.`
 
 Mainnet is config-compatible only. Mutating mainnet requests are hard-disabled by default through `allow_mainnet_trading=False` and should not be used for demos.
 
 ## Verification
 
-Primary local verification:
+Primary non-live local verification:
 
 ```bash
-uv run pytest -q
+uv run pytest -q tests/unit tests/simulation
 uv run python scripts/run_sim_chase.py
 uv run python scripts/run_sim_twap.py
 uv run python scripts/run_sim_cancel_race.py
@@ -230,10 +235,16 @@ The submission verifier excludes live Binance Testnet integration tests by defau
 `uv run python scripts/verify_submission.py`. To include credentialed/networked contract
 tests, pass `--include-live-integration` explicitly.
 
+Credentialed/network-enabled integration verification:
+
+```bash
+uv run pytest -q tests/integration
+```
+
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
 These read-only contract tests validate connectivity and parsing only; they do not satisfy the required accepted-order Chase/TWAP Testnet evidence.
 
-Current full local verification result from the latest local review run: `491 passed`.
+Current verified non-live baseline before the final evidence cleanup plan: `489 passed` with `uv run pytest -q tests/unit tests/simulation`. A full credentialed local review can report `491 passed` only when the two Binance integration tests run successfully.
 
 ## Known Limitations
 

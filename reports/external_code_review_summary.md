@@ -4,12 +4,21 @@ Date: 2026-06-23
 
 Purpose: give an external reviewer a complete map of the repository, execution pipeline, project-brief coverage, verification status, and remaining submission gaps. This file is intentionally detailed so the reviewer can audit the code without first reconstructing the architecture from scattered notes.
 
+## Current Status After Final Evidence Cleanup
+
+The previous accepted-evidence gap is superseded by accepted sanitized Binance Testnet artifacts:
+
+- `reports/evidence/testnet/chase/exec_3168600ee25b4193`
+- `reports/evidence/testnet/twap/exec_85bef3985ea3431a`
+
+The older insufficient-margin runs remain only rejected connectivity/error artifacts.
+
 ## Current Verification Baseline
 
-Commands run on the current working tree:
+Non-live command for local verification:
 
 ```bash
-uv run pytest -q
+uv run pytest -q tests/unit tests/simulation
 uv run python scripts/run_sim_chase.py
 uv run python scripts/run_sim_twap.py
 uv run python scripts/run_sim_cancel_race.py
@@ -17,16 +26,18 @@ uv run python scripts/run_sim_create_timeout.py
 git diff --check
 ```
 
-Results:
+Verified non-live baseline before the final evidence cleanup plan:
 
 ```text
-491 passed
+489 passed
 simulator Chase demo passed
 simulator TWAP demo passed
 simulator cancel/fill race demo passed
 simulator create-timeout demo passed
 git diff --check clean
 ```
+
+Credentialed/network-enabled integration verification is separate: `uv run pytest -q tests/integration`. A full credentialed local review can report `491 passed` only when the two Binance integration tests run successfully.
 
 The committed simulator evidence directories are under `reports/evidence/simulation/` for normal Chase, TWAP, cancel/fill race, and create-timeout.
 
@@ -376,7 +387,7 @@ File:
 Binance behavior:
 
 - Testnet REST base: `https://demo-fapi.binance.com`.
-- Testnet WebSocket root: `wss://fstream.binancefuture.com`.
+- Testnet WebSocket root: `wss://demo-fstream.binance.com`.
 - Mainnet REST/WebSocket roots are configured but guarded by `ALLOW_MAINNET_TRADING=true`.
 - Signed requests include `timestamp`, `recvWindow`, API key header, and HMAC signature.
 - Passive post-only orders map to `timeInForce=GTX` when supported.
@@ -424,10 +435,11 @@ Runner behavior:
   - `reconciliation_orders.csv`: final reconciliation order rows scoped to the execution.
   - `evidence_manifest.json`: execution ID, order IDs, exchange-order evidence status, stream-event evidence flags, warnings, reconciliation counts, and rate-limit metadata.
 
-Important evidence limitation:
+Important evidence status:
 
-- The repository contains raw credentialed Chase/TWAP rejection artifacts under `reports/evidence/testnet/`, but not accepted-order Binance Testnet Chase/TWAP artifacts.
-- Accepted-order artifacts are mandatory for final submission if the account can pass Binance margin/risk checks.
+- The repository contains accepted sanitized Chase/TWAP artifacts under `reports/evidence/testnet/chase/exec_3168600ee25b4193` and `reports/evidence/testnet/twap/exec_85bef3985ea3431a`.
+- The accepted artifacts preserve order/trade evidence and redact `ACCOUNT_UPDATE` balance/position fields.
+- The older raw credentialed Chase/TWAP rejection artifacts remain only rejected connectivity/error evidence.
 
 ## Observability and Artifacts
 
@@ -544,9 +556,9 @@ Status legend:
 | One-way mode support, hedge rejection | COVERED | Position parser rejects non-`BOTH` `positionSide`. |
 | Simulation environment | COVERED | Deterministic simulator and scripts. |
 | Testnet integration code | COVERED | Adapter, contract tests, runner scripts. |
-| Testnet accepted Chase E2E evidence | GAP | No accepted-order artifact currently committed/generated in this environment. |
-| Testnet accepted TWAP E2E evidence | GAP | No accepted-order artifact currently committed/generated in this environment. |
-| Raw Testnet logs/order IDs/params/results | PARTIAL | Raw credentialed rejection artifacts exist; accepted exchange-order IDs are pending account margin/funding. |
+| Testnet accepted Chase E2E evidence | COVERED | Accepted sanitized artifact: `reports/evidence/testnet/chase/exec_3168600ee25b4193`; exchange order ID `16277695886`. |
+| Testnet accepted TWAP E2E evidence | COVERED | Accepted sanitized artifact: `reports/evidence/testnet/twap/exec_85bef3985ea3431a`; exchange order IDs `16277882286`, `16277899689`. |
+| Raw Testnet logs/order IDs/params/results | COVERED | Accepted artifacts preserve order/trade updates and redact `ACCOUNT_UPDATE` balance/position fields; older insufficient-margin runs are rejected connectivity/error artifacts only. |
 | Mainnet config path default-disabled | COVERED | Mainnet requires credentials and explicit `ALLOW_MAINNET_TRADING=true`; no demo needed. |
 | Structured logs reconstruct timeline | COVERED | JSONL/CSV artifacts and summaries. |
 | Result metrics | COVERED | Summary metrics include quantity/price/order/time/safety fields. |
@@ -557,13 +569,13 @@ Status legend:
 
 ## Most Important Remaining Submission Risks
 
-1. Accepted Binance Testnet evidence is still missing.
+1. Testnet reruns depend on external account configuration.
 
-The PDF explicitly requires at least one Chase and one TWAP end-to-end Binance Futures Testnet run, with raw execution logs, order IDs, parameters, and summaries. The code has scripts and tests for the path, but final accepted-order artifacts are not present.
+Accepted sanitized Chase/TWAP artifacts are present, but future reruns still require a funded and permissioned Binance Testnet account that passes Binance risk checks.
 
-2. Accepted Testnet metrics cannot be substituted with simulator metrics.
+2. Simulator metrics must remain separate from Testnet metrics.
 
-The raw rejection artifacts show credentialed connectivity and explicit send attempts, but both were rejected before exchange acceptance for insufficient margin. The report and manifest label accepted-order evidence as pending rather than treating simulator output as a replacement.
+The accepted Testnet artifacts provide exchange order IDs and order/trade evidence. The older rejected artifacts show credentialed connectivity and explicit send attempts, but both were rejected before exchange acceptance for insufficient margin and must remain labeled as rejected connectivity/error evidence only.
 
 ## Suggested External Review Order
 
@@ -575,9 +587,10 @@ The raw rejection artifacts show credentialed connectivity and explicit send att
 6. Inspect `src/algorithms/chase.py` and `src/algorithms/twap.py`.
 7. Inspect `src/exchanges/binance_usdm.py` for mutation classification and reconciliation.
 8. Inspect `src/exchanges/simulator.py` and `tests/simulation/test_required_scenarios.py`.
-9. Run `uv run pytest -q`.
-10. Run the four simulator scripts.
-11. If credentials are available, run the two Testnet scripts with very small bounded BTCUSDT parameters.
+9. Run non-live tests with `uv run pytest -q tests/unit tests/simulation`.
+10. Run credentialed/network-enabled integration tests separately with `uv run pytest -q tests/integration` when credentials are available.
+11. Run the four simulator scripts.
+12. If credentials are available, run the two Testnet scripts with very small bounded BTCUSDT parameters.
 
 ## Reviewer Questions to Answer
 
@@ -595,9 +608,6 @@ Ask the external reviewer to specifically challenge:
 
 ## Current Final Assessment
 
-The implementation is strong on deterministic correctness, engine invariants, simulator coverage, Decimal discipline, API/runtime layering, and documented failure-mode reasoning. The main remaining gaps are not core algorithm code gaps; they are external Testnet acceptance evidence gaps:
+The implementation is strong on deterministic correctness, engine invariants, simulator coverage, Decimal discipline, API/runtime layering, documented failure-mode reasoning, and accepted sanitized Binance Testnet Chase/TWAP evidence. The accepted artifacts are present and cited above.
 
-- accepted Binance Testnet Chase artifact
-- accepted Binance Testnet TWAP artifact
-
-If those accepted-order evidence items are completed after account margin/funding is available, the repo is well aligned with the PDF requirements.
+The remaining concern is operational rather than evidentiary: future Testnet reruns depend on external account funding, permissions, and Binance risk checks. Rejected insufficient-margin artifacts must remain separate from accepted evidence and should be treated only as rejected connectivity/error artifacts.

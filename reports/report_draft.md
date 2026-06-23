@@ -13,8 +13,8 @@ Current report status:
 - Source code, simulator, tests, scripts, README, AI usage disclosure, and markdown report source exist.
 - Deterministic simulator evidence exists through scripts, test coverage, and committed artifact bundles under `reports/evidence/simulation/`.
 - The final PDF is generated from `reports/latex/report.tex` as `reports/latex/report.pdf`.
-- Accepted Binance Testnet Chase and TWAP evidence must be attached before final submission if the account can pass Binance margin/risk checks.
-- If Testnet order acceptance is blocked by funding, permissions, or risk configuration, keep the raw rejected/error artifact as connectivity evidence and label accepted-order evidence as pending. Do not replace required Testnet evidence with simulator output.
+- Accepted sanitized Binance Testnet Chase and TWAP evidence is included under `reports/evidence/testnet/chase/exec_3168600ee25b4193` and `reports/evidence/testnet/twap/exec_85bef3985ea3431a`.
+- Older Testnet runs rejected for insufficient margin are retained only as connectivity/error artifacts, not as accepted-order evidence.
 
 ## Project Brief Requirements
 
@@ -50,9 +50,9 @@ The direct pass/fail risks from the brief are:
 | Environments | Support simulation/testnet/mainnet config; mainnet default hard disabled. | Simulation/Testnet runtime paths; mainnet requires credentials plus `ALLOW_MAINNET_TRADING=true`, and no mainnet demo is required. | State clearly that mainnet is gated and should not be used for the take-home demo. |
 | Idempotency | Execution, child, and client order IDs must be traceable. | ID helpers, client order prefixing, artifacts, tests. | Include sample `execution_id`, `child_order_id`, `client_order_id`. |
 | Logging | Structured logs sufficient to reconstruct order timeline. | Artifact writers and demo scripts, including Testnet-specific evidence files. | Attach raw JSONL/CSV/JSON artifact bundle. |
-| Tests | Deterministic simulator plus Testnet E2E Chase/TWAP. | Unit/simulation tests and Testnet scripts. | Accepted Testnet artifacts remain the biggest final submission gap. |
-| Results | Quantity, price, order, time, and safety metrics. | Summary metrics and artifact tables, including reprices, known maker/taker fill counts, reconciliation rows, and evidence manifest. | Accepted Testnet order metrics remain pending account margin; rejected credentialed artifacts are included only as connectivity/error evidence. |
-| Deliverables | Repo, README, tests, raw results, PDF report, AI disclosure. | Repo docs, final PDF, simulator evidence, and raw Testnet rejection artifacts exist. | Accepted Testnet order evidence remains the only known submission gap. |
+| Tests | Deterministic simulator plus Testnet E2E Chase/TWAP. | Unit/simulation tests, Testnet scripts, and accepted sanitized Chase/TWAP artifacts. | Testnet reruns still depend on external account funding, permissions, and Binance risk checks. |
+| Results | Quantity, price, order, time, and safety metrics. | Summary metrics and artifact tables, including reprices, known maker/taker fill counts, reconciliation rows, and evidence manifest. | Accepted Testnet order IDs are included; older rejected artifacts are labeled only as connectivity/error evidence. |
+| Deliverables | Repo, README, tests, raw results, PDF report, AI disclosure. | Repo docs, final PDF, simulator evidence, accepted Testnet artifacts, and rejected connectivity artifacts exist. | Accepted Testnet evidence is covered. |
 
 ## Scope and Assumptions
 
@@ -362,7 +362,7 @@ Testnet runs add:
 
 ## Result Metrics
 
-The brief requires each execution to output quantity, price, order, time, and safety metrics. The final PDF includes populated simulator results and labels Testnet accepted-order metrics as pending because the credentialed Chase and TWAP attempts were rejected before exchange acceptance.
+The brief requires each execution to output quantity, price, order, time, and safety metrics. The final PDF includes populated simulator results and accepted sanitized Testnet artifacts for Chase and TWAP. Older credentialed Chase and TWAP attempts rejected before exchange acceptance remain labeled only as connectivity/error evidence.
 
 | Category | Required metrics | Current source or action |
 | --- | --- | --- |
@@ -382,9 +382,14 @@ slippage_bps = side-aware difference between arrival_mid and execution_vwap
 
 The PDF should explicitly state that a completion rate below 100 percent can be correct if price bounds, minimum quantity, deadline, or exchange rejects prevent legal completion.
 
-## Binance Testnet Evidence Plan
+## Binance Testnet Evidence
 
-Testnet evidence is mandatory in the brief. The repository provides Testnet scripts and includes two credentialed raw rejection artifacts, but the final submission still needs raw accepted-order artifacts from at least one Chase execution and one TWAP execution when account funding and permissions allow.
+Testnet evidence is mandatory in the brief. The repository provides Testnet scripts and includes accepted sanitized artifacts from one Chase execution and one TWAP execution:
+
+- `reports/evidence/testnet/chase/exec_3168600ee25b4193`: exchange order ID `16277695886`.
+- `reports/evidence/testnet/twap/exec_85bef3985ea3431a`: exchange order IDs `16277882286`, `16277899689`.
+
+These accepted artifacts preserve order/trade updates needed to prove exchange acceptance while redacting `ACCOUNT_UPDATE` balance and position fields. Rerunning the scripts remains externally dependent on account funding, permissions, and Binance risk checks.
 
 Required environment variables:
 
@@ -418,7 +423,7 @@ uv run python scripts/run_testnet_twap.py \
   --output-dir reports/evidence/testnet/twap
 ```
 
-Current credentialed Testnet artifacts:
+Rejected connectivity/error artifacts retained for audit context:
 
 - `reports/evidence/testnet/chase/exec_85051310eb714ebe`: `FAILED`, `TERMINAL_ORDER_REJECTED: BINANCE_-2019:Margin is insufficient.`, `accepted_exchange_order_evidence: false`, `exchange_order_ids: []`.
 - `reports/evidence/testnet/twap/exec_30ed2b4cac4346a1`: `FAILED`, `TERMINAL_ORDER_REJECTED: BINANCE_-2019:Margin is insufficient.`, `accepted_exchange_order_evidence: false`, `exchange_order_ids: []`.
@@ -446,11 +451,11 @@ Do not include:
 - Request signatures.
 - Local secret files.
 
-If Binance rejects before acceptance:
+If Binance rejects before acceptance on a future rerun:
 
 - Keep the raw sanitized error artifact.
 - State whether rejection was due to margin, account permissions, min notional, symbol state, post-only behavior, or price bounds.
-- Label accepted-order Testnet evidence as pending account configuration.
+- Label that rerun as rejected connectivity/error evidence.
 - Do not claim simulator artifacts satisfy the Testnet E2E requirement.
 
 ## Real Failure Case
@@ -487,20 +492,26 @@ This failure case is strong for the PDF because it directly maps to one of the b
 Commands to run before final PDF:
 
 ```bash
-uv run pytest -q
+uv run pytest -q tests/unit tests/simulation
 uv run python scripts/run_sim_chase.py
 uv run python scripts/run_sim_twap.py
 uv run python scripts/run_sim_cancel_race.py
 uv run python scripts/run_sim_create_timeout.py
 ```
 
-Latest local verification result after this documentation update:
+Verified non-live baseline before the final evidence cleanup plan:
 
 ```text
-491 passed
+489 passed
 ```
 
-The README and final PDF should be updated again if later code changes alter the test count.
+Credentialed/network-enabled integration verification is separate:
+
+```bash
+uv run pytest -q tests/integration
+```
+
+The README and final PDF should report `491 passed` only for a full credentialed local review where the two Binance integration tests run successfully.
 
 ## Demo Checklist
 
@@ -515,7 +526,7 @@ The 30-45 minute demonstration should be structured around the scoring criteria.
 7. Show price outside range result and explain why not completing can be correct.
 8. Explain the exposure invariant bucket by bucket.
 9. Show one real failure case and tests that prevent regression.
-10. If credentials/account state allow, run or display accepted Binance Testnet Chase and TWAP artifact bundles.
+10. Display accepted Binance Testnet Chase and TWAP artifact bundles; reruns depend on credentials and account state.
 11. Be prepared for a small live code change around parameters, metrics, or validation.
 
 ## Known Limitations
@@ -529,14 +540,14 @@ The 30-45 minute demonstration should be structured around the scoring criteria.
 - Hedge Mode is not a primary supported path.
 - Mainnet mutation is disabled by default and should not be demonstrated.
 - Simulator proves deterministic races that Testnet may not naturally reproduce.
-- Accepted Testnet order evidence remains pending account funding or margin configuration.
+- Testnet reruns depend on external account funding, permission, and Binance risk configuration.
 
 ## Improvements Before Final Submission
 
 Highest priority:
 
-- Attach accepted-order Binance Testnet evidence for one Chase and one TWAP run after the account can pass Binance margin/risk checks.
-- Replace rejected Testnet metrics with accepted-order metrics once exchange order IDs are available.
+- Keep accepted-order Binance Testnet evidence for one Chase and one TWAP run in the submission bundle.
+- Keep rejected Testnet metrics separate from accepted-order metrics.
 - State that mainnet requires `ALLOW_MAINNET_TRADING=true` and is not part of the take-home demo evidence.
 - Include a small table mapping T1-T10 to test files and artifact names.
 
@@ -569,7 +580,7 @@ Recommended 8-15 page structure:
 - Include final commit hash or branch name.
 - Include exact test command and output count.
 - Include exact simulator artifact paths.
-- Include accepted Testnet artifact paths or clearly labeled pending status.
+- Include accepted Testnet artifact paths.
 - Include execution IDs and client order IDs for all showcased runs.
 - Include raw parameter snapshots.
 - Include result summary tables.

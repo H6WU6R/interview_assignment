@@ -6,7 +6,7 @@ Compact execution algorithm service for the Calais candidate project. The implem
 
 ```bash
 uv sync
-uv run pytest -q
+uv run pytest -q tests/unit tests/simulation
 uv run python scripts/run_sim_chase.py
 uv run python scripts/run_sim_twap.py
 uv run python scripts/run_sim_cancel_race.py

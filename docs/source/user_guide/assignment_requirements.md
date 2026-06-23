@@ -16,6 +16,7 @@ The Calais brief asks for a Python 3.11+ execution service for Binance USD-M Fut
 | Cancel/fill race | A fill after cancel request reduces replacement quantity. | Exposure tracker and cancel/reconcile path. | `tests/simulation/test_required_scenarios.py::test_t3_cancel_fill_race_updates_confirmed_fills_before_replacement_sizing` |
 | Decimal precision | Use `Decimal` and JSON decimal strings for order parameters. | `execution.models`, `api.schemas`, `risk.decimal_math`. | `tests/unit/test_models.py`, `tests/unit/test_api.py`, `tests/unit/test_decimal_math.py` |
 | Logging/results | Write structured logs and result artifacts. | `observability.artifacts`, simulator and Testnet runners. | `tests/simulation/test_required_scenarios.py::test_cancel_race_script_writes_required_artifacts` |
+| Binance Testnet accepted evidence | Provide Chase and TWAP Testnet order evidence with exchange order IDs. | Accepted sanitized artifacts redact `ACCOUNT_UPDATE` balance/position fields and preserve order/trade evidence. | `reports/evidence/testnet/chase/exec_3168600ee25b4193`, `reports/evidence/testnet/twap/exec_85bef3985ea3431a` |
 
 ## Direct Pass/Fail Risks
 

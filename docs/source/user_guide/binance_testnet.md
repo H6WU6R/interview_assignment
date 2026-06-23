@@ -16,11 +16,18 @@ They also require `--confirm-send-orders`. Without credentials or explicit confi
 ## Endpoints And Evidence
 
 - Testnet REST base: `https://demo-fapi.binance.com`
-- Public/user stream root: `wss://fstream.binancefuture.com`
+- Public/user stream root: `wss://demo-fstream.binance.com`
 - Order mutation endpoints: `POST /fapi/v1/order`, `DELETE /fapi/v1/order`
 - Reconciliation endpoints: `GET /fapi/v1/order`, `GET /fapi/v1/openOrders`, `GET /fapi/v1/allOrders`, `GET /fapi/v1/userTrades`
 
 The Testnet runner writes `symbol_rules.json`, `reconciliation_orders.csv`, `execution_summary.json`, `execution_log.jsonl`, and `evidence_manifest.json`.
+
+Accepted sanitized Testnet evidence is included in:
+
+- `reports/evidence/testnet/chase/exec_3168600ee25b4193`
+- `reports/evidence/testnet/twap/exec_85bef3985ea3431a`
+
+Those artifacts preserve order/trade evidence and exchange order IDs while redacting `ACCOUNT_UPDATE` balance and position fields. The older insufficient-margin runs `reports/evidence/testnet/chase/exec_85051310eb714ebe` and `reports/evidence/testnet/twap/exec_30ed2b4cac4346a1` are retained only as rejected connectivity/error artifacts.
 
 ## Mainnet Guardrail
 

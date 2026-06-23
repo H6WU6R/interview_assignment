@@ -143,7 +143,14 @@ uv run python scripts/run_sim_cancel_race.py
 uv run python scripts/run_sim_create_timeout.py
 ```
 
-The first two print deterministic Chase and TWAP state. The cancel-race script writes artifacts under `/tmp/calais-sim-cancel-race` by default. The create-timeout script writes artifacts under `/tmp/calais-sim-create-timeout` and demonstrates that a create timeout blocks new submissions until exact reconciliation resolves the original child.
+All four scripts print deterministic simulator state and write structured artifacts by default:
+
+- `scripts/run_sim_chase.py`: `/tmp/calais-sim-chase`
+- `scripts/run_sim_twap.py`: `/tmp/calais-sim-twap`
+- `scripts/run_sim_cancel_race.py`: `/tmp/calais-sim-cancel-race`
+- `scripts/run_sim_create_timeout.py`: `/tmp/calais-sim-create-timeout`
+
+Pass `--output-dir` to write the bundles elsewhere. The committed simulator evidence for this submission is under `reports/evidence/simulation/`.
 
 Artifacts contain:
 
@@ -153,6 +160,7 @@ Artifacts contain:
 - `child_orders.csv`
 - `fills.csv`
 - `timeline.csv`
+- `twap_slice_ledger.csv`
 
 ## Binance Testnet
 
@@ -202,7 +210,7 @@ Accepted Binance Testnet evidence for submission means both:
 - at least one Chase run whose `evidence_manifest.json` has `accepted_exchange_order_evidence: true` and at least one non-empty `exchange_order_id`;
 - at least one TWAP run whose `evidence_manifest.json` has `accepted_exchange_order_evidence: true` and at least one non-empty `exchange_order_id`.
 
-If the Testnet account is not funded or Binance rejects the order before acceptance, keep the raw artifact as connectivity/error evidence and rerun the same script once the account can accept a small BTCUSDT order.
+If the Testnet account is not funded or Binance rejects the order before acceptance, keep the raw artifact as connectivity/error evidence and rerun the same script once the account can accept a small BTCUSDT order. The committed credentialed Testnet artifacts currently show connectivity and explicit send attempts, but Binance rejected both Chase and TWAP before acceptance with `BINANCE_-2019:Margin is insufficient.` Accepted exchange-order evidence remains pending account funding or margin configuration.
 
 Mainnet is config-compatible only. Mutating mainnet requests are hard-disabled by default through `allow_mainnet_trading=False` and should not be used for demos.
 
@@ -225,7 +233,7 @@ tests, pass `--include-live-integration` explicitly.
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
 These read-only contract tests validate connectivity and parsing only; they do not satisfy the required accepted-order Chase/TWAP Testnet evidence.
 
-Current local verification result from the latest local review run: `479 passed`.
+Current full local verification result from the latest local review run: `491 passed`.
 
 ## Known Limitations
 

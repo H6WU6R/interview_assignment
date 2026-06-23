@@ -28,14 +28,16 @@ T10 & Cross-zero Position & Required-trade and account-position tests. \\
 Current local baseline verification passed:
 
 \begin{center}
-\code{uv run pytest -q} \quad \(\rightarrow\) \quad \code{351 passed in 3.56s}
+\code{uv run pytest -q} \quad \(\rightarrow\) \quad \code{491 passed}
 \end{center}
 
-The four simulator scripts also ran successfully during this report build. Two of them write structured artifacts by default:
+The four simulator scripts also ran successfully during this report build and wrote committed structured artifacts:
 
 \begin{itemize}[leftmargin=1.2em]
-  \item \code{/tmp/calais-sim-cancel-race/exec\_1a8d7ea0557c4fa9}
-  \item \code{/tmp/calais-sim-create-timeout/exec\_7af8e7eaf0a94380}
+  \item \code{reports/evidence/simulation/chase/exec\_d10652a300e544dc}
+  \item \code{reports/evidence/simulation/twap/exec\_1da27294d07f47af}
+  \item \code{reports/evidence/simulation/cancel-race/exec\_2d3534bffa694b40}
+  \item \code{reports/evidence/simulation/create-timeout/exec\_a03dec73abde450b}
 \end{itemize}
 
-The repository contains Binance Testnet runner scripts for Chase and TWAP. They require credentials and an explicit \code{--confirm-send-orders} flag and never fall back to simulation. They write request snapshots, symbol rules, sanitized timelines, child/fill CSVs, reconciliation rows, and an evidence manifest. This report treats accepted-order Testnet evidence as pending unless those artifacts are attached to the final submission.
+The repository contains Binance Testnet runner scripts for Chase and TWAP. They require credentials and an explicit \code{--confirm-send-orders} flag and never fall back to simulation. The current credentialed raw Testnet artifacts are \code{reports/evidence/testnet/chase/exec\_85051310eb714ebe} and \code{reports/evidence/testnet/twap/exec\_30ed2b4cac4346a1}. Both reached Binance and failed before order acceptance with \code{BINANCE\_-2019:Margin is insufficient.}; both manifests have \code{accepted\_exchange\_order\_evidence=false} and empty \code{exchange\_order\_ids}. Accepted-order Testnet evidence therefore remains pending account funding or margin configuration.

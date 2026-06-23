@@ -47,7 +47,7 @@ Price bounds and Decimal math & \yes & Decimal-string API fields, Decimal intern
 State machines and overfill safety & \yes & Parent and child states are monotonic; submit path enforces the exposure invariant. \\
 Deterministic simulator & \yes & Simulator covers partial fill, cancel/fill race, post-only rejection, create timeout, duplicate/lower fills, stale data, and stream disconnect. \\
 Binance Testnet integration code & \yes & Adapter and runner implement symbol rules, REST mutation, exact lookup, user streams, and evidence artifacts. \\
-Accepted Binance Testnet Chase/TWAP evidence & \gap & Runner exists, but accepted-order artifacts are account and margin dependent and are not claimed in this report unless attached. \\
+Accepted Binance Testnet Chase/TWAP evidence & \gap & Raw rejection artifacts are included, but accepted-order artifacts are pending account funding or margin configuration. \\
 Final reporting and AI disclosure & \yes & This LaTeX report and \code{AI\_USAGE.md} document decisions, evidence, and verification. \\
 \bottomrule
 \end{tabularx}

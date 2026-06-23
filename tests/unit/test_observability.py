@@ -287,6 +287,36 @@ def test_write_execution_artifacts_tolerates_heterogeneous_timeline_rows(tmp_pat
     assert "warning" in timeline
 
 
+def test_write_execution_artifacts_uses_lf_csv_line_endings(tmp_path) -> None:
+    output_dir = write_execution_artifacts(
+        root=tmp_path,
+        execution_id="exec_lf_csv",
+        request_snapshot={"symbol": "BTCUSDT"},
+        log_events=[],
+        summary={"execution_id": "exec_lf_csv"},
+        child_orders=[{"client_order_id": "ce_test_1", "status": "OPEN"}],
+        fills=[{"client_order_id": "ce_test_1", "trade_id": "trade_1"}],
+        timeline=[{"event": "submit", "client_order_id": "ce_test_1"}],
+        twap_slice_ledger=[{"slice_index": 1, "submitted_quantity": Decimal("0.001")}],
+        extra_csv_artifacts={
+            "reconciliation_orders.csv": [
+                {"client_order_id": "ce_test_1", "exchange_order_id": "12345"}
+            ]
+        },
+    )
+
+    for filename in (
+        "child_orders.csv",
+        "fills.csv",
+        "timeline.csv",
+        "twap_slice_ledger.csv",
+        "reconciliation_orders.csv",
+    ):
+        payload = (output_dir / filename).read_bytes()
+        assert b"\n" in payload
+        assert b"\r\n" not in payload
+
+
 def test_write_execution_artifacts_creates_empty_execution_log(tmp_path) -> None:
     output_dir = write_execution_artifacts(
         root=tmp_path,

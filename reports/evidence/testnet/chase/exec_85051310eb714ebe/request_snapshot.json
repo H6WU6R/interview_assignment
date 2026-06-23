@@ -1,0 +1,18 @@
+{
+  "algorithm": "CHASE",
+  "deadline_policy": "AGGRESSIVE_WITHIN_RANGE",
+  "environment": "testnet",
+  "parameters": {
+    "child_order_timeout_seconds": 20,
+    "max_post_only_reject_retries": 3,
+    "minimum_reprice_interval_ms": 500,
+    "number_of_slices": 5,
+    "reprice_threshold_bps": "2.0",
+    "repricing_mode": "ADVERSE_ONLY"
+  },
+  "symbol": "BTCUSDT",
+  "target_duration_seconds": 12,
+  "target_position": "0.001",
+  "target_price_lower": "1000",
+  "target_price_upper": "250000"
+}

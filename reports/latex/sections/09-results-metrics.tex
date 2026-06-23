@@ -1,6 +1,6 @@
 \section{Results and Metrics}
 
-Each execution summary is intended to reconstruct quantity, price, order, time, and safety behavior. Table~\ref{tab:sim-results} shows selected deterministic run outputs from the current report build.
+Each execution summary is intended to reconstruct quantity, price, order, time, and safety behavior. Table~\ref{tab:sim-results} shows selected deterministic run outputs from the committed evidence bundle under \code{reports/evidence/simulation}.
 
 \begin{table}[t]
 \caption{Selected simulator results from current verification.}
@@ -11,10 +11,10 @@ Each execution summary is intended to reconstruct quantity, price, order, time, 
 \toprule
 Run & Result \\
 \midrule
-Normal Chase & \code{exec\_48e0678319a}, child \code{ce\_48e0678319a4\_1}: one open passive buy child for \(0.010\) BTC at \(50000.00\); reserved exposure equals target quantity. \\
-TWAP schedule & \code{exec\_8b651760392a}, child \code{ce\_8b651760392a\_1}: at 10 seconds of 100, submitted \(0.001\) BTC against \(0.010\) BTC total; open quantity is reserved. \\
-Cancel/fill race & \code{exec\_1a8d7ea0557c}: a \(0.004\) BTC fill arrived during cancel; replacement was \(0.006\) BTC, preserving total exposure at \(0.010\). \\
-Create timeout & \code{exec\_7af8e7eaf0a}, child \code{ce\_7af8e7eaf0a9\_1}: unknown exposure was \(0.010\) before exact reconciliation and \(0\) after the original order was found open; no fresh client order ID was used. \\
+Normal Chase & \code{chase/exec\_d10652a300e544dc}, child \code{ce\_d10652a300e5\_1}: one open passive buy child for \(0.010\) BTC at \(50000.00\); reserved exposure equals target quantity. \\
+TWAP schedule & \code{twap/exec\_1da27294d07f47af}, child \code{ce\_1da27294d07f\_1}: at 10 seconds of 100, submitted \(0.001\) BTC against \(0.010\) BTC total; open quantity is reserved. \\
+Cancel/fill race & \code{cancel-race/exec\_2d3534bffa694b40}: a \(0.004\) BTC fill arrived during cancel; replacement was \(0.006\) BTC, preserving total exposure at \(0.010\). \\
+Create timeout & \code{create-timeout/exec\_a03dec73abde450b}, child \code{ce\_a03dec73abde\_1}: unknown exposure was \(0.010\) before exact reconciliation and \(0\) after the original order was found open; no fresh client order ID was used. \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -32,7 +32,7 @@ confirmed filled & \(0.004\) BTC \\
 live open & \(0.006\) BTC \\
 reserved exposure & \(0.006\) BTC \\
 unknown order & \(0\) BTC \\
-client order IDs & \code{ce\_1a8d7ea0557c\_1}, \code{ce\_1a8d7ea0557c\_2} \\
+client order IDs & \code{ce\_2d3534bffa69\_1}, \code{ce\_2d3534bffa69\_2} \\
 \bottomrule
 \end{tabular}
 \end{center}

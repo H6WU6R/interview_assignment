@@ -1,0 +1,2 @@
+child_order_id,client_order_id,exchange_order_id,filled_quantity,price,remaining_quantity,status,submitted_quantity,terminal_reason
+child_0001,ce_1da27294d07f_1,sim_order_000001,0,50000.00,0.001,OPEN,0.001,

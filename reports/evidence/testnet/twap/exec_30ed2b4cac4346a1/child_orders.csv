@@ -1,0 +1,2 @@
+child_order_id,client_order_id,confirmed_filled_quantity,exchange_order_id,price,raw_status,side,status,submitted_quantity,symbol,terminal_reason
+child_0001,ce_30ed2b4cac43_1,0,,62451.80,,BUY,REJECTED,0.0010,BTCUSDT,BINANCE_-2019:Margin is insufficient.

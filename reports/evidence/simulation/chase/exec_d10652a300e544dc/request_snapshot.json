@@ -1,0 +1,21 @@
+{
+  "algorithm": "CHASE",
+  "deadline_policy": "CANCEL_REMAINDER",
+  "duration_seconds": 100,
+  "environment": "simulation",
+  "execution_id": "exec_d10652a300e544dc",
+  "parameters": {
+    "child_order_timeout_seconds": 20,
+    "minimum_reprice_interval_ms": 500,
+    "number_of_slices": 10,
+    "reprice_threshold_bps": "2.0",
+    "repricing_mode": "ADVERSE_ONLY"
+  },
+  "side": "BUY",
+  "symbol": "BTCUSDT",
+  "target_position": "0.010",
+  "target_price_range": {
+    "lower": "49000",
+    "upper": "51000"
+  }
+}

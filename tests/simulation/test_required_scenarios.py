@@ -34,6 +34,15 @@ from execution.service import ExecutionService
 
 SYMBOL = "BTCUSDT"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+REQUIRED_ARTIFACT_FILES = {
+    "request_snapshot.json",
+    "execution_log.jsonl",
+    "execution_summary.json",
+    "child_orders.csv",
+    "fills.csv",
+    "timeline.csv",
+    "twap_slice_ledger.csv",
+}
 
 
 def request(
@@ -92,6 +101,54 @@ def assert_exposure_safe(execution) -> None:
         execution.exposure.confirmed_filled_quantity + execution.exposure.reserved_exposure
         <= execution.required_quantity
     )
+
+
+def assert_standard_artifact_bundle(
+    artifact_dir: Path,
+    *,
+    algorithm: str,
+    expected_event: str,
+) -> None:
+    assert artifact_dir.exists()
+    assert REQUIRED_ARTIFACT_FILES <= {path.name for path in artifact_dir.iterdir()}
+
+    request_snapshot = json.loads((artifact_dir / "request_snapshot.json").read_text())
+    assert request_snapshot["algorithm"] == algorithm
+    assert request_snapshot["symbol"] == SYMBOL
+    assert "parameters" in request_snapshot
+    assert "target_position" in request_snapshot
+    assert "target_price_range" in request_snapshot
+    assert "duration_seconds" in request_snapshot
+    assert "deadline_policy" in request_snapshot
+
+    log_lines = (artifact_dir / "execution_log.jsonl").read_text().splitlines()
+    assert log_lines
+    log_events = [json.loads(line) for line in log_lines]
+    assert all(event["execution_id"] == artifact_dir.name for event in log_events)
+    assert any(event["event"] == expected_event for event in log_events)
+    assert any("client_order_id" in event for event in log_events)
+    assert any("final_reason" in event for event in log_events)
+
+    summary = json.loads((artifact_dir / "execution_summary.json").read_text())
+    assert summary["execution_id"] == artifact_dir.name
+    assert "final_status" in summary
+    assert "final_reason" in summary
+    assert "required_quantity" in summary
+    assert "exposure" in summary
+
+    child_rows = list(csv.DictReader((artifact_dir / "child_orders.csv").open()))
+    timeline_rows = list(csv.DictReader((artifact_dir / "timeline.csv").open()))
+    assert child_rows
+    assert timeline_rows
+    assert {
+        "child_order_id",
+        "client_order_id",
+        "status",
+        "submitted_quantity",
+        "filled_quantity",
+        "remaining_quantity",
+        "price",
+    } <= set(child_rows[0])
 
 
 async def test_t1_normal_chase_submits_passive_price_and_preserves_exposure_invariant() -> None:
@@ -492,16 +549,7 @@ def test_cancel_race_script_writes_required_artifacts(tmp_path: Path) -> None:
     execution_dirs = [path for path in tmp_path.iterdir() if path.is_dir()]
     assert len(execution_dirs) == 1
     artifact_dir = execution_dirs[0]
-    expected_files = {
-        "request_snapshot.json",
-        "execution_log.jsonl",
-        "execution_summary.json",
-        "child_orders.csv",
-        "fills.csv",
-        "timeline.csv",
-        "twap_slice_ledger.csv",
-    }
-    assert expected_files <= {path.name for path in artifact_dir.iterdir()}
+    assert REQUIRED_ARTIFACT_FILES <= {path.name for path in artifact_dir.iterdir()}
 
     request_snapshot = json.loads((artifact_dir / "request_snapshot.json").read_text())
     assert request_snapshot["algorithm"] == "CHASE"
@@ -559,15 +607,7 @@ def test_create_timeout_script_writes_default_artifacts_with_resolved_reason() -
     artifact_dir = Path(artifact_line.split("=", 1)[1])
 
     assert artifact_dir.exists()
-    assert {
-        "request_snapshot.json",
-        "execution_log.jsonl",
-        "execution_summary.json",
-        "child_orders.csv",
-        "fills.csv",
-        "timeline.csv",
-        "twap_slice_ledger.csv",
-    } <= {path.name for path in artifact_dir.iterdir()}
+    assert REQUIRED_ARTIFACT_FILES <= {path.name for path in artifact_dir.iterdir()}
 
     summary = json.loads((artifact_dir / "execution_summary.json").read_text())
     assert summary["final_reason"] == CREATE_TIMEOUT_RECONCILED
@@ -580,6 +620,64 @@ def test_create_timeout_script_writes_default_artifacts_with_resolved_reason() -
     ]
     assert any(event["event"] == "create_timeout_unknown" for event in log_events)
     assert any(event["event"] == "reconciled_original_open" for event in log_events)
+
+
+def test_normal_chase_script_writes_required_artifacts(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/run_sim_chase.py",
+            "--output-dir",
+            str(tmp_path),
+        ],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "SIMULATOR DEMO: Chase" in result.stdout
+    artifact_line = next(
+        line for line in result.stdout.splitlines() if line.startswith("artifact_dir=")
+    )
+    artifact_dir = Path(artifact_line.split("=", 1)[1])
+    assert artifact_dir.parent == tmp_path
+    assert_standard_artifact_bundle(
+        artifact_dir,
+        algorithm="CHASE",
+        expected_event="chase_order_submitted",
+    )
+
+
+def test_normal_twap_script_writes_required_artifacts(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/run_sim_twap.py",
+            "--output-dir",
+            str(tmp_path),
+        ],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "SIMULATOR DEMO: TWAP" in result.stdout
+    artifact_line = next(
+        line for line in result.stdout.splitlines() if line.startswith("artifact_dir=")
+    )
+    artifact_dir = Path(artifact_line.split("=", 1)[1])
+    assert artifact_dir.parent == tmp_path
+    assert_standard_artifact_bundle(
+        artifact_dir,
+        algorithm="TWAP",
+        expected_event="twap_order_submitted",
+    )
 
 
 def test_simulator_demo_scripts_run_successfully_for_chase_and_cancel_race(tmp_path: Path) -> None:

@@ -1,0 +1,5 @@
+armed_prefix,child_order_count,child_order_id,child_status,client_order_id,client_order_ids,event,execution_id,filled_during_cancel_quantity,filled_quantity,final_reason,final_status,monotonic_time,price,remaining_quantity,required_quantity,side,status,submitted_quantity,utc_timestamp
+ce_2d3534bffa69_,,,,,,execution_created,exec_2d3534bffa694b40,,,,,0.0,,,0.010,,RUNNING,,1970-01-01T00:00:00+00:00
+,,child_0001,OPEN,ce_2d3534bffa69_1,,initial_child_submitted,exec_2d3534bffa694b40,,0,,,0.0,50000.00,0.010,0.010,,RUNNING,0.010,1970-01-01T00:00:00+00:00
+,,child_0002,OPEN,ce_2d3534bffa69_2,,cancel_fill_race_repriced,exec_2d3534bffa694b40,0.004,0,,,0.6,50030.00,0.006,0.010,,RUNNING,0.006,1970-01-01T00:00:00.600000+00:00
+,2,,,,"[""ce_2d3534bffa69_1"", ""ce_2d3534bffa69_2""]",result_summary,exec_2d3534bffa694b40,,,,RUNNING,0.6,,,0.010,BUY,RUNNING,,1970-01-01T00:00:00.600000+00:00

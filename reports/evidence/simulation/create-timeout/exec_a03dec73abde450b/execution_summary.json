@@ -1,0 +1,19 @@
+{
+  "child_order_count": 1,
+  "client_order_ids": [
+    "ce_a03dec73abde_1"
+  ],
+  "execution_id": "exec_a03dec73abde450b",
+  "exposure": {
+    "confirmed_filled_quantity": "0",
+    "live_open_quantity": "0.010",
+    "pending_cancel_quantity": "0",
+    "pending_submit_quantity": "0",
+    "reserved_exposure": "0.010",
+    "unknown_order_quantity": "0"
+  },
+  "final_reason": "CREATE_TIMEOUT_RECONCILED",
+  "final_status": "RUNNING",
+  "required_quantity": "0.010",
+  "side": "BUY"
+}

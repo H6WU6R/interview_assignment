@@ -46,7 +46,12 @@ def _write_csv(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
         return
     fieldnames = sorted({key for row in rows for key in row.keys()})
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=fieldnames,
+            extrasaction="ignore",
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(rows)
 

@@ -1,0 +1,32 @@
+{
+  "accepted_exchange_order_evidence": false,
+  "algorithm": "TWAP",
+  "client_order_ids": [
+    "ce_30ed2b4cac43_1"
+  ],
+  "environment": "testnet",
+  "exchange_order_evidence_status": "no_reconciled_exchange_order_ids",
+  "exchange_order_id_count": 0,
+  "exchange_order_ids": [],
+  "execution_id": "exec_30ed2b4cac4346a1",
+  "final_reconciliation_counts": {
+    "fill_count": 0,
+    "order_count": 0,
+    "warning_count": 0
+  },
+  "final_status": "FAILED",
+  "has_execution_matching_private_order_event": false,
+  "has_private_user_stream_events": false,
+  "has_user_stream_applied_events": false,
+  "rate_limits": {
+    "ORDERS": 300,
+    "REQUEST_WEIGHT": 6000
+  },
+  "reconciled_exchange_order_id_count": 0,
+  "reconciled_fill_count": 0,
+  "reconciled_order_count": 0,
+  "symbol": "BTCUSDT",
+  "warnings": [
+    "missing_accepted_exchange_order_evidence"
+  ]
+}

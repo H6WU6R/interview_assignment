@@ -56,7 +56,7 @@ Do not bake Binance credentials into the image. Pass Testnet credentials at runt
 - `src/observability/`: JSONL/JSON/CSV artifact writers and sanitization helpers.
 - `scripts/`: simulator demos and credential-gated Binance Testnet runners.
 - `tests/`: unit, simulation, and optional Binance Testnet contract tests.
-- `reports/`: report draft and failure-case log.
+- `reports/`: final report sources/PDF, submission manifest, failure-case log, simulator evidence, and sanitized Testnet evidence.
 - `Dockerfile`, `.dockerignore`: optional container packaging for the simulation API.
 
 ## Architecture
@@ -251,7 +251,7 @@ These read-only contract tests validate connectivity and parsing only; they do n
 
 Verification snapshot:
 
-- Verified source commit: `15d944a`
+- Source identity: record the final submission tag or commit in release notes after packaging cleanup.
 - Python: 3.12.12
 - Platform: macOS 26.5 build 25F71
 - Command: `uv run pytest -q tests/unit tests/simulation`

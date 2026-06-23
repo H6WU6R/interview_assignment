@@ -29,9 +29,6 @@
 - `.venv/`
 - `.pytest_cache/`
 - `.DS_Store`
-- `docs/superpowers/`
-- `reports/external_code_review_summary.md`
-- `reports/report_draft.md`
 - local Testnet secret files
 - generated temporary artifacts outside the selected evidence bundle
 

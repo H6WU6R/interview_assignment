@@ -373,6 +373,106 @@ async def test_t5b_twap_does_not_submit_before_first_absolute_slice_boundary() -
     assert_exposure_safe(at_boundary)
 
 
+async def test_twap_aggressive_deadline_reports_cleanup_separately() -> None:
+    clock, simulator, service = await simulator_service()
+    execution = await service.create_execution(
+        request(
+            algorithm=Algorithm.TWAP,
+            target_position=Decimal("0.010"),
+            duration=10,
+            deadline_policy=DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE,
+            parameters=ExecutionParameters(number_of_slices=2),
+        )
+    )
+
+    clock.advance(5)
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
+    scheduled = await service.run_once(execution.execution_id)
+
+    assert len(scheduled.child_orders) == 1
+    assert scheduled.child_orders[0].status is ChildOrderStatus.OPEN
+    assert scheduled.child_orders[0].client_order_id not in (
+        scheduled.aggressive_child_client_order_ids
+    )
+
+    clock.advance(6)
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
+    deadline_attempt = await service.run_once(execution.execution_id)
+
+    assert len(deadline_attempt.child_orders) == 2
+    passive_child, aggressive_child = deadline_attempt.child_orders
+    assert passive_child.status is ChildOrderStatus.CANCELLED
+    assert aggressive_child.status is ChildOrderStatus.OPEN
+    assert aggressive_child.client_order_id in (
+        deadline_attempt.aggressive_child_client_order_ids
+    )
+
+    await simulator.push_fill(
+        aggressive_child.client_order_id,
+        aggressive_child.submitted_quantity,
+        aggressive_child.price,
+    )
+    completed = await service.reconcile_execution(execution.execution_id)
+
+    assert completed.status is ExecutionStatus.COMPLETED
+    assert completed.summary is not None
+    metrics = completed.summary.metrics
+    assert metrics["requested_duration_seconds"] == 10
+    assert metrics["actual_duration_seconds"] == "11"
+    assert metrics["total_lifecycle_duration_seconds"] == "11"
+    assert metrics["decision_deadline_elapsed_seconds"] == "10"
+    assert metrics["terminal_cleanup_duration_seconds"] == "1"
+    assert metrics["orders_submitted_after_deadline"] == 1
+    assert metrics["scheduled_orders_submitted_after_deadline"] == 0
+    assert metrics["deadline_aggressive_orders_submitted_after_deadline"] == 1
+
+
+async def test_twap_cancel_remainder_deadline_has_no_post_deadline_submissions() -> (
+    None
+):
+    clock, simulator, service = await simulator_service()
+    execution = await service.create_execution(
+        request(
+            algorithm=Algorithm.TWAP,
+            target_position=Decimal("0.010"),
+            duration=10,
+            deadline_policy=DeadlinePolicy.CANCEL_REMAINDER,
+            parameters=ExecutionParameters(number_of_slices=2),
+        )
+    )
+
+    clock.advance(5)
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
+    scheduled = await service.run_once(execution.execution_id)
+
+    assert len(scheduled.child_orders) == 1
+    assert scheduled.child_orders[0].status is ChildOrderStatus.OPEN
+
+    clock.advance(5)
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
+    terminal = await service.run_once(execution.execution_id)
+
+    assert terminal.status is ExecutionStatus.EXPIRED
+    assert terminal.summary is not None
+    metrics = terminal.summary.metrics
+    assert metrics["requested_duration_seconds"] == 10
+    assert metrics["actual_duration_seconds"] == "10"
+    assert metrics["total_lifecycle_duration_seconds"] == "10"
+    assert metrics["decision_deadline_elapsed_seconds"] == "10"
+    assert metrics["terminal_cleanup_duration_seconds"] == "0"
+    assert metrics["orders_submitted_after_deadline"] == 0
+    assert metrics["scheduled_orders_submitted_after_deadline"] == 0
+    assert metrics["deadline_aggressive_orders_submitted_after_deadline"] == 0
+
+
 async def test_t6_tail_quantity_records_dust_and_never_rounds_up() -> None:
     clock, simulator, service = await simulator_service()
     execution = await service.create_execution(

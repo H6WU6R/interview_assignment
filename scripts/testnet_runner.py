@@ -11,7 +11,7 @@ import re
 from typing import Any, Iterable, Mapping
 
 from config import Settings, load_binance_usdm_credentials
-from exchanges.base import ExchangeRateLimited
+from exchanges.base import ExchangeRateLimited, VenueBanHardStop
 from exchanges.binance_usdm import BinanceUsdmAdapter, ServerTimeSynchronizationFailure
 from execution.ids import make_client_order_prefix
 from execution.models import (
@@ -209,6 +209,21 @@ async def run(algorithm: Algorithm) -> Path:
                 warnings=list(reconciliation.warnings),
             )
         )
+        apply_result = getattr(service, "apply_reconciliation_result", None)
+        if callable(apply_result):
+            latest = await apply_result(execution.execution_id, reconciliation)
+            events.append(
+                _runtime_event(
+                    adapter,
+                    "post_run_reconciliation_applied",
+                    execution=_record_summary(latest),
+                )
+            )
+        if getattr(latest, "final_reason", None) == ExchangeRateLimited.code:
+            raise SystemExit(
+                "Final reconciliation did not refresh execution state after "
+                "post-run reconciliation; refusing to write stale artifacts."
+            )
 
         artifact_dir = write_execution_artifacts(
             root=args.output_dir,
@@ -275,6 +290,16 @@ async def _create_execution_with_rate_limit_backoff(
         )
         try:
             return await service.create_execution(request), user_task
+        except VenueBanHardStop as exc:
+            reason = _sanitize_exchange_reason(exc)
+            events.append(
+                _runtime_event(
+                    adapter,
+                    "precreate_venue_ban_hard_stop",
+                    reason=reason,
+                )
+            )
+            raise SystemExit(reason) from exc
         except ExchangeRateLimited as exc:
             events.append(
                 _runtime_event(
@@ -570,7 +595,7 @@ def _jsonable(value: Any) -> Any:
     return to_jsonable(value)
 
 
-def _sanitize_exchange_reason(exc: ExchangeRateLimited) -> str:
+def _sanitize_exchange_reason(exc: BaseException) -> str:
     reason = str(getattr(exc, "reason", None) or str(exc) or ExchangeRateLimited.code)
     reason = " ".join(reason.split())
     reason = _SENSITIVE_REASON_VALUE_RE.sub(lambda match: f"{match.group(1)}=[redacted]", reason)

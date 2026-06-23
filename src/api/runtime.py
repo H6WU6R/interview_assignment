@@ -412,6 +412,7 @@ class ExecutionRuntime:
             stream_started_ms = self._clock_wall_ms(environment)
             self._stream_started_wall_ms[key] = stream_started_ms
             stop_stream = False
+            hard_stop_exc: BaseException | None = None
             listen_key_expired_event = False
             try:
                 async for event in stream_factory():
@@ -431,9 +432,16 @@ class ExecutionRuntime:
             except Exception as exc:
                 self._record_runtime_error(f"{environment.value}.{name}_stream", exc)
                 stop_stream = name == "user" and self._is_listen_key_hard_stop(exc)
+                if stop_stream:
+                    hard_stop_exc = exc
 
             if stop_stream:
-                await self._stop_listen_key_keepalive(environment)
+                assert hard_stop_exc is not None
+                await self._mark_listen_key_hard_stop_unavailable(
+                    environment,
+                    hard_stop_exc,
+                    stop_user_stream=False,
+                )
                 break
 
             if self._started and self._adapters.get(environment) is adapter:
@@ -468,7 +476,11 @@ class ExecutionRuntime:
             except Exception as exc:
                 self._record_runtime_error(f"{environment.value}.listen_key_keepalive", exc)
                 if self._is_listen_key_hard_stop(exc):
-                    await self._stop_user_stream(environment)
+                    await self._mark_listen_key_hard_stop_unavailable(
+                        environment,
+                        exc,
+                        stop_user_stream=True,
+                    )
                     break
                 if self._is_listen_key_invalidated(exc):
                     await self._restart_user_stream(environment, adapter)
@@ -489,6 +501,21 @@ class ExecutionRuntime:
         self._unavailable_environments[environment] = reason
         self._record_runtime_error(f"{environment.value}.listen_key_keepalive.unavailable", exc)
         await self._stop_user_stream(environment)
+        await self._reconcile_stale_user_stream_window(environment)
+
+    async def _mark_listen_key_hard_stop_unavailable(
+        self,
+        environment: Environment,
+        exc: BaseException,
+        *,
+        stop_user_stream: bool,
+    ) -> None:
+        reason = self._listen_key_failure_code(exc)
+        self._unavailable_environments[environment] = reason
+        self._record_runtime_error(f"{environment.value}.listen_key_hard_stop.unavailable", exc)
+        await self._stop_listen_key_keepalive(environment)
+        if stop_user_stream:
+            await self._stop_user_stream(environment)
         await self._reconcile_stale_user_stream_window(environment)
 
     async def _stop_user_stream(self, environment: Environment) -> None:

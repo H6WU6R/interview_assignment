@@ -39,11 +39,14 @@ from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
 from execution.models import (
     Algorithm,
+    ChildOrder,
     ChildOrderStatus,
     ExecutionStatus,
     Environment,
+    Fill,
     MarketSnapshot,
     OrderRequest,
+    ReconciliationResult,
     Side,
     SymbolRules,
     TimeInForce,
@@ -1507,6 +1510,120 @@ async def test_testnet_runner_exits_when_precreate_rate_limit_budget_exhausts(
     assert adapter.user_closed.is_set()
 
 
+async def test_testnet_runner_exits_cleanly_when_precreate_venue_ban_hard_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    class FakeRunnerAdapter:
+        def __init__(self, settings: Settings) -> None:
+            self.settings = settings
+            self.clock = ManualClock()
+            self.market_started = asyncio.Event()
+            self.user_started = asyncio.Event()
+            self.market_closed = asyncio.Event()
+            self.user_closed = asyncio.Event()
+            self.call_order: list[str] = []
+
+        def set_market_stream_symbol(self, _symbol: str) -> None:
+            pass
+
+        async def synchronize_server_time(self) -> int:
+            self.call_order.append("synchronize_server_time")
+            return 0
+
+        def stream_market_data(self):
+            async def events():
+                self.market_started.set()
+                try:
+                    yield MarketSnapshot(
+                        symbol="BTCUSDT",
+                        bid=Decimal("100.00"),
+                        ask=Decimal("100.10"),
+                        last_market_event_time_exchange=1,
+                        last_market_event_time_local_monotonic=0.0,
+                    )
+                    await asyncio.Event().wait()
+                finally:
+                    self.market_closed.set()
+
+            return events()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_started.set()
+                try:
+                    yield {}
+                    await asyncio.Event().wait()
+                finally:
+                    self.user_closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.market_started.is_set() and self.user_started.is_set()
+
+        async def get_symbol_rules(self, _symbol: str) -> SymbolRules:
+            return rules()
+
+    class FakeExecutionService:
+        def __init__(self, adapter: FakeRunnerAdapter, **_kwargs: Any) -> None:
+            self.adapter = adapter
+
+        async def create_execution(self, _request: Any) -> Any:
+            self.adapter.call_order.append("create_execution")
+            raise VenueBanHardStop("VENUE_BAN_HARD_STOP api-key=secret")
+
+        async def run_once(self, _execution_id: str) -> Any:
+            raise AssertionError("runner reached order flow after venue ban")
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter: FakeRunnerAdapter | None = None
+
+    def make_adapter(settings: Settings) -> FakeRunnerAdapter:
+        nonlocal adapter
+        adapter = FakeRunnerAdapter(settings)
+        return adapter
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda _algorithm: SimpleNamespace(
+            symbol="BTCUSDT",
+            confirm_send_orders=True,
+            target_position="0.100",
+            target_price_lower="90",
+            target_price_upper="110",
+            duration_seconds=60,
+            number_of_slices=1,
+            max_runtime_seconds=30.0,
+            poll_interval_seconds=0.0,
+            market_timeout_seconds=1.0,
+            output_dir=Path("/tmp"),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_binance_usdm_credentials",
+        lambda: SimpleNamespace(is_configured=True, api_key="key", api_secret="secret"),
+    )
+    monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
+    monkeypatch.setattr(module, "ExecutionService", FakeExecutionService)
+
+    with pytest.raises(SystemExit, match="VENUE_BAN_HARD_STOP api-key=\\[redacted\\]"):
+        await module.run(Algorithm.CHASE)
+
+    assert adapter is not None
+    assert adapter.call_order == ["synchronize_server_time", "create_execution"]
+    assert adapter.market_closed.is_set()
+    assert adapter.user_closed.is_set()
+
+
 async def test_testnet_runner_backs_off_and_retries_post_run_reconciliation_rate_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1561,6 +1678,195 @@ async def test_testnet_runner_backs_off_and_retries_post_run_reconciliation_rate
             "reason": "RATE_LIMIT_BACKOFF api-key=[redacted]",
             "backoff_seconds": 0.1,
         }
+    ]
+
+
+async def test_testnet_runner_applies_successful_post_run_reconciliation_before_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import importlib.util
+
+    class FakeRunnerAdapter:
+        def __init__(self, settings: Settings) -> None:
+            self.settings = settings
+            self.clock = ManualClock()
+            self.market_started = asyncio.Event()
+            self.user_started = asyncio.Event()
+            self.market_closed = asyncio.Event()
+            self.user_closed = asyncio.Event()
+            self.rate_limits = {"REQUEST_WEIGHT": 2400}
+
+        def set_market_stream_symbol(self, _symbol: str) -> None:
+            pass
+
+        async def synchronize_server_time(self) -> int:
+            return 0
+
+        def stream_market_data(self):
+            async def events():
+                self.market_started.set()
+                try:
+                    yield MarketSnapshot(
+                        symbol="BTCUSDT",
+                        bid=Decimal("100.00"),
+                        ask=Decimal("100.10"),
+                        last_market_event_time_exchange=1,
+                        last_market_event_time_local_monotonic=0.0,
+                    )
+                    await asyncio.Event().wait()
+                finally:
+                    self.market_closed.set()
+
+            return events()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_started.set()
+                try:
+                    yield {}
+                    await asyncio.Event().wait()
+                finally:
+                    self.user_closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.market_started.is_set() and self.user_started.is_set()
+
+        async def get_symbol_rules(self, _symbol: str) -> SymbolRules:
+            return rules()
+
+        async def reconcile_orders_and_fills(self, *_args: Any, **_kwargs: Any) -> ReconciliationResult:
+            order = ChildOrder(
+                child_order_id="child_0001",
+                client_order_id="ce_exec_1234567890abcdef_1",
+                symbol="BTCUSDT",
+                side=Side.BUY,
+                submitted_quantity=Decimal("0.100"),
+                price=Decimal("100.00"),
+                status=ChildOrderStatus.FILLED,
+                confirmed_filled_quantity=Decimal("0.100"),
+                exchange_order_id="12345",
+            )
+            fill = Fill(
+                client_order_id=order.client_order_id,
+                trade_id="trade-1",
+                cumulative_filled_quantity=Decimal("0.100"),
+                last_filled_quantity=Decimal("0.100"),
+                last_fill_price=Decimal("100.00"),
+                event_time_ms=1000,
+                transaction_time_ms=1001,
+                is_maker=True,
+            )
+            return ReconciliationResult(orders=[order], fills=[fill])
+
+    class FakeExecutionService:
+        def __init__(self, _adapter: FakeRunnerAdapter, **_kwargs: Any) -> None:
+            self.applied_results: list[ReconciliationResult] = []
+
+        async def create_execution(self, _request: Any) -> Any:
+            return SimpleNamespace(
+                execution_id="exec_1234567890abcdef",
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+                summary=None,
+            )
+
+        async def run_once(self, _execution_id: str) -> Any:
+            raise AssertionError("max_runtime_seconds=0 should skip normal ticks")
+
+        async def cancel_execution(self, _execution_id: str) -> Any:
+            return SimpleNamespace(
+                execution_id="exec_1234567890abcdef",
+                status=ExecutionStatus.CANCELLING,
+                final_reason="CANCEL_REQUESTED",
+                exposure={},
+                child_orders=[],
+                summary=None,
+            )
+
+        async def reconcile_execution(self, _execution_id: str) -> Any:
+            return SimpleNamespace(
+                execution_id="exec_1234567890abcdef",
+                status=ExecutionStatus.CANCELLING,
+                final_reason="RATE_LIMIT_BACKOFF",
+                exposure={},
+                child_orders=[],
+                summary=None,
+            )
+
+        async def apply_reconciliation_result(
+            self,
+            _execution_id: str,
+            result: ReconciliationResult,
+        ) -> Any:
+            self.applied_results.append(result)
+            return SimpleNamespace(
+                execution_id="exec_1234567890abcdef",
+                status=ExecutionStatus.COMPLETED,
+                final_reason="TARGET_QUANTITY_FILLED",
+                exposure={"confirmed_filled_quantity": "0.100"},
+                child_orders=list(result.orders),
+                summary=None,
+            )
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    service: FakeExecutionService | None = None
+
+    def make_service(adapter: FakeRunnerAdapter, **kwargs: Any) -> FakeExecutionService:
+        nonlocal service
+        service = FakeExecutionService(adapter, **kwargs)
+        return service
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda _algorithm: SimpleNamespace(
+            symbol="BTCUSDT",
+            confirm_send_orders=True,
+            target_position="0.100",
+            target_price_lower="90",
+            target_price_upper="110",
+            duration_seconds=60,
+            number_of_slices=1,
+            max_runtime_seconds=0.0,
+            poll_interval_seconds=0.0,
+            market_timeout_seconds=1.0,
+            output_dir=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_binance_usdm_credentials",
+        lambda: SimpleNamespace(is_configured=True, api_key="key", api_secret="secret"),
+    )
+    monkeypatch.setattr(module, "BinanceUsdmAdapter", FakeRunnerAdapter)
+    monkeypatch.setattr(module, "ExecutionService", make_service)
+    artifact_call: dict[str, Any] = {}
+
+    def capture_artifacts(**kwargs: Any) -> Path:
+        artifact_call.update(kwargs)
+        return tmp_path / "artifacts"
+
+    monkeypatch.setattr(module, "write_execution_artifacts", capture_artifacts)
+
+    artifact_dir = await module.run(Algorithm.CHASE)
+
+    assert artifact_dir == tmp_path / "artifacts"
+    assert service is not None
+    assert len(service.applied_results) == 1
+    assert artifact_call["summary"]["status"] == ExecutionStatus.COMPLETED
+    assert artifact_call["summary"]["final_reason"] == "TARGET_QUANTITY_FILLED"
+    assert [child["client_order_id"] for child in artifact_call["child_orders"]] == [
+        "ce_exec_1234567890abcdef_1"
     ]
 
 

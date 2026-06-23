@@ -13,6 +13,7 @@ from exchanges.base import (
     TerminalOrderRejected,
     VenueBanHardStop,
 )
+from exchanges.binance_usdm import ExchangeSystemOverload, RetryableReadFailure
 from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
 from execution.engine import ExecutionEngine
@@ -852,6 +853,41 @@ async def test_direct_reconcile_rate_limit_records_backoff_without_raising() -> 
     assert adapter.broad_reconciliation_calls == 1
 
 
+async def test_direct_reconcile_retryable_503_records_backoff_without_raising() -> None:
+    class BroadReconcileRetryableAdapter(DeterministicSimulator):
+        broad_reconciliation_calls: int
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.broad_reconciliation_calls = 0
+
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ReconciliationResult:
+            self.broad_reconciliation_calls += 1
+            raise RetryableReadFailure("RETRYABLE_503_FAILURE")
+
+    clock = ManualClock()
+    adapter = BroadReconcileRetryableAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+
+    limited = await service.reconcile_execution(opened.execution_id)
+
+    assert limited.status is ExecutionStatus.RUNNING
+    assert limited.final_reason == "RATE_LIMIT_BACKOFF"
+    assert limited.metric_counts["rate_limit_backoffs"] == 1
+    assert limited.child_orders[0].status is ChildOrderStatus.OPEN
+    assert adapter.broad_reconciliation_calls == 1
+
+
 async def test_exact_lookup_venue_ban_hard_stop_fails_without_repeated_retry() -> None:
     class ExactLookupVenueBanAdapter(DeterministicSimulator):
         lookup_client_order_ids: list[str]
@@ -1432,6 +1468,42 @@ async def test_create_rate_limit_defers_resubmit_until_backoff_expires() -> None
     assert retried.child_orders[0].status is ChildOrderStatus.OPEN
 
 
+async def test_create_retryable_503_defers_resubmit_until_backoff_expires() -> None:
+    class CreateRetryableAdapter(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            if len(self.submissions) == 1:
+                raise ExchangeSystemOverload("SYSTEM_OVERLOAD_RETRYABLE")
+            return await super().submit_limit_order(order_request)
+
+    clock = ManualClock()
+    adapter = CreateRetryableAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    limited = await service.run_once(execution.execution_id)
+    immediate = await service.run_once(execution.execution_id)
+    immediate_submission_count = len(adapter.submissions)
+    clock.advance(1)
+    retried = await service.run_once(execution.execution_id)
+
+    assert limited.status is ExecutionStatus.RUNNING
+    assert limited.final_reason == "RATE_LIMIT_BACKOFF"
+    assert limited.child_orders == []
+    assert immediate.final_reason == "RATE_LIMIT_BACKOFF"
+    assert immediate_submission_count == 1
+    assert len(adapter.submissions) == 2
+    assert retried.final_reason is None
+    assert retried.child_orders[0].status is ChildOrderStatus.OPEN
+
+
 async def test_exact_lookup_rate_limit_defers_refresh_until_backoff_expires() -> None:
     class ExactLookupRateLimitAdapter(DeterministicSimulator):
         lookup_client_order_ids: list[str]
@@ -1477,6 +1549,49 @@ async def test_exact_lookup_rate_limit_defers_refresh_until_backoff_expires() ->
     ]
     assert retried.final_reason is None
     assert retried.child_orders[0].status is ChildOrderStatus.OPEN
+
+
+async def test_exact_lookup_retryable_503_defers_refresh_until_backoff_expires() -> None:
+    class ExactLookupRetryableAdapter(DeterministicSimulator):
+        lookup_client_order_ids: list[str]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.lookup_client_order_ids = []
+
+        async def get_order_by_client_order_id(
+            self,
+            symbol: str,
+            client_order_id: str,
+        ) -> ChildOrder | None:
+            self.lookup_client_order_ids.append(client_order_id)
+            if len(self.lookup_client_order_ids) == 1:
+                raise RetryableReadFailure("RETRYABLE_READ_FAILURE")
+            return await super().get_order_by_client_order_id(symbol, client_order_id)
+
+    clock = ManualClock()
+    adapter = ExactLookupRetryableAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+
+    limited = await service.run_once(execution.execution_id)
+    immediate = await service.run_once(execution.execution_id)
+    immediate_lookup_count = len(adapter.lookup_client_order_ids)
+    clock.advance(1)
+    retried = await service.run_once(execution.execution_id)
+
+    assert limited.status is ExecutionStatus.RUNNING
+    assert limited.final_reason == "RATE_LIMIT_BACKOFF"
+    assert limited.metric_counts["rate_limit_backoffs"] == 1
+    assert immediate.final_reason == "RATE_LIMIT_BACKOFF"
+    assert immediate_lookup_count == 1
+    assert adapter.lookup_client_order_ids == [
+        opened.child_orders[0].client_order_id,
+        opened.child_orders[0].client_order_id,
+    ]
+    assert retried.final_reason is None
 
 
 async def test_adapter_level_cancel_timeout_keeps_pending_cancel_exposure_until_reconcile() -> None:
@@ -1538,6 +1653,44 @@ async def test_cancel_rate_limit_defers_retry_until_backoff_expires() -> None:
     assert limited.final_reason == "RATE_LIMIT_BACKOFF"
     assert limited.child_orders[0].status is ChildOrderStatus.OPEN
     assert limited.exposure.live_open_quantity == Decimal("0.010")
+    assert limited.exposure.pending_cancel_quantity == Decimal("0")
+    assert immediate.final_reason == "RATE_LIMIT_BACKOFF"
+    assert immediate_cancel_attempts == 1
+    assert adapter.cancel_attempts == 2
+    assert retried.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert retried.status is ExecutionStatus.CANCELLED
+
+
+async def test_cancel_retryable_503_defers_retry_until_backoff_expires() -> None:
+    class CancelRetryableAdapter(DeterministicSimulator):
+        cancel_attempts: int
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.cancel_attempts = 0
+
+        async def cancel_order(self, symbol: str, client_order_id: str) -> ChildOrder:
+            self.cancel_attempts += 1
+            if self.cancel_attempts == 1:
+                raise ExchangeSystemOverload("SYSTEM_OVERLOAD_RETRYABLE")
+            return await super().cancel_order(symbol, client_order_id)
+
+    clock = ManualClock()
+    adapter = CancelRetryableAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+
+    limited = await service.cancel_execution(opened.execution_id)
+    immediate = await service.cancel_execution(opened.execution_id)
+    immediate_cancel_attempts = adapter.cancel_attempts
+    clock.advance(1)
+    retried = await service.cancel_execution(opened.execution_id)
+
+    assert limited.status is ExecutionStatus.CANCELLING
+    assert limited.final_reason == "RATE_LIMIT_BACKOFF"
+    assert limited.child_orders[0].status is ChildOrderStatus.OPEN
     assert limited.exposure.pending_cancel_quantity == Decimal("0")
     assert immediate.final_reason == "RATE_LIMIT_BACKOFF"
     assert immediate_cancel_attempts == 1

@@ -83,7 +83,7 @@ class PendingCancelOutcome(OrderCancelTimeout):
     pass
 
 
-class RetryableReadFailure(RuntimeError):
+class RetryableReadFailure(ExchangeRateLimited):
     """Raised when a signed read can be retried safely."""
 
     pass

@@ -1208,6 +1208,18 @@ async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
     import importlib
 
     runtime_module = importlib.import_module("api.runtime")
+    request = ExecutionCreateRequest.model_validate(
+        execution_payload(environment="testnet", target_position="0.010")
+    ).to_domain()
+    record = ExecutionRecord(
+        execution_id="exec_user_stream_hard_stop",
+        request=request,
+        status=ExecutionStatus.RUNNING,
+        side=Side.BUY,
+        required_quantity=Decimal("0.010"),
+        raw_required_quantity=Decimal("0.010"),
+        initial_position=PositionSnapshot(symbol=SYMBOL, position=Decimal("0")),
+    )
 
     class HardStopStartupAdapter:
         def __init__(self) -> None:
@@ -1228,13 +1240,45 @@ async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
         async def renew_listen_key(self, listen_key: str) -> None:
             self.renewed_listen_keys.append(listen_key)
 
+    class RecordingReconcileService:
+        def __init__(self) -> None:
+            self.windows: list[tuple[str, int | None, int | None]] = []
+
+        async def active_executions(self) -> list[ExecutionRecord]:
+            return [record]
+
+        async def reconcile_execution(
+            self,
+            execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ExecutionRecord:
+            self.windows.append((execution_id, start_time_ms, end_time_ms))
+            return record
+
+        async def active_execution_for(
+            self,
+            _environment: Environment,
+            _symbol: str,
+        ) -> ExecutionRecord | None:
+            return None
+
+        async def create_execution(self, _request: Any) -> ExecutionRecord:
+            raise AssertionError("unavailable runtime should reject before service create")
+
     runtime = runtime_module.ExecutionRuntime(
         stream_keepalive_interval_seconds=0.05,
         stream_restart_delay_seconds=0.01,
     )
     adapter = HardStopStartupAdapter()
+    service = RecordingReconcileService()
+    clock = ManualClock(current=123.0)
     runtime._started = True
     runtime._adapters[Environment.TESTNET] = adapter
+    runtime._services[Environment.TESTNET] = service
+    runtime._clocks[Environment.TESTNET] = clock
+    runtime._remember_execution(record)
     runtime._schedule_stream_supervisor(
         Environment.TESTNET,
         "user",
@@ -1248,15 +1292,22 @@ async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
     try:
         task = runtime._stream_tasks[(Environment.TESTNET, "user")]
         await asyncio.wait_for(adapter.failed.wait(), timeout=0.5)
+        clock.advance(120.0)
         await asyncio.wait_for(task, timeout=0.5)
         await asyncio.sleep(0.05)
 
         assert adapter.user_runs == 1
         assert keepalive_task.done()
         assert adapter.renewed_listen_keys == []
+        assert service.windows == [("exec_user_stream_hard_stop", 183_000, 243_000)]
         assert runtime.runtime_errors["testnet.user_stream"] == [
             "StreamHealthFailure: LISTEN_KEY_VENUE_BAN_HARD_STOP"
         ]
+        with pytest.raises(
+            runtime_module.RuntimeUnavailableError,
+            match="LISTEN_KEY_VENUE_BAN_HARD_STOP",
+        ):
+            await runtime.create_execution(request)
     finally:
         runtime._started = False
         for stream_task in runtime._stream_tasks.values():
@@ -1274,6 +1325,18 @@ async def test_runtime_listen_key_keepalive_hard_stop_stops_loop() -> None:
     import importlib
 
     runtime_module = importlib.import_module("api.runtime")
+    request = ExecutionCreateRequest.model_validate(
+        execution_payload(environment="testnet", target_position="0.010")
+    ).to_domain()
+    record = ExecutionRecord(
+        execution_id="exec_keepalive_hard_stop",
+        request=request,
+        status=ExecutionStatus.RUNNING,
+        side=Side.BUY,
+        required_quantity=Decimal("0.010"),
+        raw_required_quantity=Decimal("0.010"),
+        initial_position=PositionSnapshot(symbol=SYMBOL, position=Decimal("0")),
+    )
 
     class HardStopKeepaliveAdapter:
         def __init__(self) -> None:
@@ -1299,10 +1362,42 @@ async def test_runtime_listen_key_keepalive_hard_stop_stops_loop() -> None:
             self.failed.set()
             raise StreamHealthFailure("LISTEN_KEY_VENUE_BAN_HARD_STOP")
 
+    class RecordingReconcileService:
+        def __init__(self) -> None:
+            self.windows: list[tuple[str, int | None, int | None]] = []
+
+        async def active_executions(self) -> list[ExecutionRecord]:
+            return [record]
+
+        async def reconcile_execution(
+            self,
+            execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ExecutionRecord:
+            self.windows.append((execution_id, start_time_ms, end_time_ms))
+            return record
+
+        async def active_execution_for(
+            self,
+            _environment: Environment,
+            _symbol: str,
+        ) -> ExecutionRecord | None:
+            return None
+
+        async def create_execution(self, _request: Any) -> ExecutionRecord:
+            raise AssertionError("unavailable runtime should reject before service create")
+
     runtime = runtime_module.ExecutionRuntime(stream_keepalive_interval_seconds=0.01)
     adapter = HardStopKeepaliveAdapter()
+    service = RecordingReconcileService()
+    clock = ManualClock(current=123.0)
     runtime._started = True
     runtime._adapters[Environment.TESTNET] = adapter
+    runtime._services[Environment.TESTNET] = service
+    runtime._clocks[Environment.TESTNET] = clock
+    runtime._remember_execution(record)
     runtime._schedule_stream_supervisor(
         Environment.TESTNET,
         "user",
@@ -1312,15 +1407,22 @@ async def test_runtime_listen_key_keepalive_hard_stop_stops_loop() -> None:
     task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
     try:
         await asyncio.wait_for(adapter.user_started.wait(), timeout=0.5)
+        clock.advance(120.0)
         await asyncio.wait_for(adapter.failed.wait(), timeout=0.5)
         await asyncio.wait_for(task, timeout=0.5)
         await asyncio.wait_for(adapter.user_closed.wait(), timeout=0.5)
         await asyncio.sleep(0.05)
 
         assert adapter.renewed_listen_keys == ["listen-1"]
+        assert service.windows == [("exec_keepalive_hard_stop", 183_000, 243_000)]
         assert runtime.runtime_errors["testnet.listen_key_keepalive"] == [
             "StreamHealthFailure: LISTEN_KEY_VENUE_BAN_HARD_STOP"
         ]
+        with pytest.raises(
+            runtime_module.RuntimeUnavailableError,
+            match="LISTEN_KEY_VENUE_BAN_HARD_STOP",
+        ):
+            await runtime.create_execution(request)
     finally:
         runtime._started = False
         for stream_task in runtime._stream_tasks.values():
@@ -2082,6 +2184,27 @@ async def test_run_once_route_maps_raw_venue_ban_hard_stop_to_503(
 
     assert response.status_code == 503
     assert response.json()["detail"] == "VENUE_BAN_HARD_STOP"
+
+
+@pytest.mark.asyncio
+async def test_run_once_route_maps_runtime_unavailable_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    runtime_module = importlib.import_module("api.runtime")
+    app = create_app(simulator_position="0")
+    created = (await post_json(app, "/executions", execution_payload())).json()
+
+    async def unavailable_run_once(execution_id: str):
+        raise runtime_module.RuntimeUnavailableError("RATE_LIMIT_BACKOFF")
+
+    monkeypatch.setattr(app.state.runtime, "run_once", unavailable_run_once)
+
+    response = await post_json(app, f"/executions/{created['execution_id']}/run-once")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "RATE_LIMIT_BACKOFF"
 
 
 @pytest.mark.asyncio

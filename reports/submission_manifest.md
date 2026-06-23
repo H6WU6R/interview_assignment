@@ -13,13 +13,12 @@
 - `.dockerignore`
 - `README.md`
 - `AI_USAGE.md`
-- `reports/report_draft.md`
 - `reports/failure_case_log.md`
 - `reports/latex/report.pdf`
 - `reports/evidence/simulation/chase/exec_c8dc942476764355`
 - `reports/evidence/simulation/twap/exec_61fadac604f4440a`
-- `reports/evidence/simulation/cancel-race/exec_669d47a536a94682`
-- `reports/evidence/simulation/create-timeout/exec_3ddb8a47995348d0`
+- `reports/evidence/simulation/cancel-race/exec_6106c8ca78fa4659`
+- `reports/evidence/simulation/create-timeout/exec_048f48e8d58c4d2b`
 - `reports/evidence/testnet/chase/exec_3168600ee25b4193`
 - `reports/evidence/testnet/twap/exec_85bef3985ea3431a`
 - `reports/evidence/testnet/chase/exec_85051310eb714ebe`
@@ -32,6 +31,7 @@
 - `.DS_Store`
 - `docs/superpowers/`
 - `reports/external_code_review_summary.md`
+- `reports/report_draft.md`
 - local Testnet secret files
 - generated temporary artifacts outside the selected evidence bundle
 
@@ -41,8 +41,8 @@ Committed deterministic simulator artifact directories:
 
 - `reports/evidence/simulation/chase/exec_c8dc942476764355`
 - `reports/evidence/simulation/twap/exec_61fadac604f4440a`
-- `reports/evidence/simulation/cancel-race/exec_669d47a536a94682`
-- `reports/evidence/simulation/create-timeout/exec_3ddb8a47995348d0`
+- `reports/evidence/simulation/cancel-race/exec_6106c8ca78fa4659`
+- `reports/evidence/simulation/create-timeout/exec_048f48e8d58c4d2b`
 
 Accepted Binance Testnet artifacts:
 

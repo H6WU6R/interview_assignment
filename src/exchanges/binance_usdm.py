@@ -248,6 +248,7 @@ class BinanceUsdmAdapter(ExchangeAdapter):
     latest_listen_key: str | None = None
     last_stream_error: str | None = None
     _latest_market: dict[str, MarketSnapshot] = field(default_factory=dict)
+    _client_order_id_by_order_id: dict[tuple[str, str], str] = field(default_factory=dict)
     _market_stream_symbol: str = "BTCUSDT"
 
     def __post_init__(self) -> None:
@@ -451,7 +452,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             submitted_quantity=order_request.quantity,
             price=order_request.price,
         )
-        return parse_order(raw, fallback=fallback)
+        order = parse_order(raw, fallback=fallback)
+        self._remember_order_identity(order)
+        return order
 
     async def cancel_order(self, symbol: str, client_order_id: str) -> ChildOrder:
         raw = await self._signed_request(
@@ -460,7 +463,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             {"symbol": symbol, "origClientOrderId": client_order_id},
             mutation_kind=MutationKind.CANCEL,
         )
-        return parse_order(raw)
+        order = parse_order(raw)
+        self._remember_order_identity(order)
+        return order
 
     async def get_order_by_client_order_id(self, symbol: str, client_order_id: str) -> ChildOrder | None:
         try:
@@ -473,7 +478,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             if _is_order_not_found_reason(str(exc)):
                 return None
             raise
-        return parse_order(raw)
+        order = parse_order(raw)
+        self._remember_order_identity(order)
+        return order
 
     async def get_position(self, symbol: str) -> PositionSnapshot:
         rows = await self._signed_request("GET", POSITION_RISK_V3_PATH, {"symbol": symbol})
@@ -641,6 +648,7 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             if not client_order_id.startswith(client_order_prefix):
                 continue
             order = parse_order(raw_order)
+            self._remember_order_identity(order)
             orders_by_client_id[client_order_id] = order
             if raw_order.get("orderId") is not None:
                 order_id_to_client_id[str(raw_order["orderId"])] = client_order_id
@@ -651,8 +659,11 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             client_order_id = raw_fill.get("clientOrderId")
             if client_order_id is not None:
                 client_order_id = str(client_order_id)
-            elif raw_fill.get("orderId") is not None:
-                client_order_id = order_id_to_client_id.get(str(raw_fill["orderId"]))
+            order_id = str(raw_fill["orderId"]) if raw_fill.get("orderId") is not None else None
+            if client_order_id in {None, ""} and order_id is not None:
+                client_order_id = order_id_to_client_id.get(order_id)
+                if client_order_id is None:
+                    client_order_id = self._client_order_id_by_order_id.get((symbol, order_id))
             if client_order_id is None or not client_order_id.startswith(client_order_prefix):
                 continue
 
@@ -674,6 +685,11 @@ class BinanceUsdmAdapter(ExchangeAdapter):
 
     def _clock_wall_ms(self) -> int:
         return int(self.clock.utc_now().timestamp() * 1000)
+
+    def _remember_order_identity(self, order: ChildOrder) -> None:
+        if order.exchange_order_id is None:
+            return
+        self._client_order_id_by_order_id[(order.symbol, order.exchange_order_id)] = order.client_order_id
 
 
 def _find_symbol_payload(payload: Mapping[str, Any], symbol: str) -> Mapping[str, Any]:

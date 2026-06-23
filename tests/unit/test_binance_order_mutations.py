@@ -895,6 +895,233 @@ async def test_reconciliation_requires_prefix_filters_manual_orders_and_joins_tr
     ]
 
 
+async def test_reconcile_uses_cached_order_identity_when_bounded_all_orders_omits_trade_order() -> None:
+    payloads = {
+        ("GET", "/fapi/v1/openOrders"): [],
+        ("GET", "/fapi/v1/allOrders"): [],
+        ("GET", "/fapi/v1/userTrades"): [
+            {
+                "symbol": "BTCUSDT",
+                "orderId": 16277695886,
+                "id": 1,
+                "qty": "0.002",
+                "price": "95000",
+                "time": 10,
+            },
+        ],
+    }
+
+    class ReconciliationClient(RecordingClient):
+        async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            return FakeResponse(200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])])
+
+    adapter = authed_adapter(ReconciliationClient())
+    adapter._remember_order_identity(
+        ChildOrder(
+            child_order_id="child_0001",
+            client_order_id="ce_abcdef123456_1",
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            submitted_quantity=Decimal("0.010"),
+            price=Decimal("95000.10"),
+            exchange_order_id="16277695886",
+        )
+    )
+
+    result = await adapter.reconcile_orders_and_fills(
+        "BTCUSDT",
+        client_order_prefix="ce_abcdef123456_",
+        start_time_ms=1000,
+        end_time_ms=2000,
+    )
+
+    assert [fill.client_order_id for fill in result.fills] == ["ce_abcdef123456_1"]
+
+
+async def test_reconcile_ignores_cached_order_identity_for_other_execution_prefix() -> None:
+    payloads = {
+        ("GET", "/fapi/v1/openOrders"): [],
+        ("GET", "/fapi/v1/allOrders"): [],
+        ("GET", "/fapi/v1/userTrades"): [
+            {
+                "symbol": "BTCUSDT",
+                "orderId": 16277695886,
+                "id": 1,
+                "qty": "0.002",
+                "price": "95000",
+                "time": 10,
+            },
+        ],
+    }
+
+    class ReconciliationClient(RecordingClient):
+        async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            return FakeResponse(200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])])
+
+    adapter = authed_adapter(ReconciliationClient())
+    adapter._remember_order_identity(
+        ChildOrder(
+            child_order_id="child_0001",
+            client_order_id="ce_otherexec_1",
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            submitted_quantity=Decimal("0.010"),
+            price=Decimal("95000.10"),
+            exchange_order_id="16277695886",
+        )
+    )
+
+    result = await adapter.reconcile_orders_and_fills(
+        "BTCUSDT",
+        client_order_prefix="ce_abcdef123456_",
+        start_time_ms=1000,
+        end_time_ms=2000,
+    )
+
+    assert result.fills == []
+
+
+async def test_reconcile_ignores_cached_order_identity_for_other_symbol() -> None:
+    payloads = {
+        ("GET", "/fapi/v1/openOrders"): [],
+        ("GET", "/fapi/v1/allOrders"): [],
+        ("GET", "/fapi/v1/userTrades"): [
+            {
+                "symbol": "BTCUSDT",
+                "orderId": 16277695886,
+                "id": 1,
+                "qty": "0.002",
+                "price": "95000",
+                "time": 10,
+            },
+        ],
+    }
+
+    class ReconciliationClient(RecordingClient):
+        async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            return FakeResponse(200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])])
+
+    adapter = authed_adapter(ReconciliationClient())
+    adapter._remember_order_identity(
+        ChildOrder(
+            child_order_id="child_0001",
+            client_order_id="ce_abcdef123456_1",
+            symbol="ETHUSDT",
+            side=Side.BUY,
+            submitted_quantity=Decimal("0.010"),
+            price=Decimal("95000.10"),
+            exchange_order_id="16277695886",
+        )
+    )
+
+    result = await adapter.reconcile_orders_and_fills(
+        "BTCUSDT",
+        client_order_prefix="ce_abcdef123456_",
+        start_time_ms=1000,
+        end_time_ms=2000,
+    )
+
+    assert result.fills == []
+
+
+async def test_reconcile_treats_empty_trade_client_order_id_as_missing_for_cached_identity() -> None:
+    payloads = {
+        ("GET", "/fapi/v1/openOrders"): [],
+        ("GET", "/fapi/v1/allOrders"): [],
+        ("GET", "/fapi/v1/userTrades"): [
+            {
+                "symbol": "BTCUSDT",
+                "clientOrderId": "",
+                "orderId": 16277695886,
+                "id": 1,
+                "qty": "0.002",
+                "price": "95000",
+                "time": 10,
+            },
+        ],
+    }
+
+    class ReconciliationClient(RecordingClient):
+        async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            return FakeResponse(200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])])
+
+    adapter = authed_adapter(ReconciliationClient())
+    adapter._remember_order_identity(
+        ChildOrder(
+            child_order_id="child_0001",
+            client_order_id="ce_abcdef123456_1",
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            submitted_quantity=Decimal("0.010"),
+            price=Decimal("95000.10"),
+            exchange_order_id="16277695886",
+        )
+    )
+
+    result = await adapter.reconcile_orders_and_fills(
+        "BTCUSDT",
+        client_order_prefix="ce_abcdef123456_",
+        start_time_ms=1000,
+        end_time_ms=2000,
+    )
+
+    assert [fill.client_order_id for fill in result.fills] == ["ce_abcdef123456_1"]
+
+
+async def test_reconcile_uses_identity_cached_by_order_query_when_bounded_all_orders_omits_trade_order() -> None:
+    payloads = {
+        ("GET", "/fapi/v1/openOrders"): [],
+        ("GET", "/fapi/v1/allOrders"): [],
+        ("GET", "/fapi/v1/userTrades"): [
+            {
+                "symbol": "BTCUSDT",
+                "orderId": 16277695886,
+                "id": 1,
+                "qty": "0.002",
+                "price": "95000",
+                "time": 10,
+            },
+        ],
+    }
+
+    class ReconciliationClient(RecordingClient):
+        async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            path = url.split(BinanceUsdmAdapter().base_url, 1)[1]
+            if path == "/fapi/v1/order":
+                return FakeResponse(
+                    200,
+                    {
+                        "symbol": "BTCUSDT",
+                        "clientOrderId": "ce_abcdef123456_1",
+                        "orderId": 16277695886,
+                        "side": "BUY",
+                        "origQty": "0.010",
+                        "executedQty": "0.000",
+                        "price": "95000.10",
+                        "status": "NEW",
+                    },
+                )
+            return FakeResponse(200, payloads[(method, path)])
+
+    adapter = authed_adapter(ReconciliationClient())
+    queried = await adapter.get_order_by_client_order_id("BTCUSDT", "ce_abcdef123456_1")
+
+    result = await adapter.reconcile_orders_and_fills(
+        "BTCUSDT",
+        client_order_prefix="ce_abcdef123456_",
+        start_time_ms=1000,
+        end_time_ms=2000,
+    )
+
+    assert queried is not None
+    assert [fill.client_order_id for fill in result.fills] == ["ce_abcdef123456_1"]
+
+
 async def test_reconciliation_passes_time_window_and_limit_to_historical_endpoints() -> None:
     class EmptyReconciliationClient(RecordingClient):
         async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:

@@ -158,7 +158,12 @@ async def test_testnet_request_constructs_binance_adapter_with_system_clock_and_
         def __init__(self, *, settings: Any, clock: Any) -> None:
             super().__init__(clock=clock, position=Decimal("0.010"))
             self.settings = settings
+            self.synchronized = False
             constructed.append(self)
+
+        async def synchronize_server_time(self) -> int:
+            self.synchronized = True
+            return 123
 
     monkeypatch.setattr(
         runtime_module,
@@ -181,6 +186,7 @@ async def test_testnet_request_constructs_binance_adapter_with_system_clock_and_
     assert adapter.settings.environment is Environment.TESTNET
     assert adapter.settings.binance_api_key == "test-key"
     assert adapter.settings.binance_api_secret == "test-secret"
+    assert adapter.synchronized is True
     assert response.json()["request"]["environment"] == "testnet"
 
 
@@ -226,7 +232,12 @@ async def test_mainnet_request_constructs_adapter_only_when_allowed(
         def __init__(self, *, settings: Any, clock: Any) -> None:
             super().__init__(clock=clock, position=Decimal("0.010"))
             self.settings = settings
+            self.synchronized = False
             constructed.append(self)
+
+        async def synchronize_server_time(self) -> int:
+            self.synchronized = True
+            return 456
 
     monkeypatch.setattr(
         runtime_module,
@@ -250,6 +261,7 @@ async def test_mainnet_request_constructs_adapter_only_when_allowed(
     assert adapter.settings.allow_mainnet_trading is True
     assert adapter.settings.binance_api_key == "mainnet-key"
     assert adapter.settings.binance_api_secret == "mainnet-secret"
+    assert adapter.synchronized is True
 
 
 @pytest.mark.asyncio
@@ -464,6 +476,9 @@ async def test_runtime_starts_binance_stream_supervisors_and_renews_listen_key(
             self.renewed = asyncio.Event()
             self.renewed_listen_keys: list[str] = []
             constructed.append(self)
+
+        async def synchronize_server_time(self) -> int:
+            return 0
 
         def stream_market_data(self):
             async def events():
@@ -1107,6 +1122,9 @@ async def test_runtime_restarts_binance_user_stream_after_disconnect(
             self.reconciliation_windows: list[tuple[str | None, int | None, int | None]] = []
             constructed.append(self)
 
+        async def synchronize_server_time(self) -> int:
+            return 0
+
         def stream_market_data(self):
             async def events():
                 self.market_stream_healthy = True
@@ -1226,6 +1244,9 @@ async def test_user_stream_event_reconciles_active_execution_with_event_time_bou
             self.reconciliation_windows: list[tuple[str | None, int | None, int | None]] = []
             constructed.append(self)
 
+        async def synchronize_server_time(self) -> int:
+            return 0
+
         def stream_user_events(self):
             async def events():
                 self._user_stream_healthy = True
@@ -1305,6 +1326,9 @@ async def test_background_loop_advances_twap_without_external_run_once(
         def __init__(self, *, settings: Any, clock: Any) -> None:
             super().__init__(clock=clock, position=Decimal("0"))
             self.settings = settings
+
+        async def synchronize_server_time(self) -> int:
+            return 0
 
         async def get_best_bid_ask(self, symbol: str) -> MarketSnapshot:
             return MarketSnapshot(

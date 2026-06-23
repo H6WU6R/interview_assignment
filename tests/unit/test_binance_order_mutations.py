@@ -19,11 +19,15 @@ from exchanges.binance_usdm import (
     LISTEN_KEY_PATH,
     ORDER_QUERY_PATH,
     ORDER_REST_PATH,
+    TIME_PATH,
     BinanceUsdmAdapter,
+    ExchangeRateLimited,
+    ExchangeSystemOverload,
     ExchangeTerminalReject,
     MutationKind,
     PendingCancelOutcome,
     RetryableReadFailure,
+    ServerTimeSynchronizationFailure,
     StreamHealthFailure,
     UnknownCreateOutcome,
     build_new_order_params,
@@ -252,7 +256,7 @@ async def test_signed_request_transport_errors_map_by_operation(transport_error:
 @pytest.mark.parametrize(
     ("status_code", "expected_exc", "match"),
     [
-        (429, RetryableReadFailure, "RATE_LIMIT_BACKOFF"),
+        (429, ExchangeRateLimited, "RATE_LIMIT_BACKOFF"),
         (418, VenueBanHardStop, "VENUE_BAN_HARD_STOP"),
     ],
 )
@@ -359,7 +363,7 @@ async def test_signed_create_503_with_specific_terminal_reject_is_not_ambiguous(
         await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
 
 
-async def test_signed_create_503_system_overload_is_unknown_not_terminal() -> None:
+async def test_signed_create_503_system_overload_is_retryable_not_unknown_or_terminal() -> None:
     adapter = authed_adapter(
         RecordingClient(
             FakeResponse(
@@ -369,12 +373,13 @@ async def test_signed_create_503_system_overload_is_unknown_not_terminal() -> No
         )
     )
 
-    with pytest.raises(UnknownCreateOutcome, match="UNKNOWN_CREATE_OUTCOME") as exc_info:
+    with pytest.raises(ExchangeSystemOverload, match="SYSTEM_OVERLOAD_RETRYABLE") as exc_info:
         await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
     assert not isinstance(exc_info.value, ExchangeTerminalReject)
+    assert not isinstance(exc_info.value, UnknownCreateOutcome)
 
 
-async def test_signed_cancel_503_system_overload_is_pending_not_terminal() -> None:
+async def test_signed_cancel_503_system_overload_is_retryable_not_pending_or_terminal() -> None:
     adapter = authed_adapter(
         RecordingClient(
             FakeResponse(
@@ -384,9 +389,110 @@ async def test_signed_cancel_503_system_overload_is_pending_not_terminal() -> No
         )
     )
 
-    with pytest.raises(PendingCancelOutcome, match="PENDING_CANCEL_OUTCOME") as exc_info:
+    with pytest.raises(ExchangeSystemOverload, match="SYSTEM_OVERLOAD_RETRYABLE") as exc_info:
         await adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
     assert not isinstance(exc_info.value, ExchangeTerminalReject)
+    assert not isinstance(exc_info.value, PendingCancelOutcome)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"msg": "Service Unavailable."},
+        {"msg": "Internal error; unable to process your request. Please try again."},
+    ],
+)
+async def test_signed_create_503_retryable_failure_messages_are_not_unknown(
+    payload: dict[str, Any],
+) -> None:
+    adapter = authed_adapter(RecordingClient(FakeResponse(503, payload)))
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_503_FAILURE") as exc_info:
+        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+    assert not isinstance(exc_info.value, UnknownCreateOutcome)
+
+
+async def test_signed_create_503_unknown_error_message_remains_unknown_create() -> None:
+    adapter = authed_adapter(
+        RecordingClient(
+            FakeResponse(
+                503,
+                {"msg": "Unknown error, please check your request or try again later."},
+            )
+        )
+    )
+
+    with pytest.raises(UnknownCreateOutcome, match="UNKNOWN_CREATE_OUTCOME"):
+        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+
+
+async def test_signed_cancel_503_unknown_error_message_remains_pending_cancel() -> None:
+    adapter = authed_adapter(
+        RecordingClient(
+            FakeResponse(
+                503,
+                {"msg": "Unknown error, please check your request or try again later."},
+            )
+        )
+    )
+
+    with pytest.raises(PendingCancelOutcome, match="PENDING_CANCEL_OUTCOME"):
+        await adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
+
+
+async def test_signed_read_503_unknown_error_message_is_retryable_read_failure() -> None:
+    adapter = authed_adapter(
+        RecordingClient(
+            FakeResponse(
+                503,
+                {"msg": "Unknown error, please check your request or try again later."},
+            )
+        )
+    )
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE"):
+        await adapter._signed_request("GET", ORDER_QUERY_PATH, {})
+
+
+async def test_synchronize_server_time_updates_offset_and_signed_timestamp() -> None:
+    clock = ManualClock(current=100.0)
+    client = RecordingClient(FakeResponse(200, {"serverTime": 100_250}))
+    adapter = BinanceUsdmAdapter(
+        settings=Settings(
+            environment=Environment.TESTNET,
+            binance_api_key="fake-key",
+            binance_api_secret="fake-secret",
+            recv_window_ms=7000,
+        ),
+        client=client,
+        clock=clock,
+    )
+
+    offset = await adapter.synchronize_server_time()
+    signed = adapter.signed_params({"symbol": "BTCUSDT"}, now_ms=100_000)
+
+    assert offset == 250
+    assert adapter.server_time_offset_ms == 250
+    assert signed["timestamp"] == "100250"
+    assert client.calls[0]["method"] == "GET"
+    assert client.calls[0]["url"].endswith(TIME_PATH)
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        FakeResponse(503, {"msg": "Service Unavailable."}),
+        FakeResponse(200, {"serverTime": "not-an-int"}),
+        FakeResponse(200, ["not", "a", "mapping"]),
+    ],
+)
+async def test_synchronize_server_time_malformed_or_non_200_raises_clear_failure(
+    response: FakeResponse,
+) -> None:
+    adapter = authed_adapter(RecordingClient(response))
+
+    with pytest.raises(ServerTimeSynchronizationFailure, match="SERVER_TIME_SYNC"):
+        await adapter.synchronize_server_time()
 
 
 async def test_signed_create_post_only_reject_remains_retryable_order_reject() -> None:

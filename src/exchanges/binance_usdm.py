@@ -53,6 +53,7 @@ OPEN_ORDERS_PATH = "/fapi/v1/openOrders"
 ALL_ORDERS_PATH = "/fapi/v1/allOrders"
 USER_TRADES_PATH = "/fapi/v1/userTrades"
 LISTEN_KEY_PATH = "/fapi/v1/listenKey"
+TIME_PATH = "/fapi/v1/time"
 EXECUTION_CLIENT_ORDER_PREFIX_RE = re.compile(r"^ce_[0-9a-f]{12}_$")
 
 
@@ -83,6 +84,24 @@ class PendingCancelOutcome(OrderCancelTimeout):
 
 class RetryableReadFailure(RuntimeError):
     """Raised when a signed read can be retried safely."""
+
+    pass
+
+
+class ExchangeRateLimited(RetryableReadFailure):
+    """Raised when Binance asks the caller to back off due to rate limits."""
+
+    pass
+
+
+class ExchangeSystemOverload(RetryableReadFailure):
+    """Raised when Binance system-level protection or overload rejects a request."""
+
+    pass
+
+
+class ServerTimeSynchronizationFailure(RuntimeError):
+    """Raised when Binance server-time synchronization cannot be completed safely."""
 
     pass
 
@@ -265,6 +284,37 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         serialized["recvWindow"] = str(self.settings.recv_window_ms)
         return sign_params(serialized, self.settings.binance_api_secret)
 
+    async def synchronize_server_time(self) -> int:
+        """Synchronize signed REST timestamps against Binance server time."""
+
+        timeout = httpx.Timeout(5.0)
+        url = f"{self.base_url}{TIME_PATH}"
+        try:
+            if self.client is None:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.request("GET", url)
+            else:
+                response = await self.client.request("GET", url, timeout=timeout)
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            raise ServerTimeSynchronizationFailure("SERVER_TIME_SYNC_TRANSPORT_FAILURE") from exc
+
+        if response.status_code != 200:
+            raise ServerTimeSynchronizationFailure(f"SERVER_TIME_SYNC_HTTP_{response.status_code}")
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ServerTimeSynchronizationFailure("SERVER_TIME_SYNC_INVALID_JSON") from exc
+        if not isinstance(payload, Mapping) or "serverTime" not in payload:
+            raise ServerTimeSynchronizationFailure("SERVER_TIME_SYNC_MALFORMED_RESPONSE")
+        try:
+            server_time_ms = int(payload["serverTime"])
+        except (TypeError, ValueError) as exc:
+            raise ServerTimeSynchronizationFailure("SERVER_TIME_SYNC_MALFORMED_RESPONSE") from exc
+
+        self.server_time_offset_ms = server_time_ms - self._clock_wall_ms()
+        return self.server_time_offset_ms
+
     async def _signed_request(
         self,
         method: str,
@@ -315,7 +365,7 @@ class BinanceUsdmAdapter(ExchangeAdapter):
                 raise PendingCancelOutcome(classify_mutation_timeout(MutationKind.CANCEL))
             raise RetryableReadFailure("SIGNED_READ_TIMEOUT")
         if response.status_code == 429:
-            raise RetryableReadFailure("RATE_LIMIT_BACKOFF")
+            raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
         if response.status_code == 418:
             raise VenueBanHardStop()
 
@@ -325,6 +375,17 @@ class BinanceUsdmAdapter(ExchangeAdapter):
                 reason = _terminal_reject_reason(response.status_code, error_payload)
                 if _is_specific_terminal_5xx_reject(reason):
                     raise ExchangeTerminalReject(reason)
+                if response.status_code == 503:
+                    failure_kind = _classify_binance_503_payload(error_payload)
+                    if failure_kind == "SYSTEM_OVERLOAD":
+                        raise ExchangeSystemOverload("SYSTEM_OVERLOAD_RETRYABLE")
+                    if failure_kind == "RETRYABLE_FAILURE":
+                        raise RetryableReadFailure("RETRYABLE_503_FAILURE")
+                    if failure_kind == "UNKNOWN_EXECUTION_STATUS":
+                        if mutation_kind is MutationKind.CREATE:
+                            raise UnknownCreateOutcome("UNKNOWN_CREATE_OUTCOME")
+                        if mutation_kind is MutationKind.CANCEL:
+                            raise PendingCancelOutcome("PENDING_CANCEL_OUTCOME")
                 if mutation_kind is MutationKind.CREATE:
                     raise UnknownCreateOutcome("UNKNOWN_CREATE_OUTCOME")
                 if mutation_kind is MutationKind.CANCEL:
@@ -800,6 +861,29 @@ def _terminal_reject_reason(status_code: int, payload: Any) -> str:
         if message is not None:
             return str(message)
     return f"BINANCE_HTTP_{status_code}"
+
+
+def _classify_binance_503_payload(payload: Any) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+
+    code = payload.get("code")
+    try:
+        numeric_code = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        numeric_code = None
+    if numeric_code == -1008:
+        return "SYSTEM_OVERLOAD"
+
+    message = str(payload.get("msg", ""))
+    if message == "Unknown error, please check your request or try again later.":
+        return "UNKNOWN_EXECUTION_STATUS"
+    if message in {
+        "Service Unavailable.",
+        "Internal error; unable to process your request. Please try again.",
+    }:
+        return "RETRYABLE_FAILURE"
+    return None
 
 
 def _listen_key_error_payload(response: Any) -> Mapping[str, Any] | None:

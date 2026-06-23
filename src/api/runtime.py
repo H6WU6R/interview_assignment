@@ -151,7 +151,7 @@ class ExecutionRuntime:
         async with self._lock:
             if self._stopping:
                 raise RuntimeConfigurationError("runtime is stopping")
-            service = self._service_for_environment(request.environment)
+            service = await self._service_for_environment(request.environment)
             active = await service.active_execution_for(request.environment, request.symbol)
             if active is not None:
                 raise ActiveExecutionConflict(
@@ -215,14 +215,14 @@ class ExecutionRuntime:
         if self._started:
             self._start_stream_supervisors(environment, adapter)
 
-    def _service_for_environment(self, environment: Environment) -> ExecutionService:
+    async def _service_for_environment(self, environment: Environment) -> ExecutionService:
         if environment in self._services:
             return self._services[environment]
         if environment in {Environment.TESTNET, Environment.MAINNET}:
-            return self._build_binance_service(environment)
+            return await self._build_binance_service(environment)
         raise RuntimeConfigurationError(f"{environment.value} execution is not enabled")
 
-    def _build_binance_service(self, environment: Environment) -> ExecutionService:
+    async def _build_binance_service(self, environment: Environment) -> ExecutionService:
         credentials = load_binance_usdm_credentials()
         if not credentials.is_configured:
             raise RuntimeConfigurationError(
@@ -244,13 +244,14 @@ class ExecutionRuntime:
             binance_api_secret=credentials.api_secret,
         )
         adapter = BinanceUsdmAdapter(settings=settings, clock=clock)
+        await adapter.synchronize_server_time()
         service = ExecutionService(adapter, clock=clock)
         self._register(environment, adapter=adapter, clock=clock, service=service)
         return service
 
     async def _service_for_execution(self, execution_id: str) -> ExecutionService:
         if environment := self._execution_environments.get(execution_id):
-            return self._service_for_environment(environment)
+            return await self._service_for_environment(environment)
 
         for environment, service in list(self._services.items()):
             try:

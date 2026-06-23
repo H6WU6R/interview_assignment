@@ -180,3 +180,55 @@ def test_private_stream_evidence_requires_order_trade_update_for_execution_prefi
     assert unrelated_manifest["has_private_user_stream_events"] is True
     assert unrelated_manifest["has_execution_matching_private_order_event"] is False
     assert matching_manifest["has_execution_matching_private_order_event"] is True
+
+
+def test_artifact_user_event_redacts_account_update_balance_and_position_fields() -> None:
+    module = load_runner_module()
+
+    sanitized = module._artifact_user_event(
+        {
+            "event_type": "ACCOUNT_UPDATE",
+            "event_time_ms": 1_700_000_000_001,
+            "transaction_time_ms": 1_700_000_000_002,
+            "raw": {
+                "e": "ACCOUNT_UPDATE",
+                "T": 1_700_000_000_002,
+                "a": {
+                    "B": [{"a": "USDT", "wb": "123.45", "cw": "120.00"}],
+                    "P": [
+                        {
+                            "s": "BTCUSDT",
+                            "pa": "0.002",
+                            "ep": "65000",
+                            "bep": "64900",
+                            "up": "12.34",
+                        }
+                    ],
+                },
+            },
+        }
+    )
+
+    assert sanitized == {
+        "event_type": "ACCOUNT_UPDATE",
+        "event_time_ms": 1_700_000_000_001,
+        "transaction_time_ms": 1_700_000_000_002,
+        "raw": {"e": "ACCOUNT_UPDATE", "redacted": True},
+    }
+    sanitized_text = str(sanitized)
+    for sensitive_value in ("123.45", "120.00", "0.002", "65000", "64900", "12.34"):
+        assert sensitive_value not in sanitized_text
+
+
+def test_artifact_user_event_preserves_order_trade_update_client_order_id() -> None:
+    module = load_runner_module()
+    event = {
+        "event_type": "ORDER_TRADE_UPDATE",
+        "event_time_ms": 1_700_000_000_001,
+        "raw": {
+            "e": "ORDER_TRADE_UPDATE",
+            "o": {"c": "ce_abcdef123456_1", "X": "NEW"},
+        },
+    }
+
+    assert module._artifact_user_event(event) == event

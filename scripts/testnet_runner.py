@@ -495,7 +495,7 @@ async def _start_user_stream_once(
         if stream_started_ms is not None:
             active_execution["user_stream_started_ms"] = stream_started_ms
         async for event in adapter.stream_user_events():
-            events.append(_runtime_event(adapter, "user_stream_event", user_event=_jsonable(event)))
+            events.append(_runtime_event(adapter, "user_stream_event", user_event=_artifact_user_event(event)))
             execution_id = active_execution.get("execution_id")
             if _is_listen_key_expired_event(event):
                 if execution_id is not None:
@@ -853,6 +853,22 @@ def _jsonable(value: Any) -> Any:
     if is_dataclass(value):
         return to_jsonable(asdict(value))
     return to_jsonable(value)
+
+
+def _artifact_user_event(event: Any) -> Any:
+    payload = _jsonable(event)
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("event_type") != "ACCOUNT_UPDATE":
+        return payload
+    sanitized: dict[str, Any] = {
+        "event_type": "ACCOUNT_UPDATE",
+        "raw": {"e": "ACCOUNT_UPDATE", "redacted": True},
+    }
+    for key in ("event_time_ms", "transaction_time_ms"):
+        if key in payload:
+            sanitized[key] = payload[key]
+    return sanitized
 
 
 def _sanitize_exchange_reason(exc: BaseException) -> str:

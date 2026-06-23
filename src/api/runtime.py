@@ -685,6 +685,7 @@ class ExecutionRuntime:
         )
 
         applied = False
+        fallback_required = active_lookup_failed
         for record in candidate_records:
             prefix = ids.make_client_order_prefix(record.execution_id)
             if not self._reconciliation_result_matches_prefix(result, prefix):
@@ -696,8 +697,8 @@ class ExecutionRuntime:
                 applied = True
             except Exception as exc:
                 self._record_runtime_error(record.execution_id, exc)
-                applied = True
-        return applied or active_lookup_failed
+                fallback_required = True
+        return applied and not fallback_required
 
     async def _direct_user_event_candidates(
         self,

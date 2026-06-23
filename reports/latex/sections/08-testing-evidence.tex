@@ -25,10 +25,10 @@ T10 & Cross-zero Position & Required-trade and account-position tests. \\
 \end{tabularx}
 \end{table}
 
-Current reproducible non-live baseline verification passed after the final evidence cleanup plan:
+Current reproducible non-live baseline verification passed:
 
 \begin{center}
-\code{uv run pytest -q tests/unit tests/simulation} \quad \(\rightarrow\) \quad \code{506 passed}
+\code{uv run pytest -q tests/unit tests/simulation} \quad \(\rightarrow\) \quad \code{511 passed}
 \end{center}
 
 Credentialed/network-enabled integration verification is separate: \code{uv run pytest -q tests/integration}. Those results should be reported only for a full credentialed local review where the Binance integration tests run successfully.

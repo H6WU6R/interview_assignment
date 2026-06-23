@@ -41,10 +41,16 @@ Orders / cancels / reprices & \(1 / 0 / 0\) & \(2 / 1 / 0\) \\
 Arrival mid / VWAP & \(62213 / 62212.5\) & \(62092.35 / 62092.9\) \\
 Slippage bps & \(-0.0804\) & \(0.0886\) \\
 Overfill / price violations & \(0 / 0\) & \(0 / 0\) \\
+Exchange order IDs & \code{16277695886} & \code{16277882286}, \code{16277899689} \\
+Requested / lifecycle duration & \(12s / 4.672s\) & \(12s / 17.295s\) \\
+Decision / cleanup duration & \(4.672s / 0s\) & \(12s / 5.295s\) \\
+Post-deadline scheduled / aggressive children & \(0 / 0\) & \(0 / 1\) \\
 Final status / reason & \status{COMPLETED}; \code{TARGET\_QUANTITY\_FILLED} & \status{COMPLETED}; \code{TARGET\_QUANTITY\_FILLED} \\
 \bottomrule
 \end{tabularx}
 \end{center}
+
+The accepted TWAP Testnet run used a \(12s\) requested scheduling window and a \(17.295s\) total lifecycle. The difference is deadline cleanup: the first passive child was cancelled, private user-stream events were applied, and a bounded IOC child completed the remaining target. No passive scheduled TWAP child was submitted after the \(12s\) scheduling deadline. One deadline-aggressive child was submitted during cleanup, inside the configured price range, and completed the target with \code{overfill\_quantity=0}.
 
 The cancel/fill race artifact is the clearest overfill evidence. The initial child was \(0.010\) BTC. During cancel, \(0.004\) BTC filled. The replacement child was only \(0.006\) BTC. The final summary showed:
 

@@ -364,7 +364,10 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         if response.status_code == 418:
             raise VenueBanHardStop()
 
-        error_payload = _json_payload_or_conservative_failure(response, mutation_kind)
+        if response.status_code == 503:
+            error_payload = _json_payload_or_retryable_read_failure(response)
+        else:
+            error_payload = _json_payload_or_conservative_failure(response, mutation_kind)
         if 500 <= response.status_code <= 599:
             if mutation_kind is not None:
                 reason = _terminal_reject_reason(response.status_code, error_payload)
@@ -846,6 +849,13 @@ def _json_payload_or_conservative_failure(
         if mutation_kind is MutationKind.CANCEL:
             raise PendingCancelOutcome("PENDING_CANCEL_OUTCOME_INVALID_JSON") from exc
         raise RetryableReadFailure("SIGNED_READ_INVALID_JSON") from exc
+
+
+def _json_payload_or_retryable_read_failure(response: Any) -> Any:
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise RetryableReadFailure("RETRYABLE_READ_FAILURE") from exc
 
 
 def _terminal_reject_reason(status_code: int, payload: Any) -> str:

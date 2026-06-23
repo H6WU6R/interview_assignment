@@ -322,12 +322,10 @@ async def test_signed_request_invalid_json_after_http_success_maps_conservativel
         )
 
 
-@pytest.mark.parametrize("status_code", [400, 503])
 async def test_signed_request_malformed_error_json_maps_conservatively_by_operation(
-    status_code: int,
 ) -> None:
     def malformed_response() -> FakeResponse:
-        return FakeResponse(status_code, "not-json", json_error=ValueError("invalid json"))
+        return FakeResponse(400, "not-json", json_error=ValueError("invalid json"))
 
     with pytest.raises(UnknownCreateOutcome):
         await authed_adapter(RecordingClient(malformed_response()))._signed_request(
@@ -349,6 +347,59 @@ async def test_signed_request_malformed_error_json_maps_conservatively_by_operat
             ORDER_QUERY_PATH,
             {},
         )
+
+
+async def test_signed_request_malformed_503_json_is_retryable_not_unknown_or_pending() -> None:
+    def malformed_response() -> FakeResponse:
+        return FakeResponse(503, "not-json", json_error=ValueError("invalid json"))
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as create_exc:
+        await authed_adapter(RecordingClient(malformed_response()))._signed_request(
+            "POST",
+            ORDER_REST_PATH,
+            {},
+            mutation_kind=MutationKind.CREATE,
+        )
+    assert not isinstance(create_exc.value, UnknownCreateOutcome)
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as cancel_exc:
+        await authed_adapter(RecordingClient(malformed_response()))._signed_request(
+            "DELETE",
+            ORDER_REST_PATH,
+            {},
+            mutation_kind=MutationKind.CANCEL,
+        )
+    assert not isinstance(cancel_exc.value, PendingCancelOutcome)
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE"):
+        await authed_adapter(RecordingClient(malformed_response()))._signed_request(
+            "GET",
+            ORDER_QUERY_PATH,
+            {},
+        )
+
+
+async def test_signed_request_503_json_string_is_retryable_not_unknown_or_pending() -> None:
+    def string_response() -> FakeResponse:
+        return FakeResponse(503, "Service unavailable")
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as create_exc:
+        await authed_adapter(RecordingClient(string_response()))._signed_request(
+            "POST",
+            ORDER_REST_PATH,
+            {},
+            mutation_kind=MutationKind.CREATE,
+        )
+    assert not isinstance(create_exc.value, UnknownCreateOutcome)
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as cancel_exc:
+        await authed_adapter(RecordingClient(string_response()))._signed_request(
+            "DELETE",
+            ORDER_REST_PATH,
+            {},
+            mutation_kind=MutationKind.CANCEL,
+        )
+    assert not isinstance(cancel_exc.value, PendingCancelOutcome)
 
 
 async def test_signed_create_503_with_specific_terminal_reject_is_not_ambiguous() -> None:

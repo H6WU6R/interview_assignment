@@ -41,6 +41,7 @@ class RuntimeUnavailableError(RuntimeError):
 
 
 USER_EVENT_RECONCILIATION_LOOKBACK_MS = 60_000
+LISTEN_KEY_RETRYABLE_FAILURE_MAX_ATTEMPTS = 3
 
 
 class ExecutionRuntime:
@@ -73,6 +74,7 @@ class ExecutionRuntime:
         self._stream_started_wall_ms: dict[tuple[Environment, str], int] = {}
         self._listen_key_tasks: dict[Environment, asyncio.Task[None]] = {}
         self._runtime_errors: dict[str, list[str]] = {}
+        self._unavailable_environments: dict[Environment, str] = {}
         self._lock = asyncio.Lock()
         self._started = False
         self._stopping = False
@@ -161,6 +163,8 @@ class ExecutionRuntime:
         async with self._lock:
             if self._stopping:
                 raise RuntimeConfigurationError("runtime is stopping")
+            if unavailable_reason := self._unavailable_environments.get(request.environment):
+                raise RuntimeUnavailableError(unavailable_reason)
             service = await self._service_for_environment(request.environment)
             active = await service.active_execution_for(request.environment, request.symbol)
             if active is not None:
@@ -449,6 +453,7 @@ class ExecutionRuntime:
     ) -> None:
         renew_listen_key = getattr(adapter, "renew_listen_key")
         next_delay_seconds = self._stream_keepalive_interval_seconds
+        retryable_failures = 0
         while self._started and self._adapters.get(environment) is adapter:
             await asyncio.sleep(next_delay_seconds)
             next_delay_seconds = self._stream_keepalive_interval_seconds
@@ -457,6 +462,7 @@ class ExecutionRuntime:
                 continue
             try:
                 await renew_listen_key(listen_key)
+                retryable_failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -468,7 +474,22 @@ class ExecutionRuntime:
                     await self._restart_user_stream(environment, adapter)
                     continue
                 if self._is_listen_key_retryable(exc):
+                    retryable_failures += 1
+                    if retryable_failures >= LISTEN_KEY_RETRYABLE_FAILURE_MAX_ATTEMPTS:
+                        await self._mark_listen_key_keepalive_unavailable(environment, exc)
+                        break
                     next_delay_seconds = self._listen_key_retry_delay_seconds()
+
+    async def _mark_listen_key_keepalive_unavailable(
+        self,
+        environment: Environment,
+        exc: BaseException,
+    ) -> None:
+        reason = self._listen_key_failure_code(exc)
+        self._unavailable_environments[environment] = reason
+        self._record_runtime_error(f"{environment.value}.listen_key_keepalive.unavailable", exc)
+        await self._stop_user_stream(environment)
+        await self._reconcile_stale_user_stream_window(environment)
 
     async def _stop_user_stream(self, environment: Environment) -> None:
         key = (environment, "user")

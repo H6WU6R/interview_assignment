@@ -102,7 +102,7 @@ async def run(algorithm: Algorithm) -> Path:
         symbol_rules = await adapter.get_symbol_rules(symbol)
         symbol_rules_payload = _symbol_rules_payload(symbol, symbol_rules, adapter)
         events.append(_runtime_event(adapter, "symbol_rules_loaded", symbol_rules=symbol_rules_payload))
-        active_execution: dict[str, str] = {}
+        active_execution: dict[str, Any] = {}
         user_task = await _start_user_stream(
             adapter,
             service,
@@ -360,12 +360,14 @@ async def _start_user_stream(
     adapter: BinanceUsdmAdapter,
     service: ExecutionService,
     events: list[dict[str, Any]],
-    active_execution: dict[str, str],
+    active_execution: dict[str, Any],
     *,
     timeout_seconds: float,
 ) -> asyncio.Task[Any]:
     async def pump() -> str | None:
         stream_started_ms = _clock_wall_ms(adapter)
+        if stream_started_ms is not None:
+            active_execution["user_stream_started_ms"] = stream_started_ms
         async for event in adapter.stream_user_events():
             events.append(_runtime_event(adapter, "user_stream_event", user_event=_jsonable(event)))
             execution_id = active_execution.get("execution_id")
@@ -416,7 +418,7 @@ async def _recover_or_raise_stream_task_failure(
     adapter: BinanceUsdmAdapter,
     service: ExecutionService,
     events: list[dict[str, Any]],
-    active_execution: dict[str, str],
+    active_execution: dict[str, Any],
     *,
     market_task: asyncio.Task[Any] | None,
     user_task: asyncio.Task[Any] | None,
@@ -428,6 +430,35 @@ async def _recover_or_raise_stream_task_failure(
     if not user_task.cancelled():
         result = user_task.result()
         if result == _USER_STREAM_LISTEN_KEY_EXPIRED:
+            return await _start_user_stream(
+                adapter,
+                service,
+                events,
+                active_execution,
+                timeout_seconds=timeout_seconds,
+            )
+        execution_id = active_execution.get("execution_id")
+        if execution_id is not None:
+            end_time_ms = _clock_wall_ms(adapter)
+            start_time_ms = _coerce_optional_int(active_execution.get("user_stream_started_ms"))
+            start_time_ms = _bounded_user_stream_start_ms(start_time_ms, end_time_ms)
+            reconciliation_window = {
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+            }
+            updated = await service.reconcile_execution(
+                execution_id,
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+            )
+            events.append(
+                _runtime_event(
+                    adapter,
+                    "user_stream_disconnect_reconciled",
+                    reconciliation_window=reconciliation_window,
+                    execution=_record_summary(updated),
+                )
+            )
             return await _start_user_stream(
                 adapter,
                 service,
@@ -459,6 +490,15 @@ def _bounded_user_stream_start_ms(stream_started_ms: int | None, end_time_ms: in
     if end_time_ms is None:
         return stream_started_ms
     return max(stream_started_ms or 0, end_time_ms - _USER_EVENT_RECONCILIATION_LOOKBACK_MS)
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 async def _wait_for_stream_health(adapter: BinanceUsdmAdapter, task: asyncio.Task[Any]) -> None:

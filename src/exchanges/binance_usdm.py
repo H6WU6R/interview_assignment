@@ -381,6 +381,7 @@ class BinanceUsdmAdapter(ExchangeAdapter):
                             raise UnknownCreateOutcome("UNKNOWN_CREATE_OUTCOME")
                         if mutation_kind is MutationKind.CANCEL:
                             raise PendingCancelOutcome("PENDING_CANCEL_OUTCOME")
+                    raise RetryableReadFailure("RETRYABLE_READ_FAILURE")
                 if mutation_kind is MutationKind.CREATE:
                     raise UnknownCreateOutcome("UNKNOWN_CREATE_OUTCOME")
                 if mutation_kind is MutationKind.CANCEL:

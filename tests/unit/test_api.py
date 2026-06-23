@@ -1089,6 +1089,121 @@ async def test_runtime_listen_key_keepalive_retryable_failure_retries_before_ful
 
 
 @pytest.mark.asyncio
+async def test_runtime_listen_key_keepalive_persistent_retryable_failure_exhausts_recovery() -> None:
+    import importlib
+
+    runtime_module = importlib.import_module("api.runtime")
+
+    request = ExecutionCreateRequest.model_validate(
+        execution_payload(environment="testnet", target_position="0.010")
+    ).to_domain()
+    record = ExecutionRecord(
+        execution_id="exec_keepalive_retry_exhausted",
+        request=request,
+        status=ExecutionStatus.RUNNING,
+        side=Side.BUY,
+        required_quantity=Decimal("0.010"),
+        raw_required_quantity=Decimal("0.010"),
+        initial_position=PositionSnapshot(symbol=SYMBOL, position=Decimal("0")),
+    )
+
+    class RecordingReconcileService:
+        def __init__(self) -> None:
+            self.windows: list[tuple[str, int | None, int | None]] = []
+
+        async def active_executions(self) -> list[ExecutionRecord]:
+            return [record]
+
+        async def reconcile_execution(
+            self,
+            execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ExecutionRecord:
+            self.windows.append((execution_id, start_time_ms, end_time_ms))
+            return record
+
+        async def active_execution_for(
+            self,
+            _environment: Environment,
+            _symbol: str,
+        ) -> ExecutionRecord | None:
+            return None
+
+        async def create_execution(self, _request: Any) -> ExecutionRecord:
+            raise AssertionError("unavailable runtime should reject before service create")
+
+    class PersistentRetryableKeepaliveAdapter:
+        def __init__(self) -> None:
+            self.latest_listen_key: str | None = "listen-1"
+            self.renewed_listen_keys: list[str] = []
+            self.user_started = asyncio.Event()
+            self.user_closed = asyncio.Event()
+            self.third_failed = asyncio.Event()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_started.set()
+                try:
+                    await asyncio.Event().wait()
+                    yield {"event_type": "noop"}
+                finally:
+                    self.user_closed.set()
+
+            return events()
+
+        async def renew_listen_key(self, listen_key: str) -> None:
+            self.renewed_listen_keys.append(listen_key)
+            if len(self.renewed_listen_keys) >= 3:
+                self.third_failed.set()
+            raise StreamHealthFailure("LISTEN_KEY_RATE_LIMIT_BACKOFF")
+
+    runtime = runtime_module.ExecutionRuntime(
+        stream_keepalive_interval_seconds=0.01,
+        stream_restart_delay_seconds=0.005,
+    )
+    adapter = PersistentRetryableKeepaliveAdapter()
+    service = RecordingReconcileService()
+    clock = ManualClock(current=123.0)
+    runtime._started = True
+    runtime._adapters[Environment.TESTNET] = adapter
+    runtime._services[Environment.TESTNET] = service
+    runtime._clocks[Environment.TESTNET] = clock
+    runtime._remember_execution(record)
+    runtime._schedule_stream_supervisor(
+        Environment.TESTNET,
+        "user",
+        adapter,
+        adapter.stream_user_events,
+    )
+    task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
+    try:
+        await asyncio.wait_for(adapter.user_started.wait(), timeout=0.5)
+        clock.advance(120.0)
+        await asyncio.wait_for(adapter.third_failed.wait(), timeout=0.5)
+        await asyncio.wait_for(task, timeout=0.5)
+        await asyncio.wait_for(adapter.user_closed.wait(), timeout=0.5)
+
+        assert adapter.renewed_listen_keys == ["listen-1", "listen-1", "listen-1"]
+        assert service.windows == [("exec_keepalive_retry_exhausted", 183_000, 243_000)]
+        assert runtime.runtime_errors["testnet.listen_key_keepalive.unavailable"] == [
+            "StreamHealthFailure: LISTEN_KEY_RATE_LIMIT_BACKOFF"
+        ]
+        with pytest.raises(
+            runtime_module.RuntimeUnavailableError,
+            match="LISTEN_KEY_RATE_LIMIT_BACKOFF",
+        ):
+            await runtime.create_execution(request)
+    finally:
+        runtime._started = False
+        for stream_task in runtime._stream_tasks.values():
+            stream_task.cancel()
+        task.cancel()
+        await asyncio.gather(task, *runtime._stream_tasks.values(), return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
     import importlib
 

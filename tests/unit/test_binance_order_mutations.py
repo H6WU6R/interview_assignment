@@ -411,6 +411,26 @@ async def test_signed_create_503_retryable_failure_messages_are_not_unknown(
     assert not isinstance(exc_info.value, UnknownCreateOutcome)
 
 
+async def test_signed_create_503_unrecognized_message_is_retryable_not_unknown() -> None:
+    adapter = authed_adapter(
+        RecordingClient(FakeResponse(503, {"msg": "Temporarily unavailable for maintenance."}))
+    )
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as exc_info:
+        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+    assert not isinstance(exc_info.value, UnknownCreateOutcome)
+
+
+async def test_signed_cancel_503_unrecognized_message_is_retryable_not_pending() -> None:
+    adapter = authed_adapter(
+        RecordingClient(FakeResponse(503, {"msg": "Temporarily unavailable for maintenance."}))
+    )
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as exc_info:
+        await adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
+    assert not isinstance(exc_info.value, PendingCancelOutcome)
+
+
 async def test_signed_create_503_unknown_error_message_remains_unknown_create() -> None:
     adapter = authed_adapter(
         RecordingClient(
@@ -1889,7 +1909,94 @@ async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_re
     assert adapter.second_closed.is_set()
 
 
-async def test_testnet_runner_stream_recovery_helper_raises_on_unexpected_user_stream_exit() -> None:
+async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_reconcile() -> None:
+    import importlib.util
+
+    execution_id = "exec_stream_disconnect"
+
+    async def exits_normally() -> None:
+        return None
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock(current=125.0)
+            self.user_stream_healthy = False
+            self.started_count = 0
+            self.restarted = asyncio.Event()
+
+        def stream_user_events(self):
+            self.started_count += 1
+
+            async def events():
+                self.user_stream_healthy = True
+                self.restarted.set()
+                try:
+                    await asyncio.Event().wait()
+                    yield {"event_type": "noop"}
+                finally:
+                    self.user_stream_healthy = False
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.user_stream_healthy
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.reconciliation_calls: list[tuple[str, int | None, int | None]] = []
+
+        async def reconcile_execution(
+            self,
+            reconciled_execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> Any:
+            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            return SimpleNamespace(
+                execution_id=reconciled_execution_id,
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter = FakeAdapter()
+    service = FakeService()
+    events: list[dict[str, Any]] = []
+    user_task = asyncio.create_task(exits_normally())
+    await user_task
+
+    restarted_task = await module._recover_or_raise_stream_task_failure(
+        adapter=adapter,
+        service=service,
+        events=events,
+        active_execution={"execution_id": execution_id, "user_stream_started_ms": "10000"},
+        market_task=None,
+        user_task=user_task,
+        timeout_seconds=1.0,
+    )
+
+    try:
+        await asyncio.wait_for(adapter.restarted.wait(), timeout=1.0)
+        assert restarted_task is not user_task
+        assert service.reconciliation_calls == [(execution_id, 65_000, 125_000)]
+        assert [event["event"] for event in events] == ["user_stream_disconnect_reconciled"]
+        assert events[0]["reconciliation_window"] == {
+            "start_time_ms": 65_000,
+            "end_time_ms": 125_000,
+        }
+    finally:
+        await module._stop_stream_task(restarted_task)
+
+
+async def test_testnet_runner_stream_recovery_helper_raises_on_unexpected_user_stream_exit_without_active_execution() -> None:
     import importlib.util
 
     async def exits_normally() -> None:

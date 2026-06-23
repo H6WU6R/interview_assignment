@@ -1696,6 +1696,7 @@ async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_re
                 self.user_stream_healthy = True
                 try:
                     if stream_number == 1:
+                        self.clock.advance(5.0)
                         yield {"event_type": "listenKeyExpired"}
                         await asyncio.Event().wait()
                     else:
@@ -1715,10 +1716,16 @@ async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_re
 
     class FakeService:
         def __init__(self) -> None:
-            self.reconciled_execution_ids: list[str] = []
+            self.reconciliation_calls: list[tuple[str, int | None, int | None]] = []
 
-        async def reconcile_execution(self, reconciled_execution_id: str) -> Any:
-            self.reconciled_execution_ids.append(reconciled_execution_id)
+        async def reconcile_execution(
+            self,
+            reconciled_execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> Any:
+            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
             return SimpleNamespace(
                 execution_id=reconciled_execution_id,
                 status=ExecutionStatus.RUNNING,
@@ -1762,11 +1769,15 @@ async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_re
         await asyncio.wait_for(adapter.second_started.wait(), timeout=1.0)
         assert restarted_task is not user_task
         assert adapter.started_count == 2
-        assert service.reconciled_execution_ids == [execution_id]
+        assert service.reconciliation_calls == [(execution_id, 10_000, 15_000)]
         assert [event["event"] for event in events] == [
             "user_stream_event",
             "user_stream_listen_key_expired_reconciled",
         ]
+        assert events[1]["reconciliation_window"] == {
+            "start_time_ms": 10_000,
+            "end_time_ms": 15_000,
+        }
     finally:
         await module._stop_stream_task(restarted_task)
     assert adapter.second_closed.is_set()

@@ -318,16 +318,27 @@ async def _start_user_stream(
     timeout_seconds: float,
 ) -> asyncio.Task[Any]:
     async def pump() -> str | None:
+        stream_started_ms = _clock_wall_ms(adapter)
         async for event in adapter.stream_user_events():
             events.append(_runtime_event(adapter, "user_stream_event", user_event=_jsonable(event)))
             execution_id = active_execution.get("execution_id")
             if _is_listen_key_expired_event(event):
                 if execution_id is not None:
-                    updated = await service.reconcile_execution(execution_id)
+                    end_time_ms = _clock_wall_ms(adapter)
+                    reconciliation_window = {
+                        "start_time_ms": stream_started_ms,
+                        "end_time_ms": end_time_ms,
+                    }
+                    updated = await service.reconcile_execution(
+                        execution_id,
+                        start_time_ms=stream_started_ms,
+                        end_time_ms=end_time_ms,
+                    )
                     events.append(
                         _runtime_event(
                             adapter,
                             "user_stream_listen_key_expired_reconciled",
+                            reconciliation_window=reconciliation_window,
                             execution=_record_summary(updated),
                         )
                     )
@@ -387,6 +398,13 @@ def _is_listen_key_expired_event(event: Any) -> bool:
         return True
     raw = event.get("raw")
     return isinstance(raw, Mapping) and raw.get("e") == "listenKeyExpired"
+
+
+def _clock_wall_ms(adapter: Any) -> int | None:
+    clock = getattr(adapter, "clock", None)
+    if clock is None:
+        return None
+    return int(clock.utc_now().timestamp() * 1000)
 
 
 async def _wait_for_stream_health(adapter: BinanceUsdmAdapter, task: asyncio.Task[Any]) -> None:

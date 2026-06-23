@@ -15,6 +15,7 @@ from algorithms.twap import (
     scheduled_deficit,
 )
 from exchanges.base import (
+    ExchangeRateLimited,
     ExchangeAdapter,
     NoFreshMarketData,
     OrderCancelTimeout,
@@ -22,6 +23,7 @@ from exchanges.base import (
     OrderRejected,
     TerminalOrderRejected,
     VenueBanHardStop,
+    is_exchange_rate_limited,
 )
 from execution.clock import Clock, ManualClock
 from execution import ids
@@ -76,8 +78,10 @@ UNTRADEABLE_TARGET_DUST = "UNTRADEABLE_TARGET_DUST"
 RETRYABLE_ORDER_REJECT_BACKOFF = "RETRYABLE_ORDER_REJECT_BACKOFF"
 RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE = "RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE"
 RETRYABLE_ORDER_REJECT_LIMIT_REACHED = "RETRYABLE_ORDER_REJECT_LIMIT_REACHED"
+RATE_LIMIT_BACKOFF = ExchangeRateLimited.code
 
 RETRYABLE_ORDER_REJECT_BACKOFF_SECONDS = Decimal("1")
+RATE_LIMIT_BACKOFF_SECONDS = RETRYABLE_ORDER_REJECT_BACKOFF_SECONDS
 
 
 @dataclass
@@ -222,6 +226,7 @@ class ExecutionRecord:
     last_retryable_order_reject_bid: Decimal | None = None
     last_retryable_order_reject_ask: Decimal | None = None
     last_retryable_order_reject_reason: str | None = None
+    rate_limited_until_monotonic: Decimal | None = None
 
     @property
     def exposure(self) -> Exposure:
@@ -321,6 +326,9 @@ class ExecutionEngine:
                 record.status = transition_execution(record.status, ExecutionStatus.CANCELLING)
                 record.final_reason = CANCEL_REQUESTED
 
+            if self._rate_limit_backoff_blocks(record):
+                return self._snapshot(record)
+
             await self._reconcile_locked(record, exact_unknown_lookup=True)
             await self._cancel_active_children_locked(record)
             if record.status.is_terminal:
@@ -339,6 +347,9 @@ class ExecutionEngine:
 
         async def run() -> ExecutionRecord:
             if record.status.is_terminal:
+                return self._snapshot(record)
+
+            if self._rate_limit_backoff_blocks(record):
                 return self._snapshot(record)
 
             if record.status is ExecutionStatus.CANCELLING:
@@ -645,7 +656,15 @@ class ExecutionEngine:
                 self._fail_locked(record, f"{TERMINAL_ORDER_REJECTED}: {exc}")
             self._assert_exposure_invariant_locked(record)
             return child
-        except Exception:
+        except Exception as exc:
+            if is_exchange_rate_limited(exc):
+                tracker.release_pending_submit(quantity)
+                record.child_orders.remove(child)
+                record.child_submitted_monotonic.pop(child.client_order_id, None)
+                record.aggressive_child_client_order_ids.discard(child.client_order_id)
+                self._record_rate_limit_backoff_locked(record, str(exc))
+                self._assert_exposure_invariant_locked(record)
+                return child
             tracker.release_pending_submit(quantity)
             record.child_orders.remove(child)
             record.child_submitted_monotonic.pop(child.client_order_id, None)
@@ -716,6 +735,9 @@ class ExecutionEngine:
         if remaining_before_cancel <= Decimal("0"):
             return False
 
+        if self._rate_limit_backoff_blocks(record):
+            return False
+
         tracker.mark_pending_cancel(remaining_before_cancel)
         self._increment_metric(record, "cancels_requested")
         self._record_max_reserved_exposure(record)
@@ -732,6 +754,15 @@ class ExecutionEngine:
             self._assert_exposure_invariant_locked(record)
             return True
         except Exception as exc:
+            if is_exchange_rate_limited(exc):
+                tracker.release_pending_cancel(remaining_before_cancel)
+                tracker.reserve_live_open(remaining_before_cancel)
+                self._record_max_reserved_exposure(record)
+                child.terminal_reason = str(exc)
+                self._set_child_status(child, ChildOrderStatus.OPEN)
+                self._record_rate_limit_backoff_locked(record, str(exc))
+                self._assert_exposure_invariant_locked(record)
+                return True
             tracker.release_pending_cancel(remaining_before_cancel)
             tracker.reserve_live_open(remaining_before_cancel)
             self._record_max_reserved_exposure(record)
@@ -1360,6 +1391,26 @@ class ExecutionEngine:
     def _increment_metric(self, record: ExecutionRecord, name: str) -> None:
         record.metric_counts[name] = record.metric_counts.get(name, 0) + 1
 
+    def _record_rate_limit_backoff_locked(self, record: ExecutionRecord, reason: str) -> None:
+        record.rate_limited_until_monotonic = self._now_decimal() + RATE_LIMIT_BACKOFF_SECONDS
+        record.final_reason = RATE_LIMIT_BACKOFF
+        self._increment_metric(record, "rate_limit_backoffs")
+
+    def _rate_limit_backoff_blocks(self, record: ExecutionRecord) -> bool:
+        backoff_until = record.rate_limited_until_monotonic
+        if backoff_until is None:
+            return False
+
+        if self._now_decimal() < backoff_until:
+            record.final_reason = RATE_LIMIT_BACKOFF
+            self._increment_metric(record, "rate_limit_backoff_blocks")
+            return True
+
+        record.rate_limited_until_monotonic = None
+        if record.final_reason == RATE_LIMIT_BACKOFF:
+            record.final_reason = None
+        return False
+
     def _record_retryable_order_reject_locked(
         self,
         record: ExecutionRecord,
@@ -1734,6 +1785,12 @@ class ExecutionEngine:
                 ),
                 "retryable_order_reject_same_price_blocks": record.metric_counts.get(
                     "retryable_order_reject_same_price_blocks",
+                    0,
+                ),
+                "rate_limit_backoff_seconds": RATE_LIMIT_BACKOFF_SECONDS,
+                "rate_limit_backoffs": record.metric_counts.get("rate_limit_backoffs", 0),
+                "rate_limit_backoff_blocks": record.metric_counts.get(
+                    "rate_limit_backoff_blocks",
                     0,
                 ),
                 "twap_slice_ledger": self._twap_slice_ledger(record),

@@ -38,6 +38,24 @@ class OrderRejected(RuntimeError):
     pass
 
 
+class ExchangeRateLimited(RuntimeError):
+    """Raised when an exchange asks the caller to back off due to rate limits."""
+
+    code = "RATE_LIMIT_BACKOFF"
+
+    def __init__(self, reason: str = code) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def is_exchange_rate_limited(exc: BaseException) -> bool:
+    """Return True for shared and adapter-local rate-limit backoff exceptions."""
+
+    if isinstance(exc, ExchangeRateLimited):
+        return True
+    return exc.__class__.__name__ == "ExchangeRateLimited" and str(exc) == ExchangeRateLimited.code
+
+
 class VenueBanHardStop(RuntimeError):
     """Raised when the venue bans trading and execution must not retry."""
 

@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from config import Settings, load_allow_mainnet_trading, load_binance_usdm_credentials
-from exchanges.base import VenueBanHardStop
+from exchanges.base import VenueBanHardStop, is_exchange_rate_limited
 from exchanges.binance_usdm import BinanceUsdmAdapter, StreamHealthFailure
 from exchanges.simulator import DeterministicSimulator
 from execution import ids
@@ -293,6 +293,10 @@ class ExecutionRuntime:
                 self._record_runtime_error(execution_id, exc)
                 return
             except Exception as exc:
+                if is_exchange_rate_limited(exc):
+                    self._record_runtime_error(execution_id, exc)
+                    await asyncio.sleep(self._stream_restart_delay_seconds)
+                    continue
                 self._record_runtime_error(execution_id, exc)
                 try:
                     await self.reconcile_execution(execution_id)

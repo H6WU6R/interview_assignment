@@ -5,6 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from exchanges.base import (
+    ExchangeRateLimited,
     NoFreshMarketData,
     OrderCancelTimeout,
     OrderCreateTimeout,
@@ -1280,6 +1281,44 @@ async def test_retryable_order_reject_streak_resets_after_unknown_reconciles_to_
     assert retried_after_reconcile.exposure.confirmed_filled_quantity == Decimal("0.004")
 
 
+async def test_create_rate_limit_defers_resubmit_until_backoff_expires() -> None:
+    class CreateRateLimitAdapter(DeterministicSimulator):
+        submissions: list[OrderRequest]
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.submissions = []
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> ChildOrder:
+            self.submissions.append(order_request)
+            if len(self.submissions) == 1:
+                raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
+            return await super().submit_limit_order(order_request)
+
+    clock = ManualClock()
+    adapter = CreateRateLimitAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+
+    limited = await service.run_once(execution.execution_id)
+    immediate = await service.run_once(execution.execution_id)
+    immediate_submission_count = len(adapter.submissions)
+    clock.advance(1)
+    retried = await service.run_once(execution.execution_id)
+
+    assert limited.status is ExecutionStatus.RUNNING
+    assert limited.final_reason == "RATE_LIMIT_BACKOFF"
+    assert limited.child_orders == []
+    assert limited.exposure.reserved_exposure == Decimal("0")
+    assert immediate.final_reason == "RATE_LIMIT_BACKOFF"
+    assert immediate_submission_count == 1
+    assert len(adapter.submissions) == 2
+    assert len(immediate.child_orders) == 0
+    assert retried.final_reason is None
+    assert retried.child_orders[0].status is ChildOrderStatus.OPEN
+
+
 async def test_adapter_level_cancel_timeout_keeps_pending_cancel_exposure_until_reconcile() -> None:
     class CancelTimeoutAdapter(DeterministicSimulator):
         async def cancel_order(self, symbol: str, client_order_id: str) -> ChildOrder:
@@ -1306,6 +1345,45 @@ async def test_adapter_level_cancel_timeout_keeps_pending_cancel_exposure_until_
     assert cancelled.exposure.pending_cancel_quantity == Decimal("0.010")
     assert cancelled.exposure.live_open_quantity == Decimal("0")
     assert cancelled.exposure.reserved_exposure == Decimal("0.010")
+
+
+async def test_cancel_rate_limit_defers_retry_until_backoff_expires() -> None:
+    class CancelRateLimitAdapter(DeterministicSimulator):
+        cancel_attempts: int
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.cancel_attempts = 0
+
+        async def cancel_order(self, symbol: str, client_order_id: str) -> ChildOrder:
+            self.cancel_attempts += 1
+            if self.cancel_attempts == 1:
+                raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
+            return await super().cancel_order(symbol, client_order_id)
+
+    clock = ManualClock()
+    adapter = CancelRateLimitAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+
+    limited = await service.cancel_execution(opened.execution_id)
+    immediate = await service.cancel_execution(opened.execution_id)
+    immediate_cancel_attempts = adapter.cancel_attempts
+    clock.advance(1)
+    retried = await service.cancel_execution(opened.execution_id)
+
+    assert limited.status is ExecutionStatus.CANCELLING
+    assert limited.final_reason == "RATE_LIMIT_BACKOFF"
+    assert limited.child_orders[0].status is ChildOrderStatus.OPEN
+    assert limited.exposure.live_open_quantity == Decimal("0.010")
+    assert limited.exposure.pending_cancel_quantity == Decimal("0")
+    assert immediate.final_reason == "RATE_LIMIT_BACKOFF"
+    assert immediate_cancel_attempts == 1
+    assert adapter.cancel_attempts == 2
+    assert retried.child_orders[0].status is ChildOrderStatus.CANCELLED
+    assert retried.status is ExecutionStatus.CANCELLED
 
 
 async def test_cancel_venue_ban_hard_stop_fails_without_repeated_retry() -> None:

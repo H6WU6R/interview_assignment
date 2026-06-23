@@ -9,7 +9,7 @@ import pytest
 
 from api.app import create_app
 from api.schemas import ExecutionCreateRequest
-from exchanges.base import VenueBanHardStop
+from exchanges.base import ExchangeRateLimited, VenueBanHardStop
 from exchanges.binance_usdm import StreamHealthFailure
 from exchanges.simulator import DeterministicSimulator
 from execution import ids
@@ -1436,6 +1436,55 @@ async def test_background_loop_records_unexpected_failure_and_retries(
         assert app.state.runtime.background_task_count == 1
     finally:
         await app.state.runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_loop_uses_rate_limit_backoff_for_rate_limit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    runtime_module = importlib.import_module("api.runtime")
+    runtime = runtime_module.ExecutionRuntime(
+        simulator_position="0",
+        background_tick_interval_seconds=0.01,
+        stream_restart_delay_seconds=0.05,
+    )
+    created = await runtime.create_execution(ExecutionCreateRequest(**execution_payload()).to_domain())
+    calls = 0
+    sleeps: list[float] = []
+
+    async def rate_limited_run_once(execution_id: str):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
+        runtime._started = False
+        return await runtime.get_execution(execution_id)
+
+    async def recording_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        await original_sleep(0)
+
+    original_sleep = asyncio.sleep
+    monkeypatch.setattr(runtime.simulation_service, "run_once", rate_limited_run_once)
+    monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+    runtime._started = True
+    task = asyncio.create_task(runtime._run_background_loop(created.execution_id))
+    try:
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert calls == 2
+        assert sleeps[0] == runtime._stream_restart_delay_seconds
+        assert runtime._background_tick_interval_seconds in sleeps[1:]
+        assert "ExchangeRateLimited: RATE_LIMIT_BACKOFF" in runtime.runtime_errors[
+            created.execution_id
+        ][-1]
+    finally:
+        runtime._started = False
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

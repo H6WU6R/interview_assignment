@@ -359,6 +359,36 @@ async def test_signed_create_503_with_specific_terminal_reject_is_not_ambiguous(
         await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
 
 
+async def test_signed_create_503_system_overload_is_unknown_not_terminal() -> None:
+    adapter = authed_adapter(
+        RecordingClient(
+            FakeResponse(
+                503,
+                {"code": -1008, "msg": "Request throttled by system-level protection."},
+            )
+        )
+    )
+
+    with pytest.raises(UnknownCreateOutcome, match="UNKNOWN_CREATE_OUTCOME") as exc_info:
+        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+    assert not isinstance(exc_info.value, ExchangeTerminalReject)
+
+
+async def test_signed_cancel_503_system_overload_is_pending_not_terminal() -> None:
+    adapter = authed_adapter(
+        RecordingClient(
+            FakeResponse(
+                503,
+                {"code": -1008, "msg": "Request throttled by system-level protection."},
+            )
+        )
+    )
+
+    with pytest.raises(PendingCancelOutcome, match="PENDING_CANCEL_OUTCOME") as exc_info:
+        await adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
+    assert not isinstance(exc_info.value, ExchangeTerminalReject)
+
+
 async def test_signed_create_post_only_reject_remains_retryable_order_reject() -> None:
     adapter = authed_adapter(
         RecordingClient(

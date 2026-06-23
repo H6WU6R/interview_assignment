@@ -89,7 +89,10 @@ class RetryableReadFailure(RuntimeError):
 class StreamHealthFailure(RuntimeError):
     """Raised when Binance stream setup or health checks fail."""
 
-    pass
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.code = reason.split(":", 1)[0]
 
 
 def decimal_to_api(value: Decimal) -> str:
@@ -471,7 +474,7 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         try:
             await self._api_key_request("PUT", LISTEN_KEY_PATH, params=None)
         except StreamHealthFailure as exc:
-            if str(exc).startswith("LISTEN_KEY_EXPIRED") and self.latest_listen_key == listen_key:
+            if exc.code == "LISTEN_KEY_EXPIRED" and self.latest_listen_key == listen_key:
                 self.latest_listen_key = None
             raise
 
@@ -839,7 +842,7 @@ def _is_specific_terminal_5xx_reject(reason: str) -> bool:
     if match is None:
         return False
     code = int(match.group(1))
-    ambiguous_server_codes = {-1000, -1001, -1006, -1007}
+    ambiguous_server_codes = {-1000, -1001, -1006, -1007, -1008}
     return code not in ambiguous_server_codes
 
 

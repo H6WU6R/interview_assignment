@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from config import Settings, load_allow_mainnet_trading, load_binance_usdm_credentials
-from exchanges.binance_usdm import BinanceUsdmAdapter
+from exchanges.binance_usdm import BinanceUsdmAdapter, StreamHealthFailure
 from exchanges.simulator import DeterministicSimulator
 from execution import ids
 from execution.clock import ManualClock, SystemClock
@@ -59,6 +59,7 @@ class ExecutionRuntime:
         self._execution_environments: dict[str, Environment] = {}
         self._execution_tasks: dict[str, asyncio.Task[None]] = {}
         self._stream_tasks: dict[tuple[Environment, str], asyncio.Task[None]] = {}
+        self._stream_started_wall_ms: dict[tuple[Environment, str], int] = {}
         self._listen_key_tasks: dict[Environment, asyncio.Task[None]] = {}
         self._runtime_errors: dict[str, list[str]] = {}
         self._lock = asyncio.Lock()
@@ -140,6 +141,7 @@ class ExecutionRuntime:
         async with self._lock:
             self._execution_tasks.clear()
             self._stream_tasks.clear()
+            self._stream_started_wall_ms.clear()
             self._listen_key_tasks.clear()
             self._started = False
             self._stopping = False
@@ -369,8 +371,10 @@ class ExecutionRuntime:
         adapter: object,
         stream_factory: Callable[[], AsyncIterator[object]],
     ) -> None:
+        key = (environment, name)
         while self._started and self._adapters.get(environment) is adapter:
             stream_started_ms = self._clock_wall_ms(environment)
+            self._stream_started_wall_ms[key] = stream_started_ms
             stop_stream = False
             try:
                 async for event in stream_factory():
@@ -388,6 +392,7 @@ class ExecutionRuntime:
                 stop_stream = name == "user" and self._is_listen_key_hard_stop(exc)
 
             if stop_stream:
+                await self._stop_listen_key_keepalive(environment)
                 break
 
             if self._started and self._adapters.get(environment) is adapter:
@@ -405,8 +410,10 @@ class ExecutionRuntime:
         adapter: object,
     ) -> None:
         renew_listen_key = getattr(adapter, "renew_listen_key")
+        next_delay_seconds = self._stream_keepalive_interval_seconds
         while self._started and self._adapters.get(environment) is adapter:
-            await asyncio.sleep(self._stream_keepalive_interval_seconds)
+            await asyncio.sleep(next_delay_seconds)
+            next_delay_seconds = self._stream_keepalive_interval_seconds
             listen_key = getattr(adapter, "latest_listen_key", None)
             if not listen_key:
                 continue
@@ -421,6 +428,9 @@ class ExecutionRuntime:
                     break
                 if self._is_listen_key_invalidated(exc):
                     await self._restart_user_stream(environment, adapter)
+                    continue
+                if self._is_listen_key_retryable(exc):
+                    next_delay_seconds = self._listen_key_retry_delay_seconds()
 
     async def _stop_user_stream(self, environment: Environment) -> None:
         key = (environment, "user")
@@ -429,7 +439,15 @@ class ExecutionRuntime:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
+    async def _stop_listen_key_keepalive(self, environment: Environment) -> None:
+        task = self._listen_key_tasks.pop(environment, None)
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
     async def _restart_user_stream(self, environment: Environment, adapter: object) -> None:
+        await self._reconcile_stale_user_stream_window(environment)
         await self._stop_user_stream(environment)
         if not self._started or self._adapters.get(environment) is not adapter:
             return
@@ -439,6 +457,17 @@ class ExecutionRuntime:
             self._stream_tasks[(environment, "user")] = asyncio.create_task(
                 self._supervise_adapter_stream(environment, "user", adapter, user_stream)
             )
+
+    async def _reconcile_stale_user_stream_window(self, environment: Environment) -> None:
+        end_time_ms = self._clock_wall_ms(environment)
+        start_time_ms = self._stream_started_wall_ms.get((environment, "user"))
+        if start_time_ms is None:
+            start_time_ms = max(0, end_time_ms - USER_EVENT_RECONCILIATION_LOOKBACK_MS)
+        await self._reconcile_active_executions_for_environment(
+            environment,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
 
     async def _cancel_and_reconcile_active_executions(self) -> None:
         for service in list(self._services.values()):
@@ -629,9 +658,34 @@ class ExecutionRuntime:
         self._runtime_errors.setdefault(key, []).append(f"{type(exc).__name__}: {exc}")
 
     @staticmethod
-    def _is_listen_key_hard_stop(exc: BaseException) -> bool:
-        return str(exc).startswith("LISTEN_KEY_VENUE_BAN_HARD_STOP")
+    def _listen_key_failure_code(exc: BaseException) -> str:
+        if isinstance(exc, StreamHealthFailure):
+            return exc.code
+        message = str(exc)
+        for code in (
+            "LISTEN_KEY_VENUE_BAN_HARD_STOP",
+            "LISTEN_KEY_EXPIRED",
+            "LISTEN_KEY_RETRYABLE_FAILURE",
+            "LISTEN_KEY_RATE_LIMIT_BACKOFF",
+        ):
+            if message.startswith(code):
+                return code
+        return message.split(":", 1)[0]
 
-    @staticmethod
-    def _is_listen_key_invalidated(exc: BaseException) -> bool:
-        return str(exc).startswith("LISTEN_KEY_EXPIRED")
+    @classmethod
+    def _is_listen_key_hard_stop(cls, exc: BaseException) -> bool:
+        return cls._listen_key_failure_code(exc) == "LISTEN_KEY_VENUE_BAN_HARD_STOP"
+
+    @classmethod
+    def _is_listen_key_invalidated(cls, exc: BaseException) -> bool:
+        return cls._listen_key_failure_code(exc) == "LISTEN_KEY_EXPIRED"
+
+    @classmethod
+    def _is_listen_key_retryable(cls, exc: BaseException) -> bool:
+        return cls._listen_key_failure_code(exc) in {
+            "LISTEN_KEY_RETRYABLE_FAILURE",
+            "LISTEN_KEY_RATE_LIMIT_BACKOFF",
+        }
+
+    def _listen_key_retry_delay_seconds(self) -> float:
+        return min(self._stream_restart_delay_seconds, self._stream_keepalive_interval_seconds)

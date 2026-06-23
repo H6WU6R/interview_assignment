@@ -12,12 +12,16 @@ from api.schemas import ExecutionCreateRequest
 from exchanges.binance_usdm import StreamHealthFailure
 from exchanges.simulator import DeterministicSimulator
 from execution import ids
+from execution.clock import ManualClock
+from execution.engine import ExecutionRecord
 from execution.models import (
     ChildOrder,
     ChildOrderStatus,
     Environment,
+    ExecutionStatus,
     Fill,
     MarketSnapshot,
+    PositionSnapshot,
     ReconciliationResult,
     Side,
 )
@@ -617,6 +621,145 @@ async def test_runtime_listen_key_keepalive_restarts_user_stream_after_invalidat
 
 
 @pytest.mark.asyncio
+async def test_runtime_listen_key_invalidation_reconciles_stale_user_stream_window() -> None:
+    import importlib
+
+    runtime_module = importlib.import_module("api.runtime")
+
+    request = ExecutionCreateRequest.model_validate(
+        execution_payload(environment="testnet", target_position="0.010")
+    ).to_domain()
+    record = ExecutionRecord(
+        execution_id="exec_stale_listen_key",
+        request=request,
+        status=ExecutionStatus.RUNNING,
+        side=Side.BUY,
+        required_quantity=Decimal("0.010"),
+        raw_required_quantity=Decimal("0.010"),
+        initial_position=PositionSnapshot(symbol=SYMBOL, position=Decimal("0")),
+    )
+
+    class RecordingReconcileService:
+        def __init__(self) -> None:
+            self.windows: list[tuple[str, int | None, int | None]] = []
+
+        async def active_executions(self) -> list[ExecutionRecord]:
+            return [record]
+
+        async def reconcile_execution(
+            self,
+            execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ExecutionRecord:
+            self.windows.append((execution_id, start_time_ms, end_time_ms))
+            return record
+
+    class InvalidatingListenKeyAdapter:
+        def __init__(self) -> None:
+            self.latest_listen_key: str | None = None
+            self.user_runs = 0
+            self.first_user_started = asyncio.Event()
+            self.second_user_started = asyncio.Event()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_runs += 1
+                self.latest_listen_key = f"listen-{self.user_runs}"
+                if self.user_runs == 1:
+                    self.first_user_started.set()
+                else:
+                    self.second_user_started.set()
+                await asyncio.Event().wait()
+                yield {"event_type": "noop"}
+
+            return events()
+
+        async def renew_listen_key(self, listen_key: str) -> None:
+            self.latest_listen_key = None
+            raise StreamHealthFailure("LISTEN_KEY_EXPIRED")
+
+    runtime = runtime_module.ExecutionRuntime(
+        stream_keepalive_interval_seconds=0.01,
+        stream_restart_delay_seconds=0.01,
+    )
+    adapter = InvalidatingListenKeyAdapter()
+    service = RecordingReconcileService()
+    clock = ManualClock(current=123.0)
+    runtime._started = True
+    runtime._adapters[Environment.TESTNET] = adapter
+    runtime._services[Environment.TESTNET] = service
+    runtime._clocks[Environment.TESTNET] = clock
+    runtime._remember_execution(record)
+    runtime._schedule_stream_supervisor(
+        Environment.TESTNET,
+        "user",
+        adapter,
+        adapter.stream_user_events,
+    )
+    task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
+    try:
+        await asyncio.wait_for(adapter.first_user_started.wait(), timeout=0.5)
+        clock.advance(2.0)
+        await asyncio.wait_for(adapter.second_user_started.wait(), timeout=0.5)
+
+        assert adapter.user_runs == 2
+        assert service.windows == [("exec_stale_listen_key", 123_000, 125_000)]
+    finally:
+        runtime._started = False
+        for stream_task in runtime._stream_tasks.values():
+            stream_task.cancel()
+        task.cancel()
+        await asyncio.gather(task, *runtime._stream_tasks.values(), return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "failure_reason",
+    ["LISTEN_KEY_RETRYABLE_FAILURE", "LISTEN_KEY_RATE_LIMIT_BACKOFF"],
+)
+@pytest.mark.asyncio
+async def test_runtime_listen_key_keepalive_retryable_failure_retries_before_full_interval(
+    failure_reason: str,
+) -> None:
+    import importlib
+
+    runtime_module = importlib.import_module("api.runtime")
+
+    class RetryableKeepaliveAdapter:
+        def __init__(self) -> None:
+            self.latest_listen_key: str | None = "listen-1"
+            self.renewed_listen_keys: list[str] = []
+            self.first_failed = asyncio.Event()
+            self.second_attempted = asyncio.Event()
+
+        async def renew_listen_key(self, listen_key: str) -> None:
+            self.renewed_listen_keys.append(listen_key)
+            if len(self.renewed_listen_keys) == 1:
+                self.first_failed.set()
+                raise StreamHealthFailure(failure_reason)
+            self.second_attempted.set()
+
+    runtime = runtime_module.ExecutionRuntime(
+        stream_keepalive_interval_seconds=0.05,
+        stream_restart_delay_seconds=0.005,
+    )
+    adapter = RetryableKeepaliveAdapter()
+    runtime._started = True
+    runtime._adapters[Environment.TESTNET] = adapter
+    task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
+    try:
+        await asyncio.wait_for(adapter.first_failed.wait(), timeout=0.5)
+        await asyncio.wait_for(adapter.second_attempted.wait(), timeout=0.03)
+
+        assert adapter.renewed_listen_keys == ["listen-1", "listen-1"]
+    finally:
+        runtime._started = False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
     import importlib
 
@@ -624,8 +767,10 @@ async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
 
     class HardStopStartupAdapter:
         def __init__(self) -> None:
+            self.latest_listen_key: str | None = "listen-1"
             self.user_runs = 0
             self.failed = asyncio.Event()
+            self.renewed_listen_keys: list[str] = []
 
         def stream_user_events(self):
             async def events():
@@ -636,7 +781,13 @@ async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
 
             return events()
 
-    runtime = runtime_module.ExecutionRuntime(stream_restart_delay_seconds=0.01)
+        async def renew_listen_key(self, listen_key: str) -> None:
+            self.renewed_listen_keys.append(listen_key)
+
+    runtime = runtime_module.ExecutionRuntime(
+        stream_keepalive_interval_seconds=0.05,
+        stream_restart_delay_seconds=0.01,
+    )
     adapter = HardStopStartupAdapter()
     runtime._started = True
     runtime._adapters[Environment.TESTNET] = adapter
@@ -646,6 +797,10 @@ async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
         adapter,
         adapter.stream_user_events,
     )
+    keepalive_task = asyncio.create_task(
+        runtime._run_listen_key_keepalive(Environment.TESTNET, adapter)
+    )
+    runtime._listen_key_tasks[Environment.TESTNET] = keepalive_task
     try:
         task = runtime._stream_tasks[(Environment.TESTNET, "user")]
         await asyncio.wait_for(adapter.failed.wait(), timeout=0.5)
@@ -653,6 +808,8 @@ async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
         await asyncio.sleep(0.05)
 
         assert adapter.user_runs == 1
+        assert keepalive_task.done()
+        assert adapter.renewed_listen_keys == []
         assert runtime.runtime_errors["testnet.user_stream"] == [
             "StreamHealthFailure: LISTEN_KEY_VENUE_BAN_HARD_STOP"
         ]
@@ -660,7 +817,12 @@ async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
         runtime._started = False
         for stream_task in runtime._stream_tasks.values():
             stream_task.cancel()
-        await asyncio.gather(*runtime._stream_tasks.values(), return_exceptions=True)
+        keepalive_task.cancel()
+        await asyncio.gather(
+            keepalive_task,
+            *runtime._stream_tasks.values(),
+            return_exceptions=True,
+        )
 
 
 @pytest.mark.asyncio

@@ -132,8 +132,13 @@ def assert_standard_artifact_bundle(
 
     summary = json.loads((artifact_dir / "execution_summary.json").read_text())
     assert summary["execution_id"] == artifact_dir.name
-    assert "final_status" in summary
-    assert "final_reason" in summary
+    assert summary["final_status"] == "COMPLETED"
+    assert summary["final_reason"] == "TARGET_QUANTITY_FILLED"
+    assert summary["required_quantity"] == "0.010"
+    assert summary["exposure"]["confirmed_filled_quantity"] == "0.010"
+    assert summary["exposure"]["live_open_quantity"] == "0"
+    assert summary["exposure"]["reserved_exposure"] == "0"
+    assert summary["metrics"]["overfill_quantity"] == "0"
     assert "required_quantity" in summary
     assert "exposure" in summary
 
@@ -732,10 +737,20 @@ def test_cancel_race_script_writes_required_artifacts(tmp_path: Path) -> None:
 
     summary = json.loads((artifact_dir / "execution_summary.json").read_text())
     assert summary["execution_id"] == artifact_dir.name
-    assert "final_status" in summary
-    assert "final_reason" in summary
+    assert summary["final_status"] == "COMPLETED"
+    assert summary["final_reason"] == "TARGET_QUANTITY_FILLED"
+    assert summary["required_quantity"] == "0.010"
+    assert summary["exposure"]["confirmed_filled_quantity"] == "0.010"
+    assert summary["exposure"]["live_open_quantity"] == "0"
+    assert summary["exposure"]["reserved_exposure"] == "0"
+    assert summary["metrics"]["overfill_quantity"] == "0"
     assert "required_quantity" in summary
     assert "exposure" in summary
+
+    snapshot = json.loads((artifact_dir / "execution_snapshot.json").read_text())
+    assert snapshot["final_status"] == "RUNNING"
+    assert snapshot["exposure"]["confirmed_filled_quantity"] == "0.004"
+    assert snapshot["exposure"]["live_open_quantity"] == "0.006"
 
     child_rows = list(csv.DictReader((artifact_dir / "child_orders.csv").open()))
     fill_rows = list(csv.DictReader((artifact_dir / "fills.csv").open()))
@@ -755,9 +770,18 @@ def test_cancel_race_script_writes_required_artifacts(tmp_path: Path) -> None:
     assert "client_order_id" in fill_rows[0]
 
 
-def test_create_timeout_script_writes_default_artifacts_with_resolved_reason() -> None:
+def test_create_timeout_script_writes_terminal_summary_with_resolved_snapshot(
+    tmp_path: Path,
+) -> None:
     result = subprocess.run(
-        ["uv", "run", "python", "scripts/run_sim_create_timeout.py"],
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/run_sim_create_timeout.py",
+            "--output-dir",
+            str(tmp_path),
+        ],
         cwd=PROJECT_ROOT,
         text=True,
         capture_output=True,
@@ -773,9 +797,19 @@ def test_create_timeout_script_writes_default_artifacts_with_resolved_reason() -
     assert REQUIRED_ARTIFACT_FILES <= {path.name for path in artifact_dir.iterdir()}
 
     summary = json.loads((artifact_dir / "execution_summary.json").read_text())
-    assert summary["final_reason"] == CREATE_TIMEOUT_RECONCILED
+    assert summary["final_status"] == "COMPLETED"
+    assert summary["final_reason"] == "TARGET_QUANTITY_FILLED"
+    assert summary["required_quantity"] == "0.010"
     assert summary["exposure"]["unknown_order_quantity"] == "0"
-    assert summary["exposure"]["live_open_quantity"] == "0.010"
+    assert summary["exposure"]["live_open_quantity"] == "0"
+    assert summary["exposure"]["confirmed_filled_quantity"] == "0.010"
+    assert summary["metrics"]["overfill_quantity"] == "0"
+
+    snapshot = json.loads((artifact_dir / "execution_snapshot.json").read_text())
+    assert snapshot["final_status"] == "RUNNING"
+    assert snapshot["final_reason"] == CREATE_TIMEOUT_RECONCILED
+    assert snapshot["exposure"]["unknown_order_quantity"] == "0"
+    assert snapshot["exposure"]["live_open_quantity"] == "0.010"
 
     log_events = [
         json.loads(line)

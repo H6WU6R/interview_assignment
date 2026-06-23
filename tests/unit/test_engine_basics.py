@@ -1,8 +1,10 @@
 import asyncio
 from decimal import Decimal
+from types import SimpleNamespace
 
 from exchanges.simulator import DeterministicSimulator
-from execution.clock import ManualClock
+from execution.clock import ManualClock, SystemClock
+from execution.engine import ExecutionEngine
 from execution.ids import make_client_order_prefix
 from execution.models import (
     Algorithm,
@@ -17,6 +19,18 @@ from execution.service import ExecutionService
 
 
 SYMBOL = "BTCUSDT"
+
+
+def test_execution_engine_defaults_to_system_clock_without_adapter_clock() -> None:
+    engine = ExecutionEngine(SimpleNamespace())
+
+    assert isinstance(engine._clock, SystemClock)
+
+
+def test_execution_service_defaults_to_system_clock_without_adapter_clock() -> None:
+    service = ExecutionService(SimpleNamespace())
+
+    assert isinstance(service._engine._clock, SystemClock)
 
 
 class SymbolRulesUnavailableSimulator(DeterministicSimulator):

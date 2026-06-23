@@ -70,6 +70,10 @@ Algorithms are deliberately small:
 - Chase computes the passive desired price from best bid/ask and decides whether to reprice an active order after the configured bps threshold and minimum interval.
 - TWAP uses absolute slice boundaries from `number_of_slices`; it never sleeps and does not accumulate scheduler drift. At each observed boundary, it computes scheduled cumulative quantity from elapsed monotonic time, subtracts confirmed fills and reserved exposure, then submits only the safe deficit.
 
+### TWAP deadline semantics
+
+`target_duration_seconds` is the TWAP scheduling window. Passive scheduled TWAP children are not created after that window. With `CANCEL_REMAINDER`, the engine cancels and reconciles remaining exposure. With `AGGRESSIVE_WITHIN_RANGE`, the engine may enter a bounded cleanup phase: it first makes exposure safe by cancelling/reconciling passive children, then may submit a marketable limit child inside the configured price range. Summaries report `decision_deadline_elapsed_seconds`, `terminal_cleanup_duration_seconds`, `total_lifecycle_duration_seconds`, and post-deadline submission counts so a reviewer can distinguish schedule behavior from terminal cleanup.
+
 The `ExchangeAdapter` interface is narrow enough for deterministic tests. The simulator supports market data, order creation, fills, cancel/fill races, create-timeout scenarios, reconciliation, and stream health scripting. The Binance adapter maps the same contract onto USD-M REST and WebSocket hooks.
 
 ## Risk and Invariants
@@ -244,7 +248,7 @@ uv run pytest -q tests/integration
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
 These read-only contract tests validate connectivity and parsing only; they do not satisfy the required accepted-order Chase/TWAP Testnet evidence.
 
-Current verified non-live baseline after the final evidence cleanup plan: `506 passed` with `uv run pytest -q tests/unit tests/simulation`. Credentialed/network-enabled integration tests are separate and should only be reported when run with Binance Testnet credentials.
+Current verified non-live baseline: `511 passed` with `uv run pytest -q tests/unit tests/simulation`. Credentialed/network-enabled integration tests are separate and should only be reported when run with Binance Testnet credentials.
 
 ## Known Limitations
 

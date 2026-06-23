@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from exchanges.base import ExchangeAdapter
-from execution.clock import Clock, ManualClock
+from execution.clock import Clock, SystemClock
 from execution.engine import ExecutionEngine, ExecutionRecord
 from execution.models import Environment, ExecutionRequest, ReconciliationResult
 
@@ -13,7 +13,7 @@ class ExecutionService:
 
     def __init__(self, adapter: ExchangeAdapter, clock: Clock | None = None) -> None:
         self._engine = ExecutionEngine(
-            adapter, clock=clock or getattr(adapter, "clock", None) or ManualClock()
+            adapter, clock=clock or getattr(adapter, "clock", None) or SystemClock()
         )
 
     async def create_execution(self, request: ExecutionRequest) -> ExecutionRecord:

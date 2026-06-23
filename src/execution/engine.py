@@ -25,7 +25,7 @@ from exchanges.base import (
     VenueBanHardStop,
     is_exchange_rate_limited,
 )
-from execution.clock import Clock, ManualClock
+from execution.clock import Clock, SystemClock
 from execution import ids
 from execution.events import ExecutionEventActor
 from execution.models import (
@@ -261,7 +261,7 @@ class ExecutionEngine:
 
     def __init__(self, adapter: ExchangeAdapter, clock: Clock | None = None) -> None:
         self._adapter = adapter
-        self._clock = clock or getattr(adapter, "clock", None) or ManualClock()
+        self._clock = clock or getattr(adapter, "clock", None) or SystemClock()
         self._records: dict[str, ExecutionRecord] = {}
         self._actors: dict[str, ExecutionEventActor] = {}
 

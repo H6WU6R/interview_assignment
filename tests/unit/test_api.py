@@ -2365,6 +2365,69 @@ async def test_run_once_creates_child_order_when_market_data_is_present() -> Non
 
 
 @pytest.mark.asyncio
+async def test_run_once_route_maps_returned_submit_rate_limit_backoff_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(simulator_position="0")
+    created = (await post_json(app, "/executions", execution_payload())).json()
+    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+
+    async def rate_limited_submit(*_args: Any, **_kwargs: Any) -> ChildOrder:
+        raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
+
+    monkeypatch.setattr(app.state.adapter, "submit_limit_order", rate_limited_submit)
+
+    response = await post_json(app, f"/executions/{created['execution_id']}/run-once")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "RATE_LIMIT_BACKOFF"
+
+
+@pytest.mark.asyncio
+async def test_cancel_route_maps_returned_cancel_rate_limit_backoff_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(simulator_position="0")
+    created = (await post_json(app, "/executions", execution_payload())).json()
+    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    opened = await post_json(app, f"/executions/{created['execution_id']}/run-once")
+    assert opened.status_code == 200
+    assert opened.json()["child_orders"][0]["status"] == "OPEN"
+
+    async def rate_limited_cancel(*_args: Any, **_kwargs: Any) -> ChildOrder:
+        raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
+
+    monkeypatch.setattr(app.state.adapter, "cancel_order", rate_limited_cancel)
+
+    response = await post_json(app, f"/executions/{created['execution_id']}/cancel")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "RATE_LIMIT_BACKOFF"
+
+
+@pytest.mark.asyncio
+async def test_run_once_route_marks_returned_submit_venue_ban_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(simulator_position="0")
+    created = (await post_json(app, "/executions", execution_payload())).json()
+    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+
+    async def banned_submit(*_args: Any, **_kwargs: Any) -> ChildOrder:
+        raise VenueBanHardStop("VENUE_BAN_HARD_STOP")
+
+    monkeypatch.setattr(app.state.adapter, "submit_limit_order", banned_submit)
+
+    run_response = await post_json(app, f"/executions/{created['execution_id']}/run-once")
+    create_response = await post_json(app, "/executions", execution_payload(target_position="0.020"))
+
+    assert run_response.status_code == 503
+    assert run_response.json()["detail"] == "VENUE_BAN_HARD_STOP"
+    assert create_response.status_code == 503
+    assert create_response.json()["detail"] == "VENUE_BAN_HARD_STOP"
+
+
+@pytest.mark.asyncio
 async def test_run_once_route_maps_raw_venue_ban_hard_stop_to_503(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

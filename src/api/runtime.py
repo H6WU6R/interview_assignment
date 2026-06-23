@@ -199,6 +199,7 @@ class ExecutionRuntime:
     async def cancel_execution(self, execution_id: str) -> ExecutionRecord:
         service = await self._service_for_execution(execution_id)
         record = await service.cancel_execution(execution_id)
+        self._raise_for_returned_unavailable_record(record)
         self._remember_execution(record)
         self._cancel_background_loop_if_terminal(record)
         return record
@@ -206,6 +207,7 @@ class ExecutionRuntime:
     async def run_once(self, execution_id: str) -> ExecutionRecord:
         service = await self._service_for_execution(execution_id)
         record = await service.run_once(execution_id)
+        self._raise_for_returned_unavailable_record(record)
         self._remember_execution(record)
         self._cancel_background_loop_if_terminal(record)
         return record
@@ -223,10 +225,9 @@ class ExecutionRuntime:
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms,
         )
+        self._raise_for_returned_unavailable_record(record)
         self._remember_execution(record)
         self._cancel_background_loop_if_terminal(record)
-        if record.final_reason == RATE_LIMIT_BACKOFF:
-            raise RuntimeUnavailableError(RATE_LIMIT_BACKOFF)
         return record
 
     def _register(
@@ -324,6 +325,12 @@ class ExecutionRuntime:
                 return
             except VenueBanHardStop as exc:
                 self._record_runtime_error(execution_id, exc)
+                return
+            except RuntimeUnavailableError as exc:
+                self._record_runtime_error(execution_id, exc)
+                if str(exc) == RATE_LIMIT_BACKOFF:
+                    await asyncio.sleep(self._stream_restart_delay_seconds)
+                    continue
                 return
             except Exception as exc:
                 if is_exchange_rate_limited(exc):
@@ -756,14 +763,31 @@ class ExecutionRuntime:
         environment: Environment,
         record: ExecutionRecord,
     ) -> bool:
-        reason = record.final_reason
-        if reason not in UNAVAILABLE_RECONCILIATION_FINAL_REASONS:
+        reason = self._record_returned_unavailable_record(record, mark_environment=True)
+        if reason is None:
             return False
-        self._remember_execution(record)
-        self._cancel_background_loop_if_terminal(record)
-        self._unavailable_environments[environment] = reason
         self._record_runtime_error(record.execution_id, RuntimeUnavailableError(reason))
         return True
+
+    def _raise_for_returned_unavailable_record(self, record: ExecutionRecord) -> None:
+        reason = self._record_returned_unavailable_record(record)
+        if reason is not None:
+            raise RuntimeUnavailableError(reason)
+
+    def _record_returned_unavailable_record(
+        self,
+        record: ExecutionRecord,
+        *,
+        mark_environment: bool = False,
+    ) -> str | None:
+        reason = record.final_reason
+        if reason not in UNAVAILABLE_RECONCILIATION_FINAL_REASONS:
+            return None
+        self._remember_execution(record)
+        self._cancel_background_loop_if_terminal(record)
+        if mark_environment or reason == VenueBanHardStop.code:
+            self._unavailable_environments[record.request.environment] = reason
+        return reason
 
     def _clock_wall_ms(self, environment: Environment) -> int:
         clock = self._clocks.get(environment)

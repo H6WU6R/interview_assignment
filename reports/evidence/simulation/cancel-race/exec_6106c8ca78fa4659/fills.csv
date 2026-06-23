@@ -1,0 +1,3 @@
+client_order_id,cumulative_filled_quantity,event_time_ms,last_fill_price,last_filled_quantity,trade_id,transaction_time_ms
+ce_6106c8ca78fa_1,0.004,600,50000.00,0.004,sim_trade_000001,600
+ce_6106c8ca78fa_2,0.006,600,50030.00,0.006,sim_trade_000002,600

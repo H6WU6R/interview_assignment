@@ -1,6 +1,6 @@
 \section{Introduction}
 
-The project brief asks for a Python 3.11+ execution service for Binance USD-M Futures BTCUSDT Perpetual \citep{calais-brief}. The service receives a final account target position, a price interval, a target duration, and an execution algorithm. The most important interpretation is that \code{target\_position} is not an order quantity. The system first reads the current position and computes:
+The project brief asks for a Python execution algorithm for Binance USD-M Futures BTCUSDT Perpetual. The algorithm receives a final account target position, a price interval, a target duration, and an execution algorithm. The most important interpretation is that \code{target\_position} is not an order quantity. The system first reads the current position and computes:
 
 \begin{equation}
   required\_trade\_quantity = target\_position - current\_position.
@@ -10,7 +10,7 @@ A negative-to-positive target therefore requires trading through zero. For examp
 
 The second important interpretation is that price, time, and quantity cannot all be guaranteed across every market path. If a buy price range ends at an upper bound, the implementation cannot legally force a fill above that bound. If the market never becomes executable within the interval, a correct result may be partial or fully unfilled. The report therefore evaluates the project by whether the system reports actual outcome and preserves safety, not whether every run reaches 100 percent completion.
 
-The implementation follows a ``small and correct'' strategy. It avoids multi-asset routing, durable production recovery, and mainnet automation. In exchange, the core order lifecycle is explicit, deterministic tests cover abnormal event ordering, and every child submit passes through the same exposure gate. The central objective is not to guarantee completion under every market path. It is to ensure that any completion, partial completion, expiry, or cancellation is bounded by the user's price interval, traceable to order evidence, and free of predictable overfill.
+The implementation follows a ``small and correct'' strategy. It avoids multi-asset routing, durable production recovery, and mainnet automation. In exchange, the core order lifecycle is explicit, deterministic tests cover abnormal event ordering, and every child submit passes through the same exposure gate. The central design objective is not guaranteed completion. Price, time, and quantity cannot all be guaranteed under every market path. The objective is instead to make the outcome \textbf{correct, bounded, auditable, and explainable}: never knowingly overfill, never double-count a fill, never retry an ambiguous create with a fresh client order ID before reconciliation, and never report completion when price or exchange rules make completion illegal.
 
 \begin{table}[t]
 \caption{Submission status on the final report branch.}
@@ -41,7 +41,7 @@ The scoring rubric makes this emphasis natural. Execution correctness and edge c
 \toprule
 Scoring area & Report emphasis \\
 \midrule
-Execution correctness & Target-position delta, Decimal math, price bounds, exposure invariant, create-timeout handling. \\
+Execution correctness & Target position, Decimal math, price bounds, exposure invariant, create-timeout handling. \\
 Edge cases and state & Parent and child state machines, cancel/fill race, duplicate events, stale streams, deadline behavior. \\
 Testing quality & Deterministic simulator, T1-T10 matrix, raw artifacts, repeatable verification commands. \\
 Algorithm design & Chase repricing policy and TWAP absolute schedule with carry-forward deficit. \\
@@ -55,18 +55,18 @@ Architecture and communication & Clear ownership boundaries, limitations, AI dis
 \label{tab:coverage}
 \centering
 \small
-\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.27\linewidth} >{\raggedright\arraybackslash}p{0.17\linewidth} X}
+\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}p{0.30\linewidth} X}
 \toprule
-Requirement area & Status & Evidence or note \\
+Requirement area & Evidence or note \\
 \midrule
-Target-position semantics & \yes & Engine computes net delta from current position; no-action and cross-zero cases are tested. \\
-Chase and TWAP & \yes & Chase passive repricing and TWAP absolute schedule are implemented as narrow algorithm helpers. \\
-Price bounds and Decimal math & \yes & Decimal-string API fields, Decimal internal math, side-aware rounding, tick/step/min checks. \\
-State machines and overfill safety & \yes & Parent and child states are monotonic; submit path enforces the exposure invariant. \\
-Deterministic simulator & \yes & Simulator covers partial fill, cancel/fill race, post-only rejection, create timeout, duplicate/lower fills, stale data, and stream disconnect. \\
-Binance Testnet integration code & \yes & Adapter and runner implement symbol rules, REST mutation, exact lookup, user streams, and evidence artifacts. \\
-Accepted Binance Testnet Chase/TWAP evidence & \yes & Accepted sanitized Chase and TWAP artifacts are included with non-empty exchange order IDs. \\
-Final reporting and AI disclosure & \yes & This LaTeX report and \code{AI\_USAGE.md} document decisions, evidence, and verification. \\
+Target-position semantics & Engine computes net delta from current position; no-action and cross-zero cases are tested. \\
+Chase and TWAP & Chase passive repricing and TWAP absolute schedule are implemented as narrow algorithm helpers. \\
+Price bounds and Decimal math & Decimal-string API fields, Decimal internal math, side-aware rounding, tick/step/min checks. \\
+State machines and overfill safety & Parent and child states are monotonic; submit path enforces the exposure invariant. \\
+Deterministic simulator & Simulator covers partial fill, cancel/fill race, post-only rejection, create timeout, duplicate/lower fills, stale data, and stream disconnect. \\
+Binance Testnet integration code & Adapter and runner implement symbol rules, REST mutation, exact lookup, user streams, and evidence artifacts. \\
+Accepted Binance Testnet Chase/TWAP evidence & Accepted sanitized Chase and TWAP artifacts are included with non-empty exchange order IDs. \\
+Final reporting and AI disclosure & This LaTeX report and \code{AI\_USAGE.md} document decisions, evidence, and verification. \\
 \bottomrule
 \end{tabularx}
 \end{table}

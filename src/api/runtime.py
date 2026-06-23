@@ -434,10 +434,11 @@ class ExecutionRuntime:
 
             if self._started and self._adapters.get(environment) is adapter:
                 if name == "user" and not listen_key_expired_event:
+                    end_time_ms = self._clock_wall_ms(environment)
                     await self._reconcile_active_executions_for_environment(
                         environment,
-                        start_time_ms=stream_started_ms,
-                        end_time_ms=self._clock_wall_ms(environment),
+                        start_time_ms=self._bounded_user_stream_start_ms(stream_started_ms, end_time_ms),
+                        end_time_ms=end_time_ms,
                     )
                 await asyncio.sleep(self._stream_restart_delay_seconds)
 
@@ -498,13 +499,15 @@ class ExecutionRuntime:
     async def _reconcile_stale_user_stream_window(self, environment: Environment) -> None:
         end_time_ms = self._clock_wall_ms(environment)
         start_time_ms = self._stream_started_wall_ms.get((environment, "user"))
-        if start_time_ms is None:
-            start_time_ms = max(0, end_time_ms - USER_EVENT_RECONCILIATION_LOOKBACK_MS)
         await self._reconcile_active_executions_for_environment(
             environment,
-            start_time_ms=start_time_ms,
+            start_time_ms=self._bounded_user_stream_start_ms(start_time_ms, end_time_ms),
             end_time_ms=end_time_ms,
         )
+
+    @staticmethod
+    def _bounded_user_stream_start_ms(stream_started_ms: int | None, end_time_ms: int) -> int:
+        return max(stream_started_ms or 0, end_time_ms - USER_EVENT_RECONCILIATION_LOOKBACK_MS)
 
     async def _cancel_and_reconcile_active_executions(self) -> None:
         for service in list(self._services.values()):

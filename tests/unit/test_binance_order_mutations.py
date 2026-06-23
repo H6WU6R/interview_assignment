@@ -1487,13 +1487,116 @@ async def test_testnet_runner_exits_when_precreate_rate_limit_budget_exhausts(
     assert adapter.user_closed.is_set()
 
 
-async def test_testnet_runner_stops_before_service_flow_when_server_time_sync_fails(
+async def test_testnet_runner_backs_off_and_retries_post_run_reconciliation_rate_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import importlib.util
 
-    class SyncFailed(RuntimeError):
-        pass
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock()
+            self.calls = 0
+
+        async def reconcile_orders_and_fills(self, symbol: str, *, client_order_prefix: str | None = None) -> Any:
+            self.calls += 1
+            assert symbol == "BTCUSDT"
+            assert client_order_prefix == "ce_exec_123456_"
+            if self.calls == 1:
+                raise ExchangeRateLimited("RATE_LIMIT_BACKOFF\napi-key=secret")
+            return SimpleNamespace(orders=[], fills=[], warnings=[])
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    sleeps: list[float] = []
+    original_sleep = asyncio.sleep
+
+    async def capture_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        await original_sleep(0)
+
+    monkeypatch.setattr(module.asyncio, "sleep", capture_sleep)
+
+    events: list[dict[str, Any]] = []
+    adapter = FakeAdapter()
+    reconciliation = await module._reconcile_orders_and_fills_with_rate_limit_backoff(
+        adapter,
+        "BTCUSDT",
+        client_order_prefix="ce_exec_123456_",
+        args=SimpleNamespace(max_runtime_seconds=30.0, poll_interval_seconds=0.0),
+        events=events,
+    )
+
+    assert reconciliation.orders == []
+    assert adapter.calls == 2
+    assert [delay for delay in sleeps if delay == 0.1] == [0.1]
+    assert events == [
+        {
+            "event": "post_run_reconciliation_rate_limit_backoff",
+            "utc_timestamp": events[0]["utc_timestamp"],
+            "monotonic_time": events[0]["monotonic_time"],
+            "reason": "RATE_LIMIT_BACKOFF api-key=[redacted]",
+            "backoff_seconds": 0.1,
+        }
+    ]
+
+
+async def test_testnet_runner_reraises_when_post_run_reconciliation_rate_limit_budget_exhausts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock()
+            self.calls = 0
+
+        async def reconcile_orders_and_fills(self, *_args: Any, **_kwargs: Any) -> Any:
+            self.calls += 1
+            raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    sleeps: list[float] = []
+    original_sleep = asyncio.sleep
+
+    async def capture_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        await original_sleep(0)
+
+    monkeypatch.setattr(module.asyncio, "sleep", capture_sleep)
+
+    events: list[dict[str, Any]] = []
+    adapter = FakeAdapter()
+    with pytest.raises(ExchangeRateLimited, match="RATE_LIMIT_BACKOFF"):
+        await module._reconcile_orders_and_fills_with_rate_limit_backoff(
+            adapter,
+            "BTCUSDT",
+            client_order_prefix="ce_exec_123456_",
+            args=SimpleNamespace(max_runtime_seconds=0.2, poll_interval_seconds=0.0),
+            events=events,
+        )
+
+    assert adapter.calls == 3
+    assert [delay for delay in sleeps if delay == 0.1] == [0.1, 0.1]
+    assert [event["event"] for event in events] == [
+        "post_run_reconciliation_rate_limit_backoff",
+        "post_run_reconciliation_rate_limit_backoff",
+        "post_run_reconciliation_rate_limit_backoff",
+    ]
+
+
+async def test_testnet_runner_stops_before_service_flow_when_server_time_sync_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
 
     class FakeRunnerAdapter:
         def __init__(self, settings: Settings) -> None:
@@ -1507,7 +1610,7 @@ async def test_testnet_runner_stops_before_service_flow_when_server_time_sync_fa
             pass
 
         async def synchronize_server_time(self) -> int:
-            raise SyncFailed("server time unavailable")
+            raise ServerTimeSynchronizationFailure("SERVER_TIME_SYNC_TRANSPORT_FAILURE")
 
         def stream_market_data(self):
             self.market_started = True
@@ -1566,7 +1669,10 @@ async def test_testnet_runner_stops_before_service_flow_when_server_time_sync_fa
     monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
     monkeypatch.setattr(module, "ExecutionService", FakeExecutionService)
 
-    with pytest.raises(SyncFailed, match="server time unavailable"):
+    with pytest.raises(
+        SystemExit,
+        match="Binance server-time synchronization failed: SERVER_TIME_SYNC_TRANSPORT_FAILURE",
+    ):
         await module.run(Algorithm.CHASE)
 
     assert adapter is not None

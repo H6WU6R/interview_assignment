@@ -12,7 +12,7 @@ from typing import Any, Iterable, Mapping
 
 from config import Settings, load_binance_usdm_credentials
 from exchanges.base import ExchangeRateLimited
-from exchanges.binance_usdm import BinanceUsdmAdapter
+from exchanges.binance_usdm import BinanceUsdmAdapter, ServerTimeSynchronizationFailure
 from execution.ids import make_client_order_prefix
 from execution.models import (
     Algorithm,
@@ -28,9 +28,11 @@ from observability.logging import to_jsonable
 
 _PRECREATE_RATE_LIMIT_MAX_BACKOFF_BUDGET_SECONDS = 5.0
 _PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS = 0.1
+_POST_RUN_RECONCILIATION_RATE_LIMIT_MAX_BACKOFF_BUDGET_SECONDS = 5.0
 _SANITIZED_REASON_MAX_CHARS = 200
 _SENSITIVE_REASON_VALUE_RE = re.compile(r"(?i)\b(api[-_ ]?key|secret|signature|token)=\S+")
 _USER_STREAM_LISTEN_KEY_EXPIRED = "listen_key_expired"
+_USER_EVENT_RECONCILIATION_LOOKBACK_MS = 60_000
 
 
 def parse_args(algorithm: Algorithm) -> argparse.Namespace:
@@ -79,7 +81,10 @@ async def run(algorithm: Algorithm) -> Path:
     )
     adapter.set_market_stream_symbol(symbol)
     events: list[dict[str, Any]] = []
-    server_time_offset_ms = await adapter.synchronize_server_time()
+    try:
+        server_time_offset_ms = await adapter.synchronize_server_time()
+    except ServerTimeSynchronizationFailure as exc:
+        raise SystemExit(f"Binance server-time synchronization failed: {exc}") from exc
     events.append(
         _runtime_event(
             adapter,
@@ -188,7 +193,13 @@ async def run(algorithm: Algorithm) -> Path:
             events.append(_runtime_event(adapter, "final_reconcile", execution=_record_summary(latest)))
 
         prefix = make_client_order_prefix(execution.execution_id)
-        reconciliation = await adapter.reconcile_orders_and_fills(symbol, client_order_prefix=prefix)
+        reconciliation = await _reconcile_orders_and_fills_with_rate_limit_backoff(
+            adapter,
+            symbol,
+            client_order_prefix=prefix,
+            args=args,
+            events=events,
+        )
         events.append(
             _runtime_event(
                 adapter,
@@ -279,6 +290,42 @@ async def _create_execution_with_rate_limit_backoff(
             await asyncio.sleep(backoff_seconds)
 
 
+async def _reconcile_orders_and_fills_with_rate_limit_backoff(
+    adapter: BinanceUsdmAdapter,
+    symbol: str,
+    *,
+    client_order_prefix: str | None,
+    args: argparse.Namespace,
+    events: list[dict[str, Any]],
+) -> Any:
+    loop = asyncio.get_running_loop()
+    backoff_seconds = max(float(args.poll_interval_seconds), _PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS)
+    backoff_budget_seconds = min(
+        max(float(args.max_runtime_seconds), 0.0),
+        _POST_RUN_RECONCILIATION_RATE_LIMIT_MAX_BACKOFF_BUDGET_SECONDS,
+    )
+    backoff_deadline = loop.time() + backoff_budget_seconds
+    max_backoffs = max(0, math.floor((backoff_budget_seconds + 1e-9) / backoff_seconds))
+    backoff_count = 0
+
+    while True:
+        try:
+            return await adapter.reconcile_orders_and_fills(symbol, client_order_prefix=client_order_prefix)
+        except ExchangeRateLimited as exc:
+            events.append(
+                _runtime_event(
+                    adapter,
+                    "post_run_reconciliation_rate_limit_backoff",
+                    reason=_sanitize_exchange_reason(exc),
+                    backoff_seconds=backoff_seconds,
+                )
+            )
+            if backoff_count >= max_backoffs or loop.time() + backoff_seconds > backoff_deadline + 1e-9:
+                raise
+            backoff_count += 1
+            await asyncio.sleep(backoff_seconds)
+
+
 async def _start_market_stream(
     adapter: BinanceUsdmAdapter,
     *,
@@ -325,13 +372,14 @@ async def _start_user_stream(
             if _is_listen_key_expired_event(event):
                 if execution_id is not None:
                     end_time_ms = _clock_wall_ms(adapter)
+                    start_time_ms = _bounded_user_stream_start_ms(stream_started_ms, end_time_ms)
                     reconciliation_window = {
-                        "start_time_ms": stream_started_ms,
+                        "start_time_ms": start_time_ms,
                         "end_time_ms": end_time_ms,
                     }
                     updated = await service.reconcile_execution(
                         execution_id,
-                        start_time_ms=stream_started_ms,
+                        start_time_ms=start_time_ms,
                         end_time_ms=end_time_ms,
                     )
                     events.append(
@@ -405,6 +453,12 @@ def _clock_wall_ms(adapter: Any) -> int | None:
     if clock is None:
         return None
     return int(clock.utc_now().timestamp() * 1000)
+
+
+def _bounded_user_stream_start_ms(stream_started_ms: int | None, end_time_ms: int | None) -> int | None:
+    if end_time_ms is None:
+        return stream_started_ms
+    return max(stream_started_ms or 0, end_time_ms - _USER_EVENT_RECONCILIATION_LOOKBACK_MS)
 
 
 async def _wait_for_stream_health(adapter: BinanceUsdmAdapter, task: asyncio.Task[Any]) -> None:

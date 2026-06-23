@@ -836,11 +836,11 @@ async def test_runtime_listen_key_invalidation_reconciles_stale_user_stream_wind
     task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
     try:
         await asyncio.wait_for(adapter.first_user_started.wait(), timeout=0.5)
-        clock.advance(2.0)
+        clock.advance(120.0)
         await asyncio.wait_for(adapter.second_user_started.wait(), timeout=0.5)
 
         assert adapter.user_runs == 2
-        assert service.windows == [("exec_stale_listen_key", 123_000, 125_000)]
+        assert service.windows == [("exec_stale_listen_key", 183_000, 243_000)]
     finally:
         runtime._started = False
         for stream_task in runtime._stream_tasks.values():
@@ -939,14 +939,14 @@ async def test_runtime_listen_key_expired_event_restarts_user_stream_and_reconci
     )
     try:
         await asyncio.wait_for(adapter.first_user_started.wait(), timeout=0.5)
-        clock.advance(2.0)
+        clock.advance(120.0)
         await adapter.event_to_emit.put(expired_event)
         await asyncio.wait_for(adapter.first_user_closed.wait(), timeout=0.5)
         await asyncio.wait_for(adapter.second_user_started.wait(), timeout=0.5)
 
         assert adapter.created_listen_keys == ["listen-1", "listen-2"]
         assert adapter.latest_listen_key == "listen-2"
-        assert service.windows == [("exec_listen_key_expired_event", 123_000, 125_000)]
+        assert service.windows == [("exec_listen_key_expired_event", 183_000, 243_000)]
     finally:
         runtime._started = False
         for stream_task in runtime._stream_tasks.values():
@@ -1340,6 +1340,92 @@ async def test_runtime_restarts_binance_user_stream_after_disconnect(
         assert end_time_ms >= start_time_ms
     finally:
         await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_user_stream_disconnect_reconciles_bounded_stale_window() -> None:
+    import importlib
+
+    runtime_module = importlib.import_module("api.runtime")
+
+    request = ExecutionCreateRequest.model_validate(
+        execution_payload(environment="testnet", target_position="0.010")
+    ).to_domain()
+    record = ExecutionRecord(
+        execution_id="exec_user_disconnect",
+        request=request,
+        status=ExecutionStatus.RUNNING,
+        side=Side.BUY,
+        required_quantity=Decimal("0.010"),
+        raw_required_quantity=Decimal("0.010"),
+        initial_position=PositionSnapshot(symbol=SYMBOL, position=Decimal("0")),
+    )
+
+    class RecordingReconcileService:
+        def __init__(self) -> None:
+            self.windows: list[tuple[str, int | None, int | None]] = []
+
+        async def active_executions(self) -> list[ExecutionRecord]:
+            return [record]
+
+        async def reconcile_execution(
+            self,
+            execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ExecutionRecord:
+            self.windows.append((execution_id, start_time_ms, end_time_ms))
+            return record
+
+    class DisconnectingUserAdapter:
+        def __init__(self) -> None:
+            self.user_runs = 0
+            self.first_user_started = asyncio.Event()
+            self.second_user_started = asyncio.Event()
+            self.disconnect_user = asyncio.Event()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_runs += 1
+                if self.user_runs == 1:
+                    self.first_user_started.set()
+                    await self.disconnect_user.wait()
+                    return
+                self.second_user_started.set()
+                await asyncio.Event().wait()
+                yield {"event_type": "noop"}
+
+            return events()
+
+    runtime = runtime_module.ExecutionRuntime(stream_restart_delay_seconds=0.01)
+    adapter = DisconnectingUserAdapter()
+    service = RecordingReconcileService()
+    clock = ManualClock(current=123.0)
+    runtime._started = True
+    runtime._adapters[Environment.TESTNET] = adapter
+    runtime._services[Environment.TESTNET] = service
+    runtime._clocks[Environment.TESTNET] = clock
+    runtime._remember_execution(record)
+    runtime._schedule_stream_supervisor(
+        Environment.TESTNET,
+        "user",
+        adapter,
+        adapter.stream_user_events,
+    )
+    try:
+        await asyncio.wait_for(adapter.first_user_started.wait(), timeout=0.5)
+        clock.advance(120.0)
+        adapter.disconnect_user.set()
+        await asyncio.wait_for(adapter.second_user_started.wait(), timeout=0.5)
+
+        assert adapter.user_runs == 2
+        assert service.windows == [("exec_user_disconnect", 183_000, 243_000)]
+    finally:
+        runtime._started = False
+        for stream_task in runtime._stream_tasks.values():
+            stream_task.cancel()
+        await asyncio.gather(*runtime._stream_tasks.values(), return_exceptions=True)
 
 
 @pytest.mark.asyncio

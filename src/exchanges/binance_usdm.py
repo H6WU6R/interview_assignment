@@ -19,6 +19,7 @@ import websockets
 from config import Settings
 from exchanges.base import (
     ExchangeAdapter,
+    ExchangeRateLimited,
     NoFreshMarketData,
     OrderCancelTimeout,
     OrderCreateTimeout,
@@ -84,12 +85,6 @@ class PendingCancelOutcome(OrderCancelTimeout):
 
 class RetryableReadFailure(RuntimeError):
     """Raised when a signed read can be retried safely."""
-
-    pass
-
-
-class ExchangeRateLimited(RetryableReadFailure):
-    """Raised when Binance asks the caller to back off due to rate limits."""
 
     pass
 

@@ -731,6 +731,7 @@ class ExecutionEngine:
         if child.status not in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
             return False
 
+        live_status_before_cancel = child.status
         remaining_before_cancel = child.remaining_quantity
         if remaining_before_cancel <= Decimal("0"):
             return False
@@ -745,7 +746,11 @@ class ExecutionEngine:
         try:
             cancelled = await self._adapter.cancel_order(record.request.symbol, child.client_order_id)
         except VenueBanHardStop as exc:
+            tracker.release_pending_cancel(remaining_before_cancel)
+            tracker.reserve_live_open(remaining_before_cancel)
+            self._set_child_status(child, live_status_before_cancel)
             child.terminal_reason = str(exc)
+            self._record_max_reserved_exposure(record)
             self._fail_locked(record, str(exc))
             self._assert_exposure_invariant_locked(record)
             return True
@@ -759,7 +764,7 @@ class ExecutionEngine:
                 tracker.reserve_live_open(remaining_before_cancel)
                 self._record_max_reserved_exposure(record)
                 child.terminal_reason = str(exc)
-                self._set_child_status(child, ChildOrderStatus.OPEN)
+                self._set_child_status(child, live_status_before_cancel)
                 self._record_rate_limit_backoff_locked(record, str(exc))
                 self._assert_exposure_invariant_locked(record)
                 return True
@@ -767,7 +772,7 @@ class ExecutionEngine:
             tracker.reserve_live_open(remaining_before_cancel)
             self._record_max_reserved_exposure(record)
             child.terminal_reason = str(exc)
-            self._set_child_status(child, ChildOrderStatus.OPEN)
+            self._set_child_status(child, live_status_before_cancel)
             self._assert_exposure_invariant_locked(record)
             return False
 

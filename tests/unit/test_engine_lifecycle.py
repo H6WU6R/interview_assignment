@@ -1411,9 +1411,13 @@ async def test_cancel_venue_ban_hard_stop_fails_without_repeated_retry() -> None
     assert adapter.cancel_attempts == 1
     assert failed.status is ExecutionStatus.FAILED
     assert failed.final_reason == "VENUE_BAN_HARD_STOP"
+    assert failed.child_orders[0].status is ChildOrderStatus.OPEN
     assert failed.child_orders[0].terminal_reason == "VENUE_BAN_HARD_STOP"
-    assert failed.exposure.pending_cancel_quantity == Decimal("0.010")
+    assert failed.exposure.pending_cancel_quantity == Decimal("0")
+    assert failed.exposure.live_open_quantity == Decimal("0.010")
     assert second.status is ExecutionStatus.FAILED
+    assert second.exposure.pending_cancel_quantity == Decimal("0")
+    assert second.exposure.live_open_quantity == Decimal("0.010")
     assert adapter.cancel_attempts == 1
 
 

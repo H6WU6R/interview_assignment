@@ -14,14 +14,13 @@ import httpx
 import pytest
 
 from config import Settings
-from exchanges.base import OrderCreateTimeout, OrderRejected, VenueBanHardStop
+from exchanges.base import ExchangeRateLimited, OrderCreateTimeout, OrderRejected, VenueBanHardStop
 from exchanges.binance_usdm import (
     LISTEN_KEY_PATH,
     ORDER_QUERY_PATH,
     ORDER_REST_PATH,
     TIME_PATH,
     BinanceUsdmAdapter,
-    ExchangeRateLimited,
     ExchangeSystemOverload,
     ExchangeTerminalReject,
     MutationKind,

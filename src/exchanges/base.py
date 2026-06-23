@@ -49,11 +49,9 @@ class ExchangeRateLimited(RuntimeError):
 
 
 def is_exchange_rate_limited(exc: BaseException) -> bool:
-    """Return True for shared and adapter-local rate-limit backoff exceptions."""
+    """Return True when an exchange raised the shared rate-limit backoff exception."""
 
-    if isinstance(exc, ExchangeRateLimited):
-        return True
-    return exc.__class__.__name__ == "ExchangeRateLimited" and str(exc) == ExchangeRateLimited.code
+    return isinstance(exc, ExchangeRateLimited)
 
 
 class VenueBanHardStop(RuntimeError):

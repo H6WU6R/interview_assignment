@@ -627,6 +627,40 @@ async def test_temporary_sell_min_notional_waits_until_price_becomes_valid() -> 
     assert active.child_orders[0].side is Side.SELL
 
 
+async def test_temporary_buy_min_notional_waits_until_price_becomes_valid() -> None:
+    service, simulator, _clock = await fresh_service(
+        bid=Decimal("4000"),
+        ask=Decimal("4001"),
+        position=Decimal("0"),
+    )
+    execution = await service.create_execution(
+        execution_request(
+            target_position=Decimal("0.001"),
+            lower=Decimal("1"),
+            upper=Decimal("100000"),
+            duration=100,
+        )
+    )
+
+    waiting = await service.run_once(execution.execution_id)
+    assert waiting.status is ExecutionStatus.RUNNING
+    assert waiting.child_orders == []
+    assert waiting.final_reason == "ORDER_SHAPE_TEMPORARILY_UNTRADEABLE"
+    assert waiting.arrival_bid == Decimal("4000")
+    assert waiting.arrival_ask == Decimal("4001")
+
+    await simulator.push_market_data(SYMBOL, Decimal("5000"), Decimal("5001"), exchange_event_time=20)
+    active = await service.run_once(execution.execution_id)
+
+    assert active.status is ExecutionStatus.RUNNING
+    assert active.final_reason is None
+    assert active.arrival_bid == Decimal("4000")
+    assert active.arrival_ask == Decimal("4001")
+    assert len(active.child_orders) == 1
+    assert active.child_orders[0].side is Side.BUY
+    assert active.child_orders[0].price == Decimal("5000.0")
+
+
 async def test_temporary_sell_min_notional_terminalizes_at_deadline() -> None:
     service, simulator, clock = await fresh_service(
         bid=Decimal("4000"),

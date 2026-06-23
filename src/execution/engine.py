@@ -1091,8 +1091,7 @@ class ExecutionEngine:
         rules: SymbolRules,
     ) -> bool:
         return (
-            record.side is Side.SELL
-            and "below min notional" in str(exc)
+            "below min notional" in str(exc)
             and not self._target_cannot_meet_min_quantity_or_min_notional(record, rules)
         )
 

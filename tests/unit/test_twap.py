@@ -33,7 +33,9 @@ def test_scheduled_cumulative_clamps_elapsed_time_below_zero_to_zero() -> None:
     assert scheduled == Decimal("0")
 
 
-def test_scheduled_cumulative_clamps_elapsed_time_above_duration_to_total_quantity() -> None:
+def test_scheduled_cumulative_clamps_elapsed_time_above_duration_to_total_quantity() -> (
+    None
+):
     scheduled = scheduled_cumulative_quantity(
         total_trade_quantity=Decimal("1.0"),
         elapsed_time=Decimal("121"),
@@ -44,7 +46,9 @@ def test_scheduled_cumulative_clamps_elapsed_time_above_duration_to_total_quanti
 
 
 @pytest.mark.parametrize("total_duration", [Decimal("0"), Decimal("-1")])
-def test_scheduled_cumulative_rejects_non_positive_total_duration(total_duration: Decimal) -> None:
+def test_scheduled_cumulative_rejects_non_positive_total_duration(
+    total_duration: Decimal,
+) -> None:
     with pytest.raises(ValueError):
         scheduled_cumulative_quantity(
             total_trade_quantity=Decimal("1.0"),
@@ -91,7 +95,9 @@ def test_effective_slice_elapsed_uses_absolute_slice_boundaries() -> None:
 
 
 @pytest.mark.parametrize("total_duration", [Decimal("0"), Decimal("-1")])
-def test_effective_slice_elapsed_rejects_non_positive_duration(total_duration: Decimal) -> None:
+def test_effective_slice_elapsed_rejects_non_positive_duration(
+    total_duration: Decimal,
+) -> None:
     with pytest.raises(ValueError):
         effective_slice_elapsed(
             elapsed_time=Decimal("1"),

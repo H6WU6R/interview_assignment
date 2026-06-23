@@ -22,7 +22,9 @@ from execution.models import (
 
 
 def load_runner_module() -> Any:
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -44,7 +46,11 @@ def request() -> ExecutionRequest:
     )
 
 
-def record(*, execution_id: str = "exec_abcdef1234567890", child_orders: list[Any] | None = None) -> Any:
+def record(
+    *,
+    execution_id: str = "exec_abcdef1234567890",
+    child_orders: list[Any] | None = None,
+) -> Any:
     return SimpleNamespace(
         execution_id=execution_id,
         status=ExecutionStatus.CANCELLED,
@@ -82,7 +88,9 @@ def manifest_for(
 
 
 @pytest.mark.parametrize("accepted_status", [ChildOrderStatus.OPEN, "FILLED"])
-def test_manifest_reports_accepted_exchange_order_evidence(accepted_status: Any) -> None:
+def test_manifest_reports_accepted_exchange_order_evidence(
+    accepted_status: Any,
+) -> None:
     module = load_runner_module()
     accepted_order = order(exchange_order_id="12345", status=accepted_status)
 
@@ -97,7 +105,9 @@ def test_manifest_reports_accepted_exchange_order_evidence(accepted_status: Any)
 
 def test_manifest_warns_when_accepted_exchange_order_evidence_is_missing() -> None:
     module = load_runner_module()
-    rejected_order = order(exchange_order_id="rejected-123", status=ChildOrderStatus.REJECTED)
+    rejected_order = order(
+        exchange_order_id="rejected-123", status=ChildOrderStatus.REJECTED
+    )
 
     manifest = manifest_for(
         module,
@@ -182,7 +192,9 @@ def test_private_stream_evidence_requires_order_trade_update_for_execution_prefi
     assert matching_manifest["has_execution_matching_private_order_event"] is True
 
 
-def test_artifact_user_event_redacts_account_update_balance_and_position_fields() -> None:
+def test_artifact_user_event_redacts_account_update_balance_and_position_fields() -> (
+    None
+):
     module = load_runner_module()
 
     sanitized = module._artifact_user_event(

@@ -23,7 +23,9 @@ LIVE_INTEGRATION_TEST_COMMAND = ["uv", "run", "pytest", "-q", "tests/integration
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the final submission verification gate.")
+    parser = argparse.ArgumentParser(
+        description="Run the final submission verification gate."
+    )
     parser.add_argument(
         "--allow-missing-final-report",
         action="store_true",
@@ -101,7 +103,9 @@ def build_wheel(dist_dir: Path) -> Path:
     )
     wheels = sorted(dist_dir.glob("*.whl"))
     if len(wheels) != 1:
-        raise VerificationFailure(f"expected one built wheel in {dist_dir}, found {len(wheels)}")
+        raise VerificationFailure(
+            f"expected one built wheel in {dist_dir}, found {len(wheels)}"
+        )
     return wheels[0]
 
 
@@ -180,7 +184,9 @@ def testnet_evidence_failures() -> list[VerificationIssue]:
             )
         ]
 
-    accepted: dict[str, list[Path]] = {algorithm: [] for algorithm in REQUIRED_EVIDENCE_ALGORITHMS}
+    accepted: dict[str, list[Path]] = {
+        algorithm: [] for algorithm in REQUIRED_EVIDENCE_ALGORITHMS
+    }
     invalid_manifests: list[VerificationIssue] = []
     for manifest_path in manifests:
         try:

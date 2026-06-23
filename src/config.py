@@ -34,7 +34,10 @@ class Settings:
 
     @property
     def can_trade_mainnet(self) -> bool:
-        return self.environment == Environment.MAINNET and self.allow_mainnet_trading is True
+        return (
+            self.environment == Environment.MAINNET
+            and self.allow_mainnet_trading is True
+        )
 
 
 @dataclass(frozen=True)
@@ -47,7 +50,9 @@ class BinanceUsdmCredentials:
         return bool(self.api_key and self.api_secret)
 
 
-def load_binance_usdm_credentials(dotenv_path: Path | str | None = None) -> BinanceUsdmCredentials:
+def load_binance_usdm_credentials(
+    dotenv_path: Path | str | None = None,
+) -> BinanceUsdmCredentials:
     dotenv_credentials: dict[str, str | None] = {}
     if not _dotenv_disabled():
         dotenv_credentials = dotenv_values(dotenv_path or DEFAULT_DOTENV_PATH)
@@ -73,7 +78,9 @@ def load_settings(path: Path) -> Settings:
         raise ValueError(f"settings file must contain a mapping: {path}")
 
     settings_fields = Settings.__dataclass_fields__.keys()
-    values: dict[str, Any] = {key: payload[key] for key in settings_fields if key in payload}
+    values: dict[str, Any] = {
+        key: payload[key] for key in settings_fields if key in payload
+    }
     return Settings(**values)
 
 
@@ -89,11 +96,19 @@ def _parse_bool(value: Any, *, field_name: str) -> bool:
     raise ValueError(f"{field_name} must be a boolean or boolean string")
 
 
-def _credential_value(name: str, dotenv_credentials: dict[str, str | None]) -> str | None:
+def _credential_value(
+    name: str, dotenv_credentials: dict[str, str | None]
+) -> str | None:
     if name in os.environ:
         return os.environ[name]
     return dotenv_credentials.get(name)
 
 
 def _dotenv_disabled() -> bool:
-    return os.getenv("PYTHON_DOTENV_DISABLED", "").casefold() in {"1", "true", "t", "yes", "y"}
+    return os.getenv("PYTHON_DOTENV_DISABLED", "").casefold() in {
+        "1",
+        "true",
+        "t",
+        "yes",
+        "y",
+    }

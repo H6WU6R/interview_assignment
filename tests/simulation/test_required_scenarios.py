@@ -98,7 +98,8 @@ async def push_fresh_market(
 def assert_exposure_safe(execution) -> None:
     assert execution.exposure.reserved_exposure <= execution.required_quantity
     assert (
-        execution.exposure.confirmed_filled_quantity + execution.exposure.reserved_exposure
+        execution.exposure.confirmed_filled_quantity
+        + execution.exposure.reserved_exposure
         <= execution.required_quantity
     )
 
@@ -151,7 +152,9 @@ def assert_standard_artifact_bundle(
     } <= set(child_rows[0])
 
 
-async def test_t1_normal_chase_submits_passive_price_and_preserves_exposure_invariant() -> None:
+async def test_t1_normal_chase_submits_passive_price_and_preserves_exposure_invariant() -> (
+    None
+):
     _, _, service = await simulator_service()
     execution = await service.create_execution(request())
 
@@ -177,14 +180,20 @@ async def test_t2_chase_reprice_requires_threshold_and_minimum_interval() -> Non
     execution = await service.run_once(execution.execution_id)
     first_client_order_id = execution.child_orders[0].client_order_id
 
-    await push_fresh_market(clock, simulator, bid=Decimal("50020.00"), ask=Decimal("50021.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50020.00"), ask=Decimal("50021.00")
+    )
     execution = await service.run_once(execution.execution_id)
 
-    assert [child.client_order_id for child in execution.child_orders] == [first_client_order_id]
+    assert [child.client_order_id for child in execution.child_orders] == [
+        first_client_order_id
+    ]
     assert execution.child_orders[0].status is ChildOrderStatus.OPEN
 
     clock.advance(0.6)
-    await push_fresh_market(clock, simulator, bid=Decimal("50020.00"), ask=Decimal("50021.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50020.00"), ask=Decimal("50021.00")
+    )
     execution = await service.run_once(execution.execution_id)
 
     assert len(execution.child_orders) == 2
@@ -197,7 +206,9 @@ async def test_t2_chase_reprice_requires_threshold_and_minimum_interval() -> Non
     assert_exposure_safe(execution)
 
 
-async def test_t3_cancel_fill_race_updates_confirmed_fills_before_replacement_sizing() -> None:
+async def test_t3_cancel_fill_race_updates_confirmed_fills_before_replacement_sizing() -> (
+    None
+):
     clock, simulator, service = await simulator_service()
     execution = await service.create_execution(request())
     prefix = make_client_order_prefix(execution.execution_id)
@@ -205,7 +216,9 @@ async def test_t3_cancel_fill_race_updates_confirmed_fills_before_replacement_si
     execution = await service.run_once(execution.execution_id)
 
     clock.advance(0.6)
-    await push_fresh_market(clock, simulator, bid=Decimal("50030.00"), ask=Decimal("50031.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50030.00"), ask=Decimal("50031.00")
+    )
     execution = await service.run_once(execution.execution_id)
 
     assert execution.exposure.confirmed_filled_quantity == Decimal("0.004")
@@ -217,7 +230,9 @@ async def test_t3_cancel_fill_race_updates_confirmed_fills_before_replacement_si
     assert_exposure_safe(execution)
 
 
-async def test_t4a_create_timeout_reconciles_to_open_order_without_new_client_order_id() -> None:
+async def test_t4a_create_timeout_reconciles_to_open_order_without_new_client_order_id() -> (
+    None
+):
     _, simulator, service = await simulator_service()
     execution = await service.create_execution(request())
     prefix = make_client_order_prefix(execution.execution_id)
@@ -231,11 +246,15 @@ async def test_t4a_create_timeout_reconciles_to_open_order_without_new_client_or
     assert execution.final_reason == CREATE_TIMEOUT_PENDING_RECONCILIATION
 
     before_reconcile = await service.run_once(execution.execution_id)
-    assert [child.client_order_id for child in before_reconcile.child_orders] == [first_client_order_id]
+    assert [child.client_order_id for child in before_reconcile.child_orders] == [
+        first_client_order_id
+    ]
 
     reconciled = await service.reconcile_execution(execution.execution_id)
 
-    assert [child.client_order_id for child in reconciled.child_orders] == [first_client_order_id]
+    assert [child.client_order_id for child in reconciled.child_orders] == [
+        first_client_order_id
+    ]
     assert reconciled.child_orders[0].status is ChildOrderStatus.OPEN
     assert reconciled.child_orders[0].terminal_reason is None
     assert reconciled.final_reason == CREATE_TIMEOUT_RECONCILED
@@ -243,7 +262,9 @@ async def test_t4a_create_timeout_reconciles_to_open_order_without_new_client_or
     assert reconciled.exposure.live_open_quantity == reconciled.required_quantity
     assert_exposure_safe(reconciled)
 
-    await simulator.push_fill(first_client_order_id, reconciled.required_quantity, Decimal("50000.00"))
+    await simulator.push_fill(
+        first_client_order_id, reconciled.required_quantity, Decimal("50000.00")
+    )
     completed = await service.reconcile_execution(execution.execution_id)
 
     assert completed.status is ExecutionStatus.COMPLETED
@@ -251,7 +272,9 @@ async def test_t4a_create_timeout_reconciles_to_open_order_without_new_client_or
     assert completed.summary.metrics["unknown_orders_reconciled"] == 1
 
 
-async def test_t4b_create_timeout_not_found_releases_unknown_exposure_before_safe_retry() -> None:
+async def test_t4b_create_timeout_not_found_releases_unknown_exposure_before_safe_retry() -> (
+    None
+):
     _, simulator, service = await simulator_service()
     execution = await service.create_execution(request())
     prefix = make_client_order_prefix(execution.execution_id)
@@ -264,7 +287,9 @@ async def test_t4b_create_timeout_not_found_releases_unknown_exposure_before_saf
     assert execution.exposure.unknown_order_quantity == execution.required_quantity
 
     before_reconcile = await service.run_once(execution.execution_id)
-    assert [child.client_order_id for child in before_reconcile.child_orders] == [first_client_order_id]
+    assert [child.client_order_id for child in before_reconcile.child_orders] == [
+        first_client_order_id
+    ]
 
     reconciled = await service.reconcile_execution(execution.execution_id)
 
@@ -280,19 +305,27 @@ async def test_t4b_create_timeout_not_found_releases_unknown_exposure_before_saf
     assert_exposure_safe(retried)
 
 
-async def test_t5_twap_carry_forward_deficit_includes_previous_unfilled_quantity() -> None:
+async def test_t5_twap_carry_forward_deficit_includes_previous_unfilled_quantity() -> (
+    None
+):
     clock, simulator, service = await simulator_service()
-    execution = await service.create_execution(request(algorithm=Algorithm.TWAP, duration=100))
+    execution = await service.create_execution(
+        request(algorithm=Algorithm.TWAP, duration=100)
+    )
 
     clock.advance(10)
-    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
     execution = await service.run_once(execution.execution_id)
     first_child = execution.child_orders[0]
 
     assert first_child.submitted_quantity == Decimal("0.001")
 
     clock.advance(10)
-    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
     still_reserved = await service.run_once(execution.execution_id)
 
     assert len(still_reserved.child_orders) == 1
@@ -321,14 +354,18 @@ async def test_t5b_twap_does_not_submit_before_first_absolute_slice_boundary() -
     )
 
     clock.advance(9)
-    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
     before_boundary = await service.run_once(execution.execution_id)
 
     assert before_boundary.child_orders == []
     assert before_boundary.status is ExecutionStatus.RUNNING
 
     clock.advance(1)
-    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
     at_boundary = await service.run_once(execution.execution_id)
 
     assert at_boundary.child_orders[0].submitted_quantity == Decimal("0.100")
@@ -352,11 +389,15 @@ async def test_t6_tail_quantity_records_dust_and_never_rounds_up() -> None:
     assert execution.target_dust_quantity == Decimal("0.0005")
 
     clock.advance(10)
-    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
     execution = await service.run_once(execution.execution_id)
 
     assert execution.child_orders[0].submitted_quantity == Decimal("0.002")
-    assert execution.child_orders[0].submitted_quantity < execution.raw_required_quantity
+    assert (
+        execution.child_orders[0].submitted_quantity < execution.raw_required_quantity
+    )
 
     await simulator.push_fill(
         execution.child_orders[0].client_order_id,
@@ -373,7 +414,9 @@ async def test_t6_tail_quantity_records_dust_and_never_rounds_up() -> None:
     assert_exposure_safe(execution)
 
 
-async def test_t7_price_outside_range_waits_then_expires_without_invalid_order() -> None:
+async def test_t7_price_outside_range_waits_then_expires_without_invalid_order() -> (
+    None
+):
     clock, simulator, service = await simulator_service()
     execution = await service.create_execution(
         request(lower=Decimal("49000"), upper=Decimal("49999"), duration=10)
@@ -386,7 +429,9 @@ async def test_t7_price_outside_range_waits_then_expires_without_invalid_order()
     assert before_deadline.final_reason == "WAITING_FOR_PRICE_RANGE"
 
     clock.advance(10)
-    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
     expired = await service.run_once(execution.execution_id)
 
     assert expired.child_orders == []
@@ -397,13 +442,17 @@ async def test_t7_price_outside_range_waits_then_expires_without_invalid_order()
     assert expired.summary.metrics["unfilled_quantity"] == "0.01"
 
 
-async def test_t7b_cancel_remainder_deadline_terminalizes_unfilled_and_partial_results() -> None:
+async def test_t7b_cancel_remainder_deadline_terminalizes_unfilled_and_partial_results() -> (
+    None
+):
     clock, simulator, service = await simulator_service()
     unfilled = await service.create_execution(request(duration=1))
     unfilled = await service.run_once(unfilled.execution_id)
 
     clock.advance(1)
-    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
     terminal_unfilled = await service.run_once(unfilled.execution_id)
 
     assert unfilled.child_orders[0].status is ChildOrderStatus.OPEN
@@ -423,7 +472,9 @@ async def test_t7b_cancel_remainder_deadline_terminalizes_unfilled_and_partial_r
     )
 
     clock.advance(1)
-    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
     terminal_partial = await service.run_once(partial.execution_id)
 
     assert terminal_partial.status is ExecutionStatus.PARTIALLY_COMPLETED
@@ -456,7 +507,9 @@ async def test_t8_stream_disconnect_pauses_submit_reconciles_then_resumes() -> N
     await service.reconcile_execution(execution.execution_id)
     simulator.set_stream_health(user_stream_healthy=True)
     clock.advance(0.1)
-    await push_fresh_market(clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00"))
+    await push_fresh_market(
+        clock, simulator, bid=Decimal("50000.00"), ask=Decimal("50001.00")
+    )
     resumed = await service.run_once(execution.execution_id)
 
     assert len(resumed.child_orders) == 2
@@ -471,7 +524,9 @@ async def test_t9_duplicate_fill_event_does_not_double_count_cumulative_fill() -
     execution = await service.run_once(execution.execution_id)
     client_order_id = execution.child_orders[0].client_order_id
 
-    fill = await simulator.push_fill(client_order_id, Decimal("0.003"), execution.child_orders[0].price)
+    fill = await simulator.push_fill(
+        client_order_id, Decimal("0.003"), execution.child_orders[0].price
+    )
     simulator.inject_reconciliation_fill(
         Fill(
             client_order_id=client_order_id,
@@ -506,7 +561,9 @@ async def test_t9_duplicate_fill_event_does_not_double_count_cumulative_fill() -
     assert second_reconcile.exposure.confirmed_filled_quantity == Decimal("0.003")
     assert second_reconcile.metric_counts["duplicate_events_ignored"] == 2
 
-    await simulator.push_fill(client_order_id, Decimal("0.007"), execution.child_orders[0].price)
+    await simulator.push_fill(
+        client_order_id, Decimal("0.007"), execution.child_orders[0].price
+    )
     completed = await service.reconcile_execution(execution.execution_id)
 
     assert completed.status is ExecutionStatus.COMPLETED
@@ -516,12 +573,18 @@ async def test_t9_duplicate_fill_event_does_not_double_count_cumulative_fill() -
     assert completed.summary.metrics["overfill_quantity"] == "0"
 
 
-async def test_t10_cross_zero_position_uses_target_minus_current_absolute_quantity() -> None:
+async def test_t10_cross_zero_position_uses_target_minus_current_absolute_quantity() -> (
+    None
+):
     _, _, buy_service = await simulator_service(position=Decimal("-0.003"))
-    buy_execution = await buy_service.create_execution(request(target_position=Decimal("0.002")))
+    buy_execution = await buy_service.create_execution(
+        request(target_position=Decimal("0.002"))
+    )
 
     _, _, sell_service = await simulator_service(position=Decimal("0.004"))
-    sell_execution = await sell_service.create_execution(request(target_position=Decimal("-0.002")))
+    sell_execution = await sell_service.create_execution(
+        request(target_position=Decimal("-0.002"))
+    )
 
     assert buy_execution.side is Side.BUY
     assert buy_execution.required_quantity == Decimal("0.005")
@@ -699,7 +762,9 @@ def test_normal_twap_script_writes_required_artifacts(tmp_path: Path) -> None:
     ]
 
 
-def test_simulator_demo_scripts_run_successfully_for_chase_and_cancel_race(tmp_path: Path) -> None:
+def test_simulator_demo_scripts_run_successfully_for_chase_and_cancel_race(
+    tmp_path: Path,
+) -> None:
     chase = subprocess.run(
         ["uv", "run", "python", "scripts/run_sim_chase.py"],
         cwd=PROJECT_ROOT,

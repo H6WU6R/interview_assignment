@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
 
 import pytest
 
@@ -117,7 +116,11 @@ async def _install_runtime(
     event_time_ms: int,
     fail_apply: bool = False,
     fail_active_lookup: bool = False,
-) -> tuple[ExecutionRuntime, _UserEventService, list[tuple[Environment, int | None, int | None]]]:
+) -> tuple[
+    ExecutionRuntime,
+    _UserEventService,
+    list[tuple[Environment, int | None, int | None]],
+]:
     runtime = ExecutionRuntime()
     record = _record()
     service = _UserEventService(
@@ -166,7 +169,9 @@ async def test_user_event_apply_failure_falls_back_to_bounded_rest_reconciliatio
 
     assert len(service.applied_results) == 1
     assert fallback_calls == [(Environment.SIMULATION, 162_000, 222_000)]
-    assert runtime.runtime_errors["exec_0123456789abcdef"] == ["RuntimeError: apply failed"]
+    assert runtime.runtime_errors["exec_0123456789abcdef"] == [
+        "RuntimeError: apply failed"
+    ]
 
 
 @pytest.mark.asyncio

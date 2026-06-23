@@ -69,7 +69,9 @@ class ExecutionParametersCreate(BaseModel):
     @classmethod
     def validate_minimum_reprice_interval_ms(cls, value: int) -> int:
         if value < 0:
-            raise ValueError("minimum_reprice_interval_ms must be greater than or equal to 0")
+            raise ValueError(
+                "minimum_reprice_interval_ms must be greater than or equal to 0"
+            )
         return value
 
     @field_validator("number_of_slices")
@@ -117,9 +119,13 @@ class ExecutionCreateRequest(BaseModel):
     target_price_upper: Decimal
     target_duration_seconds: int
     deadline_policy: DeadlinePolicy
-    parameters: ExecutionParametersCreate = Field(default_factory=ExecutionParametersCreate)
+    parameters: ExecutionParametersCreate = Field(
+        default_factory=ExecutionParametersCreate
+    )
 
-    @field_validator("target_position", "target_price_lower", "target_price_upper", mode="before")
+    @field_validator(
+        "target_position", "target_price_lower", "target_price_upper", mode="before"
+    )
     @classmethod
     def validate_decimal_string(cls, value: object) -> Decimal:
         return parse_decimal_string(value)
@@ -146,7 +152,9 @@ class ExecutionCreateRequest(BaseModel):
         if self.target_price_upper <= Decimal("0"):
             raise ValueError("target_price_upper must be greater than 0")
         if self.target_price_lower > self.target_price_upper:
-            raise ValueError("target_price_lower must be less than or equal to target_price_upper")
+            raise ValueError(
+                "target_price_lower must be less than or equal to target_price_upper"
+            )
         return self
 
     def to_domain(self) -> ExecutionRequest:
@@ -265,7 +273,9 @@ def execution_response(record: ExecutionRecord) -> ExecutionResponse:
             for child in record.child_orders
         ],
         request=request_response(record),
-        summary_final_status=summary.final_status.value if summary is not None else None,
+        summary_final_status=summary.final_status.value
+        if summary is not None
+        else None,
         summary_final_reason=summary.final_reason if summary is not None else None,
         summary_metrics=json_safe(summary.metrics) if summary is not None else None,
         started_monotonic=started_monotonic(record),

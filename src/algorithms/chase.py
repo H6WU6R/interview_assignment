@@ -15,7 +15,9 @@ class ChaseDecision(StrEnum):
     REPRICE = "REPRICE"
 
 
-def chase_desired_price(side: Side, best_bid: Decimal, best_ask: Decimal, passive: bool) -> Decimal:
+def chase_desired_price(
+    side: Side, best_bid: Decimal, best_ask: Decimal, passive: bool
+) -> Decimal:
     """Return the near-touch price Chase should use for the requested side."""
 
     if side is Side.NO_ACTION:
@@ -27,12 +29,16 @@ def chase_desired_price(side: Side, best_bid: Decimal, best_ask: Decimal, passiv
     raise ValueError(f"unsupported side: {side}")
 
 
-def reprice_difference_bps(desired_price: Decimal, active_order_price: Decimal) -> Decimal:
+def reprice_difference_bps(
+    desired_price: Decimal, active_order_price: Decimal
+) -> Decimal:
     """Return absolute price movement from active price to desired price in basis points."""
 
     if active_order_price <= Decimal("0"):
         return Decimal("0")
-    return abs(desired_price - active_order_price) / active_order_price * Decimal("10000")
+    return (
+        abs(desired_price - active_order_price) / active_order_price * Decimal("10000")
+    )
 
 
 def should_reprice(

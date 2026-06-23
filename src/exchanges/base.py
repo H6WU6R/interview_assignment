@@ -98,7 +98,9 @@ class ExchangeAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_order_by_client_order_id(self, symbol: str, client_order_id: str) -> object:
+    async def get_order_by_client_order_id(
+        self, symbol: str, client_order_id: str
+    ) -> object:
         raise NotImplementedError
 
     @abstractmethod

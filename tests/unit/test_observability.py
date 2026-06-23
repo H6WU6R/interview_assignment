@@ -78,7 +78,9 @@ def test_sanitize_log_payload_removes_sensitive_alias_keys() -> None:
     }
 
 
-def test_sanitize_log_payload_sanitizes_nested_auth_headers_and_signed_payloads() -> None:
+def test_sanitize_log_payload_sanitizes_nested_auth_headers_and_signed_payloads() -> (
+    None
+):
     payload = {
         "headers": {
             "X-MBX-APIKEY": "nested-header-key",
@@ -109,13 +111,17 @@ def test_sanitize_log_payload_sanitizes_nested_auth_headers_and_signed_payloads(
     }
 
 
-def test_sanitize_log_payload_removes_raw_authenticated_and_signed_artifact_aliases() -> None:
+def test_sanitize_log_payload_removes_raw_authenticated_and_signed_artifact_aliases() -> (
+    None
+):
     payload = {
         "authenticated_payload": {"signature": "authenticated-payload-signature"},
         "authenticated_params": {"signature": "authenticated-params-signature"},
         "raw_payload": {"signature": "raw-payload-signature"},
         "raw_params": {"signature": "raw-params-signature"},
-        "raw_authenticated_payload": {"signature": "raw-authenticated-payload-signature"},
+        "raw_authenticated_payload": {
+            "signature": "raw-authenticated-payload-signature"
+        },
         "raw-authenticated-params": {"signature": "raw-authenticated-params-signature"},
         "signed_request": {"signature": "signed-request-signature"},
         "signed_payload": {"signature": "signed-payload-signature"},
@@ -198,7 +204,9 @@ def test_summary_metrics_include_side_aware_slippage() -> None:
     assert metrics["final_status"] == "COMPLETED"
 
 
-def test_summary_metrics_include_pdf_required_quantity_price_and_safety_fields() -> None:
+def test_summary_metrics_include_pdf_required_quantity_price_and_safety_fields() -> (
+    None
+):
     metrics = summary_metrics(
         final_status=ExecutionStatus.PARTIALLY_COMPLETED,
         side=Side.BUY,
@@ -254,8 +262,15 @@ def test_write_execution_artifacts_creates_required_files(tmp_path) -> None:
                 "quantity": Decimal("0.010"),
             }
         ],
-        fills=[{"client_order_id": "ce_test_1", "trade_id": "t1", "price": Decimal("100")}],
-        timeline=[{"event": "cancel_fill_race", "timestamp": datetime(2026, 6, 21, tzinfo=UTC)}],
+        fills=[
+            {"client_order_id": "ce_test_1", "trade_id": "t1", "price": Decimal("100")}
+        ],
+        timeline=[
+            {
+                "event": "cancel_fill_race",
+                "timestamp": datetime(2026, 6, 21, tzinfo=UTC),
+            }
+        ],
     )
 
     assert (output_dir / "request_snapshot.json").exists()
@@ -267,7 +282,9 @@ def test_write_execution_artifacts_creates_required_files(tmp_path) -> None:
     assert (output_dir / "twap_slice_ledger.csv").exists()
 
 
-def test_write_execution_artifacts_tolerates_heterogeneous_timeline_rows(tmp_path) -> None:
+def test_write_execution_artifacts_tolerates_heterogeneous_timeline_rows(
+    tmp_path,
+) -> None:
     output_dir = write_execution_artifacts(
         root=tmp_path,
         execution_id="exec_mixed_timeline",
@@ -358,7 +375,9 @@ def test_write_execution_artifacts_writes_sanitized_twap_slice_ledger(tmp_path) 
         ],
     )
 
-    with (output_dir / "twap_slice_ledger.csv").open(newline="", encoding="utf-8") as handle:
+    with (output_dir / "twap_slice_ledger.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
         rows = list(csv.DictReader(handle))
 
     assert len(rows) == 1
@@ -369,7 +388,9 @@ def test_write_execution_artifacts_writes_sanitized_twap_slice_ledger(tmp_path) 
     assert json.loads(row["metadata"]) == {"source": "unit"}
 
 
-def test_write_execution_artifacts_sanitizes_secret_aliases_in_outputs(tmp_path) -> None:
+def test_write_execution_artifacts_sanitizes_secret_aliases_in_outputs(
+    tmp_path,
+) -> None:
     output_dir = write_execution_artifacts(
         root=tmp_path,
         execution_id="exec_secret_aliases",
@@ -437,7 +458,9 @@ def test_write_execution_artifacts_sanitizes_secret_aliases_in_outputs(tmp_path)
     assert "BTCUSDT" in output_text
 
 
-def test_write_execution_artifacts_writes_sanitized_extra_json_and_csv(tmp_path) -> None:
+def test_write_execution_artifacts_writes_sanitized_extra_json_and_csv(
+    tmp_path,
+) -> None:
     output_dir = write_execution_artifacts(
         root=tmp_path,
         execution_id="exec_extra_artifacts",
@@ -466,13 +489,17 @@ def test_write_execution_artifacts_writes_sanitized_extra_json_and_csv(tmp_path)
         },
     )
 
-    extra_json = json.loads((output_dir / "review_evidence.json").read_text(encoding="utf-8"))
+    extra_json = json.loads(
+        (output_dir / "review_evidence.json").read_text(encoding="utf-8")
+    )
     assert extra_json == {
         "execution_id": "exec_extra_artifacts",
         "filled_quantity": "0.010",
     }
 
-    with (output_dir / "reconciliation_orders.csv").open(newline="", encoding="utf-8") as handle:
+    with (output_dir / "reconciliation_orders.csv").open(
+        newline="", encoding="utf-8"
+    ) as handle:
         rows = list(csv.DictReader(handle))
 
     assert rows == [

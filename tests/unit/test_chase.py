@@ -2,23 +2,38 @@ from decimal import Decimal
 
 import pytest
 
-from algorithms.chase import ChaseDecision, chase_desired_price, reprice_difference_bps, should_reprice
+from algorithms.chase import (
+    ChaseDecision,
+    chase_desired_price,
+    reprice_difference_bps,
+    should_reprice,
+)
 from execution.models import RepricingMode, Side
 
 
 def test_passive_desired_price_uses_near_touch() -> None:
-    assert chase_desired_price(Side.BUY, Decimal("100"), Decimal("101"), passive=True) == Decimal("100")
-    assert chase_desired_price(Side.SELL, Decimal("100"), Decimal("101"), passive=True) == Decimal("101")
+    assert chase_desired_price(
+        Side.BUY, Decimal("100"), Decimal("101"), passive=True
+    ) == Decimal("100")
+    assert chase_desired_price(
+        Side.SELL, Decimal("100"), Decimal("101"), passive=True
+    ) == Decimal("101")
 
 
 def test_aggressive_desired_price_crosses_to_opposite_touch() -> None:
-    assert chase_desired_price(Side.BUY, Decimal("100"), Decimal("101"), passive=False) == Decimal("101")
-    assert chase_desired_price(Side.SELL, Decimal("100"), Decimal("101"), passive=False) == Decimal("100")
+    assert chase_desired_price(
+        Side.BUY, Decimal("100"), Decimal("101"), passive=False
+    ) == Decimal("101")
+    assert chase_desired_price(
+        Side.SELL, Decimal("100"), Decimal("101"), passive=False
+    ) == Decimal("100")
 
 
 def test_no_action_desired_price_raises() -> None:
     with pytest.raises(ValueError, match="NO_ACTION"):
-        chase_desired_price(Side.NO_ACTION, Decimal("100"), Decimal("101"), passive=True)
+        chase_desired_price(
+            Side.NO_ACTION, Decimal("100"), Decimal("101"), passive=True
+        )
 
 
 def test_adverse_only_buy_reprices_only_when_desired_moves_up() -> None:
@@ -112,7 +127,9 @@ def test_min_interval_blocks_repricing() -> None:
 
 
 def test_threshold_equality_reprices_but_just_below_waits() -> None:
-    assert reprice_difference_bps(Decimal("100.02"), Decimal("100")) == Decimal("2.0000")
+    assert reprice_difference_bps(Decimal("100.02"), Decimal("100")) == Decimal(
+        "2.0000"
+    )
     assert (
         should_reprice(
             Side.BUY,
@@ -171,7 +188,9 @@ def test_non_positive_active_order_price_waits_without_division_crash() -> None:
     )
 
 
-def test_negative_active_order_price_waits_with_zero_threshold_in_adverse_only() -> None:
+def test_negative_active_order_price_waits_with_zero_threshold_in_adverse_only() -> (
+    None
+):
     assert (
         should_reprice(
             Side.BUY,

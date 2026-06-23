@@ -5,11 +5,12 @@ import os
 from config import load_allow_mainnet_trading, load_binance_usdm_credentials
 
 
-def test_load_binance_usdm_credentials_reads_dotenv_values(tmp_path, monkeypatch) -> None:
+def test_load_binance_usdm_credentials_reads_dotenv_values(
+    tmp_path, monkeypatch
+) -> None:
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(
-        "BINANCE_USDM_API_KEY=dotenv-key\n"
-        "BINANCE_USDM_API_SECRET=dotenv-secret\n"
+        "BINANCE_USDM_API_KEY=dotenv-key\nBINANCE_USDM_API_SECRET=dotenv-secret\n"
     )
     monkeypatch.delenv("BINANCE_USDM_API_KEY", raising=False)
     monkeypatch.delenv("BINANCE_USDM_API_SECRET", raising=False)
@@ -23,11 +24,12 @@ def test_load_binance_usdm_credentials_reads_dotenv_values(tmp_path, monkeypatch
     assert "BINANCE_USDM_API_SECRET" not in os.environ
 
 
-def test_load_binance_usdm_credentials_does_not_override_exported_values(tmp_path, monkeypatch) -> None:
+def test_load_binance_usdm_credentials_does_not_override_exported_values(
+    tmp_path, monkeypatch
+) -> None:
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(
-        "BINANCE_USDM_API_KEY=dotenv-key\n"
-        "BINANCE_USDM_API_SECRET=dotenv-secret\n"
+        "BINANCE_USDM_API_KEY=dotenv-key\nBINANCE_USDM_API_SECRET=dotenv-secret\n"
     )
     monkeypatch.setenv("BINANCE_USDM_API_KEY", "exported-key")
     monkeypatch.setenv("BINANCE_USDM_API_SECRET", "exported-secret")
@@ -39,11 +41,12 @@ def test_load_binance_usdm_credentials_does_not_override_exported_values(tmp_pat
     assert credentials.is_configured
 
 
-def test_load_binance_usdm_credentials_honors_dotenv_disabled(tmp_path, monkeypatch) -> None:
+def test_load_binance_usdm_credentials_honors_dotenv_disabled(
+    tmp_path, monkeypatch
+) -> None:
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text(
-        "BINANCE_USDM_API_KEY=dotenv-key\n"
-        "BINANCE_USDM_API_SECRET=dotenv-secret\n"
+        "BINANCE_USDM_API_KEY=dotenv-key\nBINANCE_USDM_API_SECRET=dotenv-secret\n"
     )
     monkeypatch.delenv("BINANCE_USDM_API_KEY", raising=False)
     monkeypatch.delenv("BINANCE_USDM_API_SECRET", raising=False)
@@ -56,7 +59,9 @@ def test_load_binance_usdm_credentials_honors_dotenv_disabled(tmp_path, monkeypa
     assert not credentials.is_configured
 
 
-def test_load_allow_mainnet_trading_defaults_false_and_reads_dotenv(tmp_path, monkeypatch) -> None:
+def test_load_allow_mainnet_trading_defaults_false_and_reads_dotenv(
+    tmp_path, monkeypatch
+) -> None:
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text("ALLOW_MAINNET_TRADING=true\n")
     monkeypatch.delenv("ALLOW_MAINNET_TRADING", raising=False)
@@ -65,7 +70,9 @@ def test_load_allow_mainnet_trading_defaults_false_and_reads_dotenv(tmp_path, mo
     assert load_allow_mainnet_trading(dotenv_path) is True
 
 
-def test_load_allow_mainnet_trading_prefers_exported_value(tmp_path, monkeypatch) -> None:
+def test_load_allow_mainnet_trading_prefers_exported_value(
+    tmp_path, monkeypatch
+) -> None:
     dotenv_path = tmp_path / ".env"
     dotenv_path.write_text("ALLOW_MAINNET_TRADING=false\n")
     monkeypatch.setenv("ALLOW_MAINNET_TRADING", "true")

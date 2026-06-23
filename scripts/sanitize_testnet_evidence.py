@@ -119,8 +119,12 @@ def _sanitize_jsonl(path: Path) -> None:
         if not line.strip():
             rewritten.append(line)
             continue
-        rewritten.append(json.dumps(sanitize_json_value(json.loads(line)), sort_keys=True))
-    path.write_text("\n".join(rewritten) + ("\n" if rewritten else ""), encoding="utf-8")
+        rewritten.append(
+            json.dumps(sanitize_json_value(json.loads(line)), sort_keys=True)
+        )
+    path.write_text(
+        "\n".join(rewritten) + ("\n" if rewritten else ""), encoding="utf-8"
+    )
 
 
 def _sanitize_timeline_csv(path: Path) -> None:
@@ -152,12 +156,16 @@ def _sanitize_timeline_csv(path: Path) -> None:
 def _validate_jsonl(path: Path) -> None:
     if not path.exists():
         return
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         if not line.strip():
             continue
         paths = _private_key_paths(json.loads(line), f"{path}:{line_number}")
         if paths:
-            raise PrivateAccountKeyError(f"private account keys remain in {', '.join(paths)}")
+            raise PrivateAccountKeyError(
+                f"private account keys remain in {', '.join(paths)}"
+            )
 
 
 def _validate_timeline_csv(path: Path) -> None:
@@ -175,7 +183,9 @@ def _validate_timeline_csv(path: Path) -> None:
                     continue
                 paths = _private_key_paths(parsed, f"{path}:{row_number}.{column}")
                 if paths:
-                    raise PrivateAccountKeyError(f"private account keys remain in {', '.join(paths)}")
+                    raise PrivateAccountKeyError(
+                        f"private account keys remain in {', '.join(paths)}"
+                    )
 
 
 def sanitize_evidence_dir(evidence_dir: Path | str) -> None:
@@ -187,7 +197,9 @@ def sanitize_evidence_dir(evidence_dir: Path | str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Sanitize accepted Binance Testnet evidence artifacts.")
+    parser = argparse.ArgumentParser(
+        description="Sanitize accepted Binance Testnet evidence artifacts."
+    )
     parser.add_argument("evidence_dirs", nargs="+", type=Path)
     args = parser.parse_args(argv)
 

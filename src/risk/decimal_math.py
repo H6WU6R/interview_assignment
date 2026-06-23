@@ -23,7 +23,9 @@ def ceil_to_step(value: Decimal, step: Decimal) -> Decimal:
     return (value / step).to_integral_value(rounding=ROUND_CEILING) * step
 
 
-def round_price(price: Decimal, tick_size: Decimal, side: Side, passive: bool) -> Decimal:
+def round_price(
+    price: Decimal, tick_size: Decimal, side: Side, passive: bool
+) -> Decimal:
     """Round a Decimal price according to side and passive/aggressive intent."""
 
     units = price / tick_size

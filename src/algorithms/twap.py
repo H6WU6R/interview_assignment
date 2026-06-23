@@ -17,7 +17,9 @@ def scheduled_cumulative_quantity(
     if total_duration <= Decimal("0"):
         raise ValueError("total_duration must be positive")
     if total_trade_quantity < Decimal("0"):
-        raise ValueError("total_trade_quantity must be an absolute non-negative quantity")
+        raise ValueError(
+            "total_trade_quantity must be an absolute non-negative quantity"
+        )
 
     clamped_elapsed_time = min(max(elapsed_time, Decimal("0")), total_duration)
     return total_trade_quantity * clamped_elapsed_time / total_duration

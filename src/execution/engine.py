@@ -46,7 +46,11 @@ from execution.models import (
     TimeInForce,
     required_trade,
 )
-from execution.state_machine import InvalidStateTransition, transition_child, transition_execution
+from execution.state_machine import (
+    InvalidStateTransition,
+    transition_child,
+    transition_execution,
+)
 from observability.summary import execution_vwap, summary_metrics
 from risk.decimal_math import floor_to_step, round_price
 from risk.validation import (
@@ -76,7 +80,9 @@ MARKET_DATA_STALE_RECONCILED = "MARKET_DATA_STALE_RECONCILED"
 TARGET_QUANTITY_FILLED = "TARGET_QUANTITY_FILLED"
 UNTRADEABLE_TARGET_DUST = "UNTRADEABLE_TARGET_DUST"
 RETRYABLE_ORDER_REJECT_BACKOFF = "RETRYABLE_ORDER_REJECT_BACKOFF"
-RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE = "RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE"
+RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE = (
+    "RETRYABLE_ORDER_REJECT_WAITING_FOR_FRESH_QUOTE"
+)
 RETRYABLE_ORDER_REJECT_LIMIT_REACHED = "RETRYABLE_ORDER_REJECT_LIMIT_REACHED"
 RATE_LIMIT_BACKOFF = ExchangeRateLimited.code
 
@@ -210,12 +216,16 @@ class ExecutionRecord:
     seen_fill_trade_ids: set[str] = field(default_factory=set)
     ignored_fill_trade_ids: set[str] = field(default_factory=set)
     fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
-    trade_fill_vwap_inputs: dict[str, tuple[Decimal, Decimal]] = field(default_factory=dict)
-    trade_fill_sort_keys: dict[str, tuple[int, int, str]] = field(default_factory=dict)
-    child_authoritative_fill_intervals: dict[str, list[tuple[Decimal, Decimal]]] = field(
+    trade_fill_vwap_inputs: dict[str, tuple[Decimal, Decimal]] = field(
         default_factory=dict
     )
-    anonymous_fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
+    trade_fill_sort_keys: dict[str, tuple[int, int, str]] = field(default_factory=dict)
+    child_authoritative_fill_intervals: dict[str, list[tuple[Decimal, Decimal]]] = (
+        field(default_factory=dict)
+    )
+    anonymous_fill_vwap_inputs: list[tuple[Decimal, Decimal]] = field(
+        default_factory=list
+    )
     maker_filled_quantity: Decimal = Decimal("0")
     taker_filled_quantity: Decimal = Decimal("0")
     child_submitted_monotonic: dict[str, Decimal] = field(default_factory=dict)
@@ -264,7 +274,9 @@ class ExecutionEngine:
             target_dust_quantity = Decimal("0")
         else:
             rules = await self._adapter.get_symbol_rules(request.symbol)
-            required_quantity = floor_to_step(raw_required_quantity, rules.quantity_step)
+            required_quantity = floor_to_step(
+                raw_required_quantity, rules.quantity_step
+            )
             target_dust_quantity = raw_required_quantity - required_quantity
         execution_id = ids.execution_id()
         record = ExecutionRecord(
@@ -282,13 +294,17 @@ class ExecutionEngine:
         self._actors[execution_id] = actor
 
         async def start() -> ExecutionRecord:
-            record.status = transition_execution(record.status, ExecutionStatus.VALIDATING)
+            record.status = transition_execution(
+                record.status, ExecutionStatus.VALIDATING
+            )
             if (
                 side is Side.NO_ACTION
                 or required_quantity == Decimal("0")
                 or self._target_cannot_meet_min_quantity_or_min_notional(record, rules)
             ):
-                record.status = transition_execution(record.status, ExecutionStatus.COMPLETED)
+                record.status = transition_execution(
+                    record.status, ExecutionStatus.COMPLETED
+                )
                 record.final_reason = (
                     NO_ACTION_TARGET_ALREADY_REACHED
                     if raw_required_quantity == Decimal("0")
@@ -323,7 +339,9 @@ class ExecutionEngine:
                 return self._snapshot(record)
 
             if record.status is not ExecutionStatus.CANCELLING:
-                record.status = transition_execution(record.status, ExecutionStatus.CANCELLING)
+                record.status = transition_execution(
+                    record.status, ExecutionStatus.CANCELLING
+                )
                 record.final_reason = CANCEL_REQUESTED
 
             if self._rate_limit_backoff_blocks(record):
@@ -381,7 +399,9 @@ class ExecutionEngine:
                 if self._target_filled(record):
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
                     return self._snapshot(record)
-                self._terminalize_deadline_locked(record, STREAM_HEALTH_DEGRADED_RECONCILED)
+                self._terminalize_deadline_locked(
+                    record, STREAM_HEALTH_DEGRADED_RECONCILED
+                )
                 return self._snapshot(record)
 
             if not stream_healthy:
@@ -409,7 +429,9 @@ class ExecutionEngine:
                 return self._snapshot(record)
 
             if self._should_cancel_for_aggressive_deadline(record):
-                await self._cancel_passive_children_for_aggressive_deadline_locked(record)
+                await self._cancel_passive_children_for_aggressive_deadline_locked(
+                    record
+                )
                 if record.status.is_terminal:
                     return self._snapshot(record)
                 await self._refresh_order_states_exact_locked(record)
@@ -425,7 +447,9 @@ class ExecutionEngine:
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
                     return self._snapshot(record)
                 if self._should_terminalize_aggressive_deadline(record):
-                    self._terminalize_deadline_locked(record, DEADLINE_AGGRESSIVE_ATTEMPTED)
+                    self._terminalize_deadline_locked(
+                        record, DEADLINE_AGGRESSIVE_ATTEMPTED
+                    )
                     return self._snapshot(record)
 
             try:
@@ -448,7 +472,9 @@ class ExecutionEngine:
                     if self._target_filled(record):
                         self._complete_locked(record, TARGET_QUANTITY_FILLED)
                         return self._snapshot(record)
-                    self._terminalize_deadline_locked(record, MARKET_DATA_STALE_RECONCILED)
+                    self._terminalize_deadline_locked(
+                        record, MARKET_DATA_STALE_RECONCILED
+                    )
                 return self._snapshot(record)
 
             if demand is None:
@@ -476,7 +502,9 @@ class ExecutionEngine:
                         if self._target_filled(record):
                             self._complete_locked(record, TARGET_QUANTITY_FILLED)
                             return self._snapshot(record)
-                        self._terminalize_deadline_locked(record, MARKET_DATA_STALE_RECONCILED)
+                        self._terminalize_deadline_locked(
+                            record, MARKET_DATA_STALE_RECONCILED
+                        )
                     return self._snapshot(record)
 
             if self._target_filled(record):
@@ -533,7 +561,9 @@ class ExecutionEngine:
 
         return await actor.apply(apply)
 
-    def _lookup_execution(self, execution_id: str) -> tuple[ExecutionRecord, ExecutionEventActor]:
+    def _lookup_execution(
+        self, execution_id: str
+    ) -> tuple[ExecutionRecord, ExecutionEventActor]:
         record = self._records.get(execution_id)
         actor = self._actors.get(execution_id)
         if record is None or actor is None:
@@ -550,7 +580,9 @@ class ExecutionEngine:
         if record.required_quantity < rules.min_quantity:
             return True
 
-        highest_legal_price = self._highest_legal_price_within_request_band(record, rules)
+        highest_legal_price = self._highest_legal_price_within_request_band(
+            record, rules
+        )
         if highest_legal_price is None:
             return False
 
@@ -696,7 +728,9 @@ class ExecutionEngine:
     async def _cancel_active_children_locked(self, record: ExecutionRecord) -> bool:
         cancelled_any = False
         for child in list(record.child_orders):
-            cancelled_any = await self._cancel_child_locked(record, child) or cancelled_any
+            cancelled_any = (
+                await self._cancel_child_locked(record, child) or cancelled_any
+            )
             if record.status.is_terminal:
                 break
         return cancelled_any
@@ -709,7 +743,9 @@ class ExecutionEngine:
         for child in list(record.child_orders):
             if not self._needs_aggressive_deadline_cancel(record, child):
                 continue
-            cancelled_any = await self._cancel_child_locked(record, child) or cancelled_any
+            cancelled_any = (
+                await self._cancel_child_locked(record, child) or cancelled_any
+            )
             if record.status.is_terminal:
                 break
         return cancelled_any
@@ -719,14 +755,21 @@ class ExecutionEngine:
         for child in list(record.child_orders):
             if not self._child_order_timed_out(record, child):
                 continue
-            cancelled_any = await self._cancel_child_locked(record, child) or cancelled_any
+            cancelled_any = (
+                await self._cancel_child_locked(record, child) or cancelled_any
+            )
             if record.status.is_terminal:
                 break
         return cancelled_any
 
-    async def _cancel_child_locked(self, record: ExecutionRecord, child: ChildOrder) -> bool:
+    async def _cancel_child_locked(
+        self, record: ExecutionRecord, child: ChildOrder
+    ) -> bool:
         tracker = self._require_exposure_tracker(record)
-        if child.status not in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
+        if child.status not in {
+            ChildOrderStatus.OPEN,
+            ChildOrderStatus.PARTIALLY_FILLED,
+        }:
             return False
 
         live_status_before_cancel = child.status
@@ -742,7 +785,9 @@ class ExecutionEngine:
         self._record_max_reserved_exposure(record)
         self._set_child_status(child, ChildOrderStatus.PENDING_CANCEL)
         try:
-            cancelled = await self._adapter.cancel_order(record.request.symbol, child.client_order_id)
+            cancelled = await self._adapter.cancel_order(
+                record.request.symbol, child.client_order_id
+            )
         except VenueBanHardStop as exc:
             tracker.release_pending_cancel(remaining_before_cancel)
             tracker.reserve_live_open(remaining_before_cancel)
@@ -869,7 +914,9 @@ class ExecutionEngine:
             was_unknown = child.status is ChildOrderStatus.UNKNOWN
             exchange_filled_quantity = exchange_child.confirmed_filled_quantity
             self._copy_exchange_child(child, exchange_child, include_filled=False)
-            self._set_child_status(child, getattr(exchange_child, "status", child.status))
+            self._set_child_status(
+                child, getattr(exchange_child, "status", child.status)
+            )
             if exchange_filled_quantity > Decimal("0"):
                 self._update_child_cumulative_fill_locked(
                     record,
@@ -896,19 +943,23 @@ class ExecutionEngine:
         tracker = record.exposure_tracker
         if tracker is None:
             return
-        children_by_client_id = {child.client_order_id: child for child in record.child_orders}
+        children_by_client_id = {
+            child.client_order_id: child for child in record.child_orders
+        }
         exchange_client_ids = {order.client_order_id for order in result.orders}
         fill_client_ids = {fill.client_order_id for fill in result.fills}
         order_snapshot_confirmed_by_client_id: dict[str, Decimal] = {}
         for exchange_order in result.orders:
-            current_confirmed = order_snapshot_confirmed_by_client_id.get(exchange_order.client_order_id)
+            current_confirmed = order_snapshot_confirmed_by_client_id.get(
+                exchange_order.client_order_id
+            )
             if (
                 current_confirmed is None
                 or exchange_order.confirmed_filled_quantity > current_confirmed
             ):
-                order_snapshot_confirmed_by_client_id[exchange_order.client_order_id] = (
-                    exchange_order.confirmed_filled_quantity
-                )
+                order_snapshot_confirmed_by_client_id[
+                    exchange_order.client_order_id
+                ] = exchange_order.confirmed_filled_quantity
 
         for exchange_order in result.orders:
             child = children_by_client_id.get(exchange_order.client_order_id)
@@ -935,7 +986,9 @@ class ExecutionEngine:
                 continue
             validation_confirmed_limit = max(
                 child.confirmed_filled_quantity,
-                order_snapshot_confirmed_by_client_id.get(fill.client_order_id, Decimal("0")),
+                order_snapshot_confirmed_by_client_id.get(
+                    fill.client_order_id, Decimal("0")
+                ),
                 fill.cumulative_filled_quantity,
             )
             self._update_child_cumulative_fill_locked(
@@ -977,7 +1030,10 @@ class ExecutionEngine:
 
         if CREATE_TIMEOUT_ORDER_NOT_FOUND in result.warnings:
             for child in record.child_orders:
-                if child.status is ChildOrderStatus.UNKNOWN and child.client_order_id not in exchange_client_ids:
+                if (
+                    child.status is ChildOrderStatus.UNKNOWN
+                    and child.client_order_id not in exchange_client_ids
+                ):
                     self._set_child_status(child, ChildOrderStatus.REJECTED)
                     child.terminal_reason = CREATE_TIMEOUT_ORDER_NOT_FOUND
                     record.final_reason = CREATE_TIMEOUT_ORDER_NOT_FOUND
@@ -1002,7 +1058,9 @@ class ExecutionEngine:
         if record.summary is not None:
             record.summary = self._summary(record)
 
-    async def _reconcile_unknown_children_exact_locked(self, record: ExecutionRecord) -> None:
+    async def _reconcile_unknown_children_exact_locked(
+        self, record: ExecutionRecord
+    ) -> None:
         for child in list(record.child_orders):
             if child.status is not ChildOrderStatus.UNKNOWN:
                 continue
@@ -1029,7 +1087,9 @@ class ExecutionEngine:
 
             exchange_filled_quantity = exchange_child.confirmed_filled_quantity
             self._copy_exchange_child(child, exchange_child, include_filled=False)
-            self._set_child_status(child, getattr(exchange_child, "status", child.status))
+            self._set_child_status(
+                child, getattr(exchange_child, "status", child.status)
+            )
             if exchange_filled_quantity > Decimal("0"):
                 self._update_child_cumulative_fill_locked(
                     record,
@@ -1051,7 +1111,13 @@ class ExecutionEngine:
         market = await self._adapter.get_best_bid_ask(record.request.symbol)
         rules = await self._adapter.get_symbol_rules(record.request.symbol)
         desired_price = self._rounded_passive_price(record.side, market, rules)
-        elapsed_ms = int((self._now_decimal() - (record.last_reprice_monotonic or record.started_monotonic)) * 1000)
+        elapsed_ms = int(
+            (
+                self._now_decimal()
+                - (record.last_reprice_monotonic or record.started_monotonic)
+            )
+            * 1000
+        )
         decision = should_reprice(
             record.side,
             active_order_price=active_child.price,
@@ -1094,7 +1160,9 @@ class ExecutionEngine:
                 elapsed_time=effective_elapsed,
                 total_duration=total_duration,
             )
-            deficit = scheduled_deficit(scheduled, tracker.exposure.confirmed_filled_quantity)
+            deficit = scheduled_deficit(
+                scheduled, tracker.exposure.confirmed_filled_quantity
+            )
             quantity = safe_child_quantity(deficit, tracker.exposure)
         else:
             quantity = tracker.available_to_submit()
@@ -1133,7 +1201,9 @@ class ExecutionEngine:
                         post_only=post_only,
                     )
                 except ValidationError as shape_exc:
-                    if not self._is_temporary_order_shape_error(record, shape_exc, rules):
+                    if not self._is_temporary_order_shape_error(
+                        record, shape_exc, rules
+                    ):
                         self._expire_for_validation_locked(record, shape_exc)
                         return None
 
@@ -1156,7 +1226,9 @@ class ExecutionEngine:
             self._expire_for_validation_locked(record, exc)
             return None
 
-        if post_only and self._retryable_order_reject_gate_blocks(record, price, market.bid, market.ask):
+        if post_only and self._retryable_order_reject_gate_blocks(
+            record, price, market.bid, market.ask
+        ):
             return None
 
         if record.final_reason in {
@@ -1216,7 +1288,9 @@ class ExecutionEngine:
     ) -> Decimal:
         return ask if record.side is Side.BUY else bid
 
-    def _last_retryable_reject_crossing_quote(self, record: ExecutionRecord) -> Decimal | None:
+    def _last_retryable_reject_crossing_quote(
+        self, record: ExecutionRecord
+    ) -> Decimal | None:
         if record.side is Side.BUY:
             return record.last_retryable_order_reject_ask
         return record.last_retryable_order_reject_bid
@@ -1231,10 +1305,9 @@ class ExecutionEngine:
         exc: ValidationError,
         rules: SymbolRules,
     ) -> bool:
-        return (
-            "below min notional" in str(exc)
-            and not self._target_cannot_meet_min_quantity_or_min_notional(record, rules)
-        )
+        return "below min notional" in str(
+            exc
+        ) and not self._target_cannot_meet_min_quantity_or_min_notional(record, rules)
 
     def _deadline_without_demand_reason(self, record: ExecutionRecord) -> str:
         if record.final_reason == WAITING_FOR_PRICE_RANGE:
@@ -1275,8 +1348,13 @@ class ExecutionEngine:
         desired = chase_desired_price(side, market.bid, market.ask, passive=False)
         return round_price(desired, rules.tick_size, side, passive=False)
 
-    def _child_order_timed_out(self, record: ExecutionRecord, child: ChildOrder) -> bool:
-        if child.status not in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
+    def _child_order_timed_out(
+        self, record: ExecutionRecord, child: ChildOrder
+    ) -> bool:
+        if child.status not in {
+            ChildOrderStatus.OPEN,
+            ChildOrderStatus.PARTIALLY_FILLED,
+        }:
             return False
         timeout = Decimal(str(record.request.parameters.child_order_timeout_seconds))
         submitted_at = record.child_submitted_monotonic.get(child.client_order_id)
@@ -1284,7 +1362,9 @@ class ExecutionEngine:
             submitted_at = record.started_monotonic
         return self._now_decimal() - submitted_at >= timeout
 
-    def _needs_aggressive_deadline_cancel(self, record: ExecutionRecord, child: ChildOrder) -> bool:
+    def _needs_aggressive_deadline_cancel(
+        self, record: ExecutionRecord, child: ChildOrder
+    ) -> bool:
         return (
             child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}
             and child.client_order_id not in record.aggressive_child_client_order_ids
@@ -1294,13 +1374,17 @@ class ExecutionEngine:
         elapsed = self._now_decimal() - record.started_monotonic
         return elapsed >= Decimal(str(record.request.target_duration_seconds))
 
-    def _should_terminalize_cancel_remainder_deadline(self, record: ExecutionRecord) -> bool:
-        return (
-            self._cancel_remainder_deadline_reached(record)
-            and (record.exposure.reserved_exposure > Decimal("0") or bool(record.child_orders))
+    def _should_terminalize_cancel_remainder_deadline(
+        self, record: ExecutionRecord
+    ) -> bool:
+        return self._cancel_remainder_deadline_reached(record) and (
+            record.exposure.reserved_exposure > Decimal("0")
+            or bool(record.child_orders)
         )
 
-    def _should_terminalize_cancel_remainder_without_demand(self, record: ExecutionRecord) -> bool:
+    def _should_terminalize_cancel_remainder_without_demand(
+        self, record: ExecutionRecord
+    ) -> bool:
         return (
             self._cancel_remainder_deadline_reached(record)
             and record.exposure.reserved_exposure == Decimal("0")
@@ -1321,7 +1405,9 @@ class ExecutionEngine:
             and record.exposure.reserved_exposure == Decimal("0")
         )
 
-    def _expire_for_validation_locked(self, record: ExecutionRecord, exc: ValidationError) -> None:
+    def _expire_for_validation_locked(
+        self, record: ExecutionRecord, exc: ValidationError
+    ) -> None:
         reason = str(exc)
         if "bound" in reason:
             record.final_reason = PRICE_OUTSIDE_RANGE
@@ -1343,7 +1429,9 @@ class ExecutionEngine:
 
     def _complete_locked(self, record: ExecutionRecord, reason: str) -> None:
         if record.status in {ExecutionStatus.RUNNING, ExecutionStatus.CANCELLING}:
-            record.status = transition_execution(record.status, ExecutionStatus.COMPLETED)
+            record.status = transition_execution(
+                record.status, ExecutionStatus.COMPLETED
+            )
             record.final_reason = reason
             record.completed_monotonic = self._now_decimal()
             record.summary = self._summary(record)
@@ -1367,7 +1455,9 @@ class ExecutionEngine:
         self._fail_locked(record, reason)
         self._assert_exposure_invariant_locked(record)
 
-    def _terminalize_deadline_locked(self, record: ExecutionRecord, reason: str) -> None:
+    def _terminalize_deadline_locked(
+        self, record: ExecutionRecord, reason: str
+    ) -> None:
         if record.status is not ExecutionStatus.RUNNING:
             return
         if record.exposure.reserved_exposure > Decimal("0"):
@@ -1383,7 +1473,9 @@ class ExecutionEngine:
         record.completed_monotonic = self._now_decimal()
         record.summary = self._summary(record)
 
-    def _terminalize_retryable_order_reject_limit_locked(self, record: ExecutionRecord) -> None:
+    def _terminalize_retryable_order_reject_limit_locked(
+        self, record: ExecutionRecord
+    ) -> None:
         if record.status is not ExecutionStatus.RUNNING:
             return
         retry_limit = record.request.parameters.max_post_only_reject_retries
@@ -1402,7 +1494,9 @@ class ExecutionEngine:
         record.completed_monotonic = self._now_decimal()
         record.summary = self._summary(record)
 
-    def _terminalize_manual_cancel_if_clear_locked(self, record: ExecutionRecord) -> None:
+    def _terminalize_manual_cancel_if_clear_locked(
+        self, record: ExecutionRecord
+    ) -> None:
         if record.status is not ExecutionStatus.CANCELLING:
             return
 
@@ -1434,8 +1528,12 @@ class ExecutionEngine:
     def _increment_metric(self, record: ExecutionRecord, name: str) -> None:
         record.metric_counts[name] = record.metric_counts.get(name, 0) + 1
 
-    def _record_rate_limit_backoff_locked(self, record: ExecutionRecord, reason: str) -> None:
-        record.rate_limited_until_monotonic = self._now_decimal() + RATE_LIMIT_BACKOFF_SECONDS
+    def _record_rate_limit_backoff_locked(
+        self, record: ExecutionRecord, reason: str
+    ) -> None:
+        record.rate_limited_until_monotonic = (
+            self._now_decimal() + RATE_LIMIT_BACKOFF_SECONDS
+        )
         record.final_reason = RATE_LIMIT_BACKOFF
         self._increment_metric(record, "rate_limit_backoffs")
 
@@ -1471,7 +1569,9 @@ class ExecutionEngine:
         record.last_retryable_order_reject_reason = reason
         self._increment_metric(record, "retryable_order_rejections")
 
-    def _reset_retryable_order_reject_gate_locked(self, record: ExecutionRecord) -> None:
+    def _reset_retryable_order_reject_gate_locked(
+        self, record: ExecutionRecord
+    ) -> None:
         record.consecutive_retryable_order_rejects = 0
         record.last_retryable_order_reject_monotonic = None
         record.last_retryable_order_reject_price = None
@@ -1484,7 +1584,9 @@ class ExecutionEngine:
         }:
             record.final_reason = None
 
-    def _reconciled_unknown_child_resets_retryable_reject_gate(self, child: ChildOrder) -> bool:
+    def _reconciled_unknown_child_resets_retryable_reject_gate(
+        self, child: ChildOrder
+    ) -> bool:
         if child.status in {
             ChildOrderStatus.OPEN,
             ChildOrderStatus.PARTIALLY_FILLED,
@@ -1513,7 +1615,10 @@ class ExecutionEngine:
         tracker.exposure = Exposure(confirmed_filled_quantity=confirmed)
         for child in record.child_orders:
             remaining = child.remaining_quantity
-            if child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
+            if child.status in {
+                ChildOrderStatus.OPEN,
+                ChildOrderStatus.PARTIALLY_FILLED,
+            }:
                 tracker.exposure.live_open_quantity += remaining
             elif child.status is ChildOrderStatus.PENDING_SUBMIT:
                 tracker.exposure.pending_submit_quantity += remaining
@@ -1549,7 +1654,9 @@ class ExecutionEngine:
             if incoming_cumulative > previous_child_cumulative
             else Decimal("0")
         )
-        trade_delta = fill_quantity_delta if fill_quantity_delta is not None else child_delta
+        trade_delta = (
+            fill_quantity_delta if fill_quantity_delta is not None else child_delta
+        )
 
         if authoritative_trade:
             if trade_delta <= Decimal("0"):
@@ -1602,7 +1709,9 @@ class ExecutionEngine:
 
         if child_delta > Decimal("0"):
             child.confirmed_filled_quantity = incoming_cumulative
-            aggregate_cumulative = tracker.exposure.confirmed_filled_quantity + child_delta
+            aggregate_cumulative = (
+                tracker.exposure.confirmed_filled_quantity + child_delta
+            )
             tracker.apply_fill(trade_id, aggregate_cumulative)
 
         if not authoritative_trade:
@@ -1638,11 +1747,7 @@ class ExecutionEngine:
         end: Decimal,
         confirmed_limit: Decimal,
     ) -> bool:
-        return (
-            start >= Decimal("0")
-            and end > start
-            and end <= confirmed_limit
-        )
+        return start >= Decimal("0") and end > start and end <= confirmed_limit
 
     def _window_local_fill_interval(
         self,
@@ -1675,10 +1780,9 @@ class ExecutionEngine:
 
         fallback_start = contiguous_prefix_end
         fallback_end = fallback_start + trade_delta
-        if (
-            not self._fill_interval_is_valid(fallback_start, fallback_end, confirmed_limit)
-            or self._fill_interval_overlaps(fallback_start, fallback_end, intervals)
-        ):
+        if not self._fill_interval_is_valid(
+            fallback_start, fallback_end, confirmed_limit
+        ) or self._fill_interval_overlaps(fallback_start, fallback_end, intervals):
             return None
 
         return fallback_start, fallback_end
@@ -1694,7 +1798,9 @@ class ExecutionEngine:
             for existing_start, existing_end in intervals
         )
 
-    def _record_ignored_fill_trade_id_locked(self, record: ExecutionRecord, trade_id: str) -> None:
+    def _record_ignored_fill_trade_id_locked(
+        self, record: ExecutionRecord, trade_id: str
+    ) -> None:
         if trade_id in record.ignored_fill_trade_ids:
             return
         record.ignored_fill_trade_ids.add(trade_id)
@@ -1703,7 +1809,9 @@ class ExecutionEngine:
     def _rebuild_trade_fill_vwap_inputs_locked(self, record: ExecutionRecord) -> None:
         ordered_trade_ids = sorted(
             record.trade_fill_vwap_inputs,
-            key=lambda trade_id: record.trade_fill_sort_keys.get(trade_id, (0, 0, trade_id)),
+            key=lambda trade_id: record.trade_fill_sort_keys.get(
+                trade_id, (0, 0, trade_id)
+            ),
         )
         record.fill_vwap_inputs = [
             record.trade_fill_vwap_inputs[trade_id] for trade_id in ordered_trade_ids
@@ -1716,7 +1824,9 @@ class ExecutionEngine:
         *,
         include_filled: bool = True,
     ) -> None:
-        child.exchange_order_id = getattr(exchange_child, "exchange_order_id", child.exchange_order_id)
+        child.exchange_order_id = getattr(
+            exchange_child, "exchange_order_id", child.exchange_order_id
+        )
         child.raw_status = getattr(exchange_child, "raw_status", child.raw_status)
         if include_filled:
             incoming_filled_quantity = getattr(
@@ -1740,13 +1850,20 @@ class ExecutionEngine:
             ChildOrderStatus.OPEN,
             ChildOrderStatus.PARTIALLY_FILLED,
         }:
-            child.status = transition_child(child.status, ChildOrderStatus.PENDING_CANCEL)
+            child.status = transition_child(
+                child.status, ChildOrderStatus.PENDING_CANCEL
+            )
             child.status = transition_child(child.status, target)
             return True
 
-        if target is ChildOrderStatus.CANCELLED and child.status is ChildOrderStatus.PENDING_SUBMIT:
+        if (
+            target is ChildOrderStatus.CANCELLED
+            and child.status is ChildOrderStatus.PENDING_SUBMIT
+        ):
             child.status = transition_child(child.status, ChildOrderStatus.OPEN)
-            child.status = transition_child(child.status, ChildOrderStatus.PENDING_CANCEL)
+            child.status = transition_child(
+                child.status, ChildOrderStatus.PENDING_CANCEL
+            )
             child.status = transition_child(child.status, target)
             return True
 
@@ -1762,7 +1879,10 @@ class ExecutionEngine:
 
     def _first_active_child(self, record: ExecutionRecord) -> ChildOrder | None:
         for child in record.child_orders:
-            if child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
+            if child.status in {
+                ChildOrderStatus.OPEN,
+                ChildOrderStatus.PARTIALLY_FILLED,
+            }:
                 return child
         return None
 
@@ -1778,11 +1898,19 @@ class ExecutionEngine:
         )
 
     def _summary_metrics(self, record: ExecutionRecord) -> dict[str, Any]:
-        arrival_bid = record.arrival_bid if record.arrival_bid is not None else Decimal("0")
-        arrival_ask = record.arrival_ask if record.arrival_ask is not None else Decimal("0")
+        arrival_bid = (
+            record.arrival_bid if record.arrival_bid is not None else Decimal("0")
+        )
+        arrival_ask = (
+            record.arrival_ask if record.arrival_ask is not None else Decimal("0")
+        )
         vwap_inputs = self._summary_vwap_inputs(record)
         vwap = execution_vwap(vwap_inputs) if vwap_inputs else Decimal("0")
-        completed_at = record.completed_monotonic if record.completed_monotonic is not None else self._now_decimal()
+        completed_at = (
+            record.completed_monotonic
+            if record.completed_monotonic is not None
+            else self._now_decimal()
+        )
         actual_duration = completed_at - record.started_monotonic
         if actual_duration < Decimal("0"):
             actual_duration = Decimal("0")
@@ -1799,9 +1927,15 @@ class ExecutionEngine:
             vwap=vwap,
             requested_duration_seconds=record.request.target_duration_seconds,
             actual_duration_seconds=actual_duration,
-            price_bound_violations=record.metric_counts.get("price_bound_violations", 0),
-            duplicate_events_ignored=record.metric_counts.get("duplicate_events_ignored", 0),
-            unknown_orders_reconciled=record.metric_counts.get("unknown_orders_reconciled", 0),
+            price_bound_violations=record.metric_counts.get(
+                "price_bound_violations", 0
+            ),
+            duplicate_events_ignored=record.metric_counts.get(
+                "duplicate_events_ignored", 0
+            ),
+            unknown_orders_reconciled=record.metric_counts.get(
+                "unknown_orders_reconciled", 0
+            ),
             max_reserved_exposure=record.max_reserved_exposure,
         )
         metrics.update(
@@ -1818,7 +1952,9 @@ class ExecutionEngine:
                 "taker_fills": record.metric_counts.get("taker_fills", 0),
                 "maker_filled_quantity": record.maker_filled_quantity,
                 "taker_filled_quantity": record.taker_filled_quantity,
-                "retryable_order_rejections": record.metric_counts.get("retryable_order_rejections", 0),
+                "retryable_order_rejections": record.metric_counts.get(
+                    "retryable_order_rejections", 0
+                ),
                 "retryable_order_reject_streak": record.consecutive_retryable_order_rejects,
                 "retryable_order_reject_limit": record.request.parameters.max_post_only_reject_retries,
                 "retryable_order_reject_backoff_seconds": RETRYABLE_ORDER_REJECT_BACKOFF_SECONDS,
@@ -1831,7 +1967,9 @@ class ExecutionEngine:
                     0,
                 ),
                 "rate_limit_backoff_seconds": RATE_LIMIT_BACKOFF_SECONDS,
-                "rate_limit_backoffs": record.metric_counts.get("rate_limit_backoffs", 0),
+                "rate_limit_backoffs": record.metric_counts.get(
+                    "rate_limit_backoffs", 0
+                ),
                 "rate_limit_backoff_blocks": record.metric_counts.get(
                     "rate_limit_backoff_blocks",
                     0,
@@ -1842,22 +1980,31 @@ class ExecutionEngine:
         return metrics
 
     @staticmethod
-    def _provisional_fill_vwap_inputs(record: ExecutionRecord) -> list[tuple[Decimal, Decimal]]:
+    def _provisional_fill_vwap_inputs(
+        record: ExecutionRecord,
+    ) -> list[tuple[Decimal, Decimal]]:
         return [
             (child.price, child.confirmed_filled_quantity)
             for child in record.child_orders
             if child.confirmed_filled_quantity > Decimal("0")
         ]
 
-    def _summary_vwap_inputs(self, record: ExecutionRecord) -> list[tuple[Decimal, Decimal]]:
+    def _summary_vwap_inputs(
+        self, record: ExecutionRecord
+    ) -> list[tuple[Decimal, Decimal]]:
         if not record.fill_vwap_inputs:
             return self._provisional_fill_vwap_inputs(record)
 
         vwap_inputs = list(record.fill_vwap_inputs)
         for child in record.child_orders:
-            uncovered_quantity = child.confirmed_filled_quantity - self._covered_interval_quantity(
-                record.child_authoritative_fill_intervals.get(child.client_order_id, []),
-                child.confirmed_filled_quantity,
+            uncovered_quantity = (
+                child.confirmed_filled_quantity
+                - self._covered_interval_quantity(
+                    record.child_authoritative_fill_intervals.get(
+                        child.client_order_id, []
+                    ),
+                    child.confirmed_filled_quantity,
+                )
             )
             if uncovered_quantity > Decimal("0"):
                 vwap_inputs.append((child.price, uncovered_quantity))
@@ -1919,7 +2066,10 @@ class ExecutionEngine:
             row = rows[slice_index - 1]
             row["submitted_quantity"] += child.submitted_quantity
             row["filled_quantity"] += child.confirmed_filled_quantity
-            if child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}:
+            if child.status in {
+                ChildOrderStatus.OPEN,
+                ChildOrderStatus.PARTIALLY_FILLED,
+            }:
                 row["open_quantity"] += child.remaining_quantity
             if child.status is ChildOrderStatus.CANCELLED:
                 row["cancelled_quantity"] += child.remaining_quantity
@@ -1948,9 +2098,13 @@ class ExecutionEngine:
         number_of_slices: int,
     ) -> dict[str, Any]:
         previous_planned_cumulative = (
-            record.required_quantity * Decimal(slice_index - 1) / Decimal(number_of_slices)
+            record.required_quantity
+            * Decimal(slice_index - 1)
+            / Decimal(number_of_slices)
         )
-        planned_cumulative = record.required_quantity * Decimal(slice_index) / Decimal(number_of_slices)
+        planned_cumulative = (
+            record.required_quantity * Decimal(slice_index) / Decimal(number_of_slices)
+        )
         return {
             "execution_id": record.execution_id,
             "slice_index": slice_index,
@@ -1984,7 +2138,9 @@ class ExecutionEngine:
         if elapsed <= Decimal("0"):
             return 1
 
-        slice_index = int((elapsed / slice_duration).to_integral_value(rounding=ROUND_CEILING))
+        slice_index = int(
+            (elapsed / slice_duration).to_integral_value(rounding=ROUND_CEILING)
+        )
         if slice_index < 1:
             return 1
         if slice_index > number_of_slices:

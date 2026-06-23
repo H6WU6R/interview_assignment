@@ -5,7 +5,12 @@ import asyncio
 from dataclasses import replace
 from pathlib import Path
 
-from execution.models import Algorithm, ChildOrderStatus, DeadlinePolicy, ExecutionParameters
+from execution.models import (
+    Algorithm,
+    ChildOrderStatus,
+    DeadlinePolicy,
+    ExecutionParameters,
+)
 
 from _sim_demo_common import (
     client_order_ids,
@@ -19,7 +24,9 @@ from _sim_demo_common import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a deterministic simulator TWAP demo.")
+    parser = argparse.ArgumentParser(
+        description="Run a deterministic simulator TWAP demo."
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -50,7 +57,9 @@ async def main() -> None:
             clock,
             execution,
             "execution_created",
-            extra={"schedule": "absolute-time TWAP target over 100 seconds in 5 slices"},
+            extra={
+                "schedule": "absolute-time TWAP target over 100 seconds in 5 slices"
+            },
         )
     ]
     print(f"execution_id={execution.execution_id}")
@@ -67,14 +76,17 @@ async def main() -> None:
         open_children = [
             child
             for child in execution.child_orders
-            if child.status in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}
+            if child.status
+            in {ChildOrderStatus.OPEN, ChildOrderStatus.PARTIALLY_FILLED}
         ]
         if not open_children:
             continue
 
         child = open_children[-1]
         events.append(log_event(clock, execution, "twap_order_submitted", child=child))
-        fill = await simulator.push_fill(child.client_order_id, child.remaining_quantity, child.price)
+        fill = await simulator.push_fill(
+            child.client_order_id, child.remaining_quantity, child.price
+        )
         events.append(
             log_event(
                 clock,
@@ -85,7 +97,11 @@ async def main() -> None:
             )
         )
         execution = await service.reconcile_execution(execution.execution_id)
-        events.append(log_event(clock, execution, "filled_reconciled", child=execution.child_orders[-1]))
+        events.append(
+            log_event(
+                clock, execution, "filled_reconciled", child=execution.child_orders[-1]
+            )
+        )
 
     if not execution.status.is_terminal:
         raise RuntimeError(
@@ -94,7 +110,9 @@ async def main() -> None:
         )
 
     execution = await service.run_once(execution.execution_id)
-    events.append(log_event(clock, execution, "result_summary", extra=summary_snapshot(execution)))
+    events.append(
+        log_event(clock, execution, "result_summary", extra=summary_snapshot(execution))
+    )
 
     print(f"status=ExecutionStatus.{execution.status.value}")
     print(f"client_order_ids={client_order_ids(execution)}")

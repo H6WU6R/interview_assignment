@@ -34,7 +34,9 @@ _PRECREATE_RATE_LIMIT_MAX_BACKOFF_BUDGET_SECONDS = 5.0
 _PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS = 0.1
 _POST_RUN_RECONCILIATION_RATE_LIMIT_MAX_BACKOFF_BUDGET_SECONDS = 5.0
 _SANITIZED_REASON_MAX_CHARS = 200
-_SENSITIVE_REASON_VALUE_RE = re.compile(r"(?i)\b(api[-_ ]?key|secret|signature|token)=\S+")
+_SENSITIVE_REASON_VALUE_RE = re.compile(
+    r"(?i)\b(api[-_ ]?key|secret|signature|token)=\S+"
+)
 _USER_STREAM_LISTEN_KEY_EXPIRED = "listen_key_expired"
 _USER_EVENT_RECONCILIATION_LOOKBACK_MS = 60_000
 _USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS = 3
@@ -44,7 +46,9 @@ _USER_STREAM_RECONCILIATION_HARD_STOP_REASONS = {
     ExchangeRateLimited.code,
     VenueBanHardStop.code,
 }
-_MISSING_ACCEPTED_EXCHANGE_ORDER_EVIDENCE_WARNING = "missing_accepted_exchange_order_evidence"
+_MISSING_ACCEPTED_EXCHANGE_ORDER_EVIDENCE_WARNING = (
+    "missing_accepted_exchange_order_evidence"
+)
 _ACCEPTED_EXCHANGE_ORDER_STATUS_TOKENS = {
     "OPEN",
     "NEW",
@@ -64,22 +68,53 @@ class _UserStreamReconciliationHardStop(Exception):
 
 
 def parse_args(algorithm: Algorithm) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=f"Run a real Binance USD-M testnet {algorithm.value} execution.")
-    parser.add_argument("--symbol", default="BTCUSDT", help="USD-M symbol to trade, default BTCUSDT.")
-    parser.add_argument("--confirm-send-orders", action="store_true", help="Required before live testnet order sends.")
-    parser.add_argument("--target-position", help="Explicit Decimal target position, e.g. 0.001.")
-    parser.add_argument("--target-price-lower", help="Explicit Decimal lower price bound.")
-    parser.add_argument("--target-price-upper", help="Explicit Decimal upper price bound.")
-    parser.add_argument("--duration-seconds", type=int, default=60, help="Execution target duration in seconds.")
-    parser.add_argument("--number-of-slices", type=int, default=5, help="TWAP slice count.")
+    parser = argparse.ArgumentParser(
+        description=f"Run a real Binance USD-M testnet {algorithm.value} execution."
+    )
+    parser.add_argument(
+        "--symbol", default="BTCUSDT", help="USD-M symbol to trade, default BTCUSDT."
+    )
+    parser.add_argument(
+        "--confirm-send-orders",
+        action="store_true",
+        help="Required before live testnet order sends.",
+    )
+    parser.add_argument(
+        "--target-position", help="Explicit Decimal target position, e.g. 0.001."
+    )
+    parser.add_argument(
+        "--target-price-lower", help="Explicit Decimal lower price bound."
+    )
+    parser.add_argument(
+        "--target-price-upper", help="Explicit Decimal upper price bound."
+    )
+    parser.add_argument(
+        "--duration-seconds",
+        type=int,
+        default=60,
+        help="Execution target duration in seconds.",
+    )
+    parser.add_argument(
+        "--number-of-slices", type=int, default=5, help="TWAP slice count."
+    )
     parser.add_argument(
         "--max-runtime-seconds",
         type=float,
         default=None,
         help="Maximum runner runtime, default duration plus 10 seconds.",
     )
-    parser.add_argument("--poll-interval-seconds", type=float, default=1.0, help="Delay between engine ticks.")
-    parser.add_argument("--market-timeout-seconds", type=float, default=10.0, help="Fresh market snapshot timeout.")
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=float,
+        default=1.0,
+        help="Delay between engine ticks.",
+    )
+    parser.add_argument(
+        "--market-timeout-seconds",
+        type=float,
+        default=10.0,
+        help="Fresh market snapshot timeout.",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -103,7 +138,9 @@ async def run(algorithm: Algorithm) -> Path:
             "This script never falls back to simulation."
         )
     if not args.confirm_send_orders:
-        raise SystemExit("Refusing to send Binance testnet orders without --confirm-send-orders.")
+        raise SystemExit(
+            "Refusing to send Binance testnet orders without --confirm-send-orders."
+        )
 
     target_position = _required_decimal(args.target_position, "--target-position")
     lower = _required_decimal(args.target_price_lower, "--target-price-lower")
@@ -135,11 +172,19 @@ async def run(algorithm: Algorithm) -> Path:
     market_task: asyncio.Task[Any] | None = None
     user_task: asyncio.Task[Any] | None = None
     try:
-        snapshot, market_task = await _start_market_stream(adapter, timeout_seconds=args.market_timeout_seconds)
-        events.append(_runtime_event(adapter, "market_snapshot", snapshot=_jsonable(snapshot)))
+        snapshot, market_task = await _start_market_stream(
+            adapter, timeout_seconds=args.market_timeout_seconds
+        )
+        events.append(
+            _runtime_event(adapter, "market_snapshot", snapshot=_jsonable(snapshot))
+        )
         symbol_rules = await adapter.get_symbol_rules(symbol)
         symbol_rules_payload = _symbol_rules_payload(symbol, symbol_rules, adapter)
-        events.append(_runtime_event(adapter, "symbol_rules_loaded", symbol_rules=symbol_rules_payload))
+        events.append(
+            _runtime_event(
+                adapter, "symbol_rules_loaded", symbol_rules=symbol_rules_payload
+            )
+        )
         active_execution: dict[str, Any] = {}
         user_task = await _start_user_stream(
             adapter,
@@ -171,7 +216,11 @@ async def run(algorithm: Algorithm) -> Path:
             user_task=user_task,
         )
         active_execution["execution_id"] = execution.execution_id
-        events.append(_runtime_event(adapter, "execution_created", execution=_record_summary(execution)))
+        events.append(
+            _runtime_event(
+                adapter, "execution_created", execution=_record_summary(execution)
+            )
+        )
 
         deadline = adapter.clock.monotonic() + args.max_runtime_seconds
         latest = execution
@@ -201,7 +250,9 @@ async def run(algorithm: Algorithm) -> Path:
                 user_task=user_task,
                 timeout_seconds=args.market_timeout_seconds,
             )
-            events.append(_runtime_event(adapter, "run_once", execution=_record_summary(latest)))
+            events.append(
+                _runtime_event(adapter, "run_once", execution=_record_summary(latest))
+            )
             if latest.status.is_terminal:
                 break
             await asyncio.sleep(args.poll_interval_seconds)
@@ -226,9 +277,17 @@ async def run(algorithm: Algorithm) -> Path:
                 timeout_seconds=args.market_timeout_seconds,
             )
             latest = await service.cancel_execution(execution.execution_id)
-            events.append(_runtime_event(adapter, "cancel_requested", execution=_record_summary(latest)))
+            events.append(
+                _runtime_event(
+                    adapter, "cancel_requested", execution=_record_summary(latest)
+                )
+            )
             latest = await service.reconcile_execution(execution.execution_id)
-            events.append(_runtime_event(adapter, "final_reconcile", execution=_record_summary(latest)))
+            events.append(
+                _runtime_event(
+                    adapter, "final_reconcile", execution=_record_summary(latest)
+                )
+            )
 
         prefix = make_client_order_prefix(execution.execution_id)
         reconciliation = await _reconcile_orders_and_fills_with_rate_limit_backoff(
@@ -284,7 +343,9 @@ async def run(algorithm: Algorithm) -> Path:
                 ),
             },
             extra_csv_artifacts={
-                "reconciliation_orders.csv": [_jsonable(order) for order in reconciliation.orders],
+                "reconciliation_orders.csv": [
+                    _jsonable(order) for order in reconciliation.orders
+                ],
             },
         )
         print(f"execution_id={latest.execution_id}")
@@ -307,7 +368,9 @@ async def _create_execution_with_rate_limit_backoff(
     user_task: asyncio.Task[Any] | None,
 ) -> tuple[Any, asyncio.Task[Any] | None]:
     loop = asyncio.get_running_loop()
-    backoff_seconds = max(float(args.poll_interval_seconds), _PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS)
+    backoff_seconds = max(
+        float(args.poll_interval_seconds), _PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS
+    )
     backoff_budget_seconds = min(
         max(float(args.max_runtime_seconds), 0.0),
         _PRECREATE_RATE_LIMIT_MAX_BACKOFF_BUDGET_SECONDS,
@@ -348,7 +411,10 @@ async def _create_execution_with_rate_limit_backoff(
                     backoff_seconds=backoff_seconds,
                 )
             )
-            if backoff_count >= max_backoffs or loop.time() + backoff_seconds > backoff_deadline + 1e-9:
+            if (
+                backoff_count >= max_backoffs
+                or loop.time() + backoff_seconds > backoff_deadline + 1e-9
+            ):
                 raise SystemExit(reason) from exc
             backoff_count += 1
             await asyncio.sleep(backoff_seconds)
@@ -363,7 +429,9 @@ async def _reconcile_orders_and_fills_with_rate_limit_backoff(
     events: list[dict[str, Any]],
 ) -> Any:
     loop = asyncio.get_running_loop()
-    backoff_seconds = max(float(args.poll_interval_seconds), _PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS)
+    backoff_seconds = max(
+        float(args.poll_interval_seconds), _PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS
+    )
     backoff_budget_seconds = min(
         max(float(args.max_runtime_seconds), 0.0),
         _POST_RUN_RECONCILIATION_RATE_LIMIT_MAX_BACKOFF_BUDGET_SECONDS,
@@ -374,7 +442,9 @@ async def _reconcile_orders_and_fills_with_rate_limit_backoff(
 
     while True:
         try:
-            return await adapter.reconcile_orders_and_fills(symbol, client_order_prefix=client_order_prefix)
+            return await adapter.reconcile_orders_and_fills(
+                symbol, client_order_prefix=client_order_prefix
+            )
         except VenueBanHardStop as exc:
             reason = _sanitize_exchange_reason(exc)
             events.append(
@@ -395,7 +465,10 @@ async def _reconcile_orders_and_fills_with_rate_limit_backoff(
                     backoff_seconds=backoff_seconds,
                 )
             )
-            if backoff_count >= max_backoffs or loop.time() + backoff_seconds > backoff_deadline + 1e-9:
+            if (
+                backoff_count >= max_backoffs
+                or loop.time() + backoff_seconds > backoff_deadline + 1e-9
+            ):
                 raise SystemExit(reason) from exc
             backoff_count += 1
             await asyncio.sleep(backoff_seconds)
@@ -495,12 +568,18 @@ async def _start_user_stream_once(
         if stream_started_ms is not None:
             active_execution["user_stream_started_ms"] = stream_started_ms
         async for event in adapter.stream_user_events():
-            events.append(_runtime_event(adapter, "user_stream_event", user_event=_artifact_user_event(event)))
+            events.append(
+                _runtime_event(
+                    adapter, "user_stream_event", user_event=_artifact_user_event(event)
+                )
+            )
             execution_id = active_execution.get("execution_id")
             if _is_listen_key_expired_event(event):
                 if execution_id is not None:
                     end_time_ms = _clock_wall_ms(adapter)
-                    start_time_ms = _bounded_user_stream_start_ms(stream_started_ms, end_time_ms)
+                    start_time_ms = _bounded_user_stream_start_ms(
+                        stream_started_ms, end_time_ms
+                    )
                     reconciliation_window = {
                         "start_time_ms": start_time_ms,
                         "end_time_ms": end_time_ms,
@@ -531,14 +610,22 @@ async def _start_user_stream_once(
             if not callable(parser) or not callable(apply_result):
                 continue
             result = parser(event)
-            if result is None or not _reconciliation_result_matches_execution(execution_id, result):
+            if result is None or not _reconciliation_result_matches_execution(
+                execution_id, result
+            ):
                 continue
             updated = await apply_result(execution_id, result)
-            events.append(_runtime_event(adapter, "user_stream_applied", execution=_record_summary(updated)))
+            events.append(
+                _runtime_event(
+                    adapter, "user_stream_applied", execution=_record_summary(updated)
+                )
+            )
 
     task = asyncio.create_task(pump())
     try:
-        await asyncio.wait_for(_wait_for_stream_health(adapter, task), timeout=timeout_seconds)
+        await asyncio.wait_for(
+            _wait_for_stream_health(adapter, task), timeout=timeout_seconds
+        )
         return task
     except BaseException:
         await _stop_stream_task(task)
@@ -631,7 +718,12 @@ async def _recover_retryable_user_stream_failure(
         active_execution,
     )
     max_attempts = max(1, int(_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS))
-    attempt = _coerce_optional_int(active_execution.get("user_stream_retryable_reconnect_attempts")) or 0
+    attempt = (
+        _coerce_optional_int(
+            active_execution.get("user_stream_retryable_reconnect_attempts")
+        )
+        or 0
+    )
     attempt += 1
     active_execution["user_stream_retryable_reconnect_attempts"] = attempt
     reason = _sanitize_exchange_reason(exc)
@@ -761,7 +853,10 @@ def _listen_key_stream_failure_code(exc: BaseException) -> str:
 def _is_listen_key_expired_event(event: Any) -> bool:
     if not isinstance(event, Mapping):
         return False
-    if event.get("event_type") == "listenKeyExpired" or event.get("e") == "listenKeyExpired":
+    if (
+        event.get("event_type") == "listenKeyExpired"
+        or event.get("e") == "listenKeyExpired"
+    ):
         return True
     raw = event.get("raw")
     return isinstance(raw, Mapping) and raw.get("e") == "listenKeyExpired"
@@ -774,10 +869,14 @@ def _clock_wall_ms(adapter: Any) -> int | None:
     return int(clock.utc_now().timestamp() * 1000)
 
 
-def _bounded_user_stream_start_ms(stream_started_ms: int | None, end_time_ms: int | None) -> int | None:
+def _bounded_user_stream_start_ms(
+    stream_started_ms: int | None, end_time_ms: int | None
+) -> int | None:
     if end_time_ms is None:
         return stream_started_ms
-    return max(stream_started_ms or 0, end_time_ms - _USER_EVENT_RECONCILIATION_LOOKBACK_MS)
+    return max(
+        stream_started_ms or 0, end_time_ms - _USER_EVENT_RECONCILIATION_LOOKBACK_MS
+    )
 
 
 def _coerce_optional_int(value: Any) -> int | None:
@@ -789,7 +888,9 @@ def _coerce_optional_int(value: Any) -> int | None:
         return None
 
 
-async def _wait_for_stream_health(adapter: BinanceUsdmAdapter, task: asyncio.Task[Any]) -> None:
+async def _wait_for_stream_health(
+    adapter: BinanceUsdmAdapter, task: asyncio.Task[Any]
+) -> None:
     while not task.done():
         if await adapter.health_check_streams():
             return
@@ -828,9 +929,9 @@ def _reconciliation_result_matches_execution(execution_id: str, result: Any) -> 
     prefix = make_client_order_prefix(execution_id)
     orders = getattr(result, "orders", [])
     fills = getattr(result, "fills", [])
-    return any(getattr(order, "client_order_id", "").startswith(prefix) for order in orders) or any(
-        getattr(fill, "client_order_id", "").startswith(prefix) for fill in fills
-    )
+    return any(
+        getattr(order, "client_order_id", "").startswith(prefix) for order in orders
+    ) or any(getattr(fill, "client_order_id", "").startswith(prefix) for fill in fills)
 
 
 def normalize_symbol(symbol: str) -> str:
@@ -874,7 +975,9 @@ def _artifact_user_event(event: Any) -> Any:
 def _sanitize_exchange_reason(exc: BaseException) -> str:
     reason = str(getattr(exc, "reason", None) or str(exc) or ExchangeRateLimited.code)
     reason = " ".join(reason.split())
-    reason = _SENSITIVE_REASON_VALUE_RE.sub(lambda match: f"{match.group(1)}=[redacted]", reason)
+    reason = _SENSITIVE_REASON_VALUE_RE.sub(
+        lambda match: f"{match.group(1)}=[redacted]", reason
+    )
     if len(reason) > _SANITIZED_REASON_MAX_CHARS:
         reason = f"{reason[:_SANITIZED_REASON_MAX_CHARS]}..."
     return reason or ExchangeRateLimited.code
@@ -922,7 +1025,9 @@ def _symbol_rules_payload(symbol: str, rules: Any, adapter: Any) -> dict[str, An
             "min_quantity": _jsonable(getattr(rules, "min_quantity", None)),
             "min_notional": _jsonable(getattr(rules, "min_notional", None)),
             "status": getattr(rules, "status", None),
-            "supported_time_in_force": sorted(str(value) for value in supported_time_in_force),
+            "supported_time_in_force": sorted(
+                str(value) for value in supported_time_in_force
+            ),
         },
         "rate_limits": _jsonable(getattr(adapter, "rate_limits", {})),
     }
@@ -1017,7 +1122,8 @@ def _exchange_order_id(order: Any) -> str | None:
 
 def _has_accepted_exchange_order_evidence(orders: Iterable[Any]) -> bool:
     return any(
-        _exchange_order_id(order) is not None and _has_accepted_exchange_order_status(order)
+        _exchange_order_id(order) is not None
+        and _has_accepted_exchange_order_status(order)
         for order in orders
     )
 
@@ -1025,7 +1131,10 @@ def _has_accepted_exchange_order_evidence(orders: Iterable[Any]) -> bool:
 def _has_accepted_exchange_order_status(order: Any) -> bool:
     return any(
         token in _ACCEPTED_EXCHANGE_ORDER_STATUS_TOKENS
-        for status in (getattr(order, "status", None), getattr(order, "raw_status", None))
+        for status in (
+            getattr(order, "status", None),
+            getattr(order, "raw_status", None),
+        )
         for token in _status_tokens(status)
     )
 
@@ -1057,12 +1166,13 @@ def _has_execution_matching_private_order_event(
         return False
     prefix = make_client_order_prefix(str(execution_id))
     return any(
-        _is_execution_matching_private_order_event(event, prefix)
-        for event in events
+        _is_execution_matching_private_order_event(event, prefix) for event in events
     )
 
 
-def _is_execution_matching_private_order_event(event: Mapping[str, Any], prefix: str) -> bool:
+def _is_execution_matching_private_order_event(
+    event: Mapping[str, Any], prefix: str
+) -> bool:
     if event.get("event") != "user_stream_event":
         return False
     payload = event.get("user_event")

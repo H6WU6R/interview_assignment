@@ -166,10 +166,14 @@ class ExecutionRuntime:
         async with self._lock:
             if self._stopping:
                 raise RuntimeConfigurationError("runtime is stopping")
-            if unavailable_reason := self._unavailable_environments.get(request.environment):
+            if unavailable_reason := self._unavailable_environments.get(
+                request.environment
+            ):
                 raise RuntimeUnavailableError(unavailable_reason)
             service = await self._service_for_environment(request.environment)
-            active = await service.active_execution_for(request.environment, request.symbol)
+            active = await service.active_execution_for(
+                request.environment, request.symbol
+            )
             if active is not None:
                 raise ActiveExecutionConflict(
                     "active execution already exists for "
@@ -244,14 +248,18 @@ class ExecutionRuntime:
         if self._started:
             self._start_stream_supervisors(environment, adapter)
 
-    async def _service_for_environment(self, environment: Environment) -> ExecutionService:
+    async def _service_for_environment(
+        self, environment: Environment
+    ) -> ExecutionService:
         if environment in self._services:
             return self._services[environment]
         if environment in {Environment.TESTNET, Environment.MAINNET}:
             return await self._build_binance_service(environment)
         raise RuntimeConfigurationError(f"{environment.value} execution is not enabled")
 
-    async def _build_binance_service(self, environment: Environment) -> ExecutionService:
+    async def _build_binance_service(
+        self, environment: Environment
+    ) -> ExecutionService:
         credentials = load_binance_usdm_credentials()
         if not credentials.is_configured:
             raise RuntimeConfigurationError(
@@ -308,9 +316,11 @@ class ExecutionRuntime:
         task = asyncio.create_task(self._run_background_loop(record.execution_id))
         self._execution_tasks[record.execution_id] = task
         task.add_done_callback(
-            lambda completed, execution_id=record.execution_id: self._discard_background_task(
-                execution_id,
-                completed,
+            lambda completed, execution_id=record.execution_id: (
+                self._discard_background_task(
+                    execution_id,
+                    completed,
+                )
             )
         )
 
@@ -362,7 +372,9 @@ class ExecutionRuntime:
                 self._background_tick_interval_seconds,
             )
 
-    async def _sleep_background_interval(self, execution_id: str, seconds: float) -> None:
+    async def _sleep_background_interval(
+        self, execution_id: str, seconds: float
+    ) -> None:
         await asyncio.sleep(seconds)
         self._advance_background_clock(execution_id, seconds)
 
@@ -382,7 +394,9 @@ class ExecutionRuntime:
             return
         task.cancel()
 
-    def _discard_background_task(self, execution_id: str, task: asyncio.Task[None]) -> None:
+    def _discard_background_task(
+        self, execution_id: str, task: asyncio.Task[None]
+    ) -> None:
         if self._execution_tasks.get(execution_id) is task:
             self._execution_tasks.pop(execution_id, None)
         if task.cancelled():
@@ -392,7 +406,9 @@ class ExecutionRuntime:
         except asyncio.CancelledError:
             return
 
-    def _start_stream_supervisors(self, environment: Environment, adapter: object) -> None:
+    def _start_stream_supervisors(
+        self, environment: Environment, adapter: object
+    ) -> None:
         if environment is Environment.SIMULATION:
             return
 
@@ -476,7 +492,10 @@ class ExecutionRuntime:
                     hard_stop_exc = exc
                 elif name == "user" and self._is_listen_key_retryable(exc):
                     retryable_listen_key_failures += 1
-                    if retryable_listen_key_failures >= LISTEN_KEY_RETRYABLE_FAILURE_MAX_ATTEMPTS:
+                    if (
+                        retryable_listen_key_failures
+                        >= LISTEN_KEY_RETRYABLE_FAILURE_MAX_ATTEMPTS
+                    ):
                         retryable_listen_key_exc = exc
                 else:
                     retryable_listen_key_failures = 0
@@ -502,7 +521,9 @@ class ExecutionRuntime:
                     end_time_ms = self._clock_wall_ms(environment)
                     await self._reconcile_active_executions_for_environment(
                         environment,
-                        start_time_ms=self._bounded_user_stream_start_ms(stream_started_ms, end_time_ms),
+                        start_time_ms=self._bounded_user_stream_start_ms(
+                            stream_started_ms, end_time_ms
+                        ),
                         end_time_ms=end_time_ms,
                     )
                 await asyncio.sleep(self._stream_restart_delay_seconds)
@@ -527,7 +548,9 @@ class ExecutionRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._record_runtime_error(f"{environment.value}.listen_key_keepalive", exc)
+                self._record_runtime_error(
+                    f"{environment.value}.listen_key_keepalive", exc
+                )
                 if self._is_listen_key_hard_stop(exc):
                     await self._mark_listen_key_hard_stop_unavailable(
                         environment,
@@ -541,7 +564,9 @@ class ExecutionRuntime:
                 if self._is_listen_key_retryable(exc):
                     retryable_failures += 1
                     if retryable_failures >= LISTEN_KEY_RETRYABLE_FAILURE_MAX_ATTEMPTS:
-                        await self._mark_listen_key_keepalive_unavailable(environment, exc)
+                        await self._mark_listen_key_keepalive_unavailable(
+                            environment, exc
+                        )
                         break
                     next_delay_seconds = self._listen_key_retry_delay_seconds()
 
@@ -552,7 +577,9 @@ class ExecutionRuntime:
     ) -> None:
         reason = self._listen_key_failure_code(exc)
         self._unavailable_environments[environment] = reason
-        self._record_runtime_error(f"{environment.value}.listen_key_keepalive.unavailable", exc)
+        self._record_runtime_error(
+            f"{environment.value}.listen_key_keepalive.unavailable", exc
+        )
         await self._stop_user_stream(environment)
         await self._reconcile_stale_user_stream_window(environment)
 
@@ -576,7 +603,9 @@ class ExecutionRuntime:
     ) -> None:
         reason = self._listen_key_failure_code(exc)
         self._unavailable_environments[environment] = reason
-        self._record_runtime_error(f"{environment.value}.listen_key_hard_stop.unavailable", exc)
+        self._record_runtime_error(
+            f"{environment.value}.listen_key_hard_stop.unavailable", exc
+        )
         await self._stop_listen_key_keepalive(environment)
         if stop_user_stream:
             await self._stop_user_stream(environment)
@@ -596,7 +625,9 @@ class ExecutionRuntime:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    async def _restart_user_stream(self, environment: Environment, adapter: object) -> None:
+    async def _restart_user_stream(
+        self, environment: Environment, adapter: object
+    ) -> None:
         await self._reconcile_stale_user_stream_window(environment)
         await self._stop_user_stream(environment)
         if not self._started or self._adapters.get(environment) is not adapter:
@@ -605,21 +636,31 @@ class ExecutionRuntime:
         user_stream = getattr(adapter, "stream_user_events", None)
         if callable(user_stream):
             self._stream_tasks[(environment, "user")] = asyncio.create_task(
-                self._supervise_adapter_stream(environment, "user", adapter, user_stream)
+                self._supervise_adapter_stream(
+                    environment, "user", adapter, user_stream
+                )
             )
 
-    async def _reconcile_stale_user_stream_window(self, environment: Environment) -> None:
+    async def _reconcile_stale_user_stream_window(
+        self, environment: Environment
+    ) -> None:
         end_time_ms = self._clock_wall_ms(environment)
         start_time_ms = self._stream_started_wall_ms.get((environment, "user"))
         await self._reconcile_active_executions_for_environment(
             environment,
-            start_time_ms=self._bounded_user_stream_start_ms(start_time_ms, end_time_ms),
+            start_time_ms=self._bounded_user_stream_start_ms(
+                start_time_ms, end_time_ms
+            ),
             end_time_ms=end_time_ms,
         )
 
     @staticmethod
-    def _bounded_user_stream_start_ms(stream_started_ms: int | None, end_time_ms: int) -> int:
-        return max(stream_started_ms or 0, end_time_ms - USER_EVENT_RECONCILIATION_LOOKBACK_MS)
+    def _bounded_user_stream_start_ms(
+        stream_started_ms: int | None, end_time_ms: int
+    ) -> int:
+        return max(
+            stream_started_ms or 0, end_time_ms - USER_EVENT_RECONCILIATION_LOOKBACK_MS
+        )
 
     async def _cancel_and_reconcile_active_executions(self) -> None:
         for service in list(self._services.values()):
@@ -678,7 +719,10 @@ class ExecutionRuntime:
         if not isinstance(result, ReconciliationResult):
             return False
 
-        candidate_records, active_lookup_failed = await self._direct_user_event_candidates(
+        (
+            candidate_records,
+            active_lookup_failed,
+        ) = await self._direct_user_event_candidates(
             environment,
             service,
             result,
@@ -691,7 +735,9 @@ class ExecutionRuntime:
             if not self._reconciliation_result_matches_prefix(result, prefix):
                 continue
             try:
-                updated = await service.apply_reconciliation_result(record.execution_id, result)
+                updated = await service.apply_reconciliation_result(
+                    record.execution_id, result
+                )
                 self._remember_execution(updated)
                 self._cancel_background_loop_if_terminal(updated)
                 applied = True
@@ -712,11 +758,16 @@ class ExecutionRuntime:
             *(order.client_order_id for order in result.orders),
             *(fill.client_order_id for fill in result.fills),
         ]
-        for execution_id, known_environment in list(self._execution_environments.items()):
+        for execution_id, known_environment in list(
+            self._execution_environments.items()
+        ):
             if known_environment is not environment:
                 continue
             prefix = ids.make_client_order_prefix(execution_id)
-            if not any(client_order_id.startswith(prefix) for client_order_id in client_order_ids):
+            if not any(
+                client_order_id.startswith(prefix)
+                for client_order_id in client_order_ids
+            ):
                 continue
             try:
                 record = await service.get_execution(execution_id)
@@ -748,9 +799,9 @@ class ExecutionRuntime:
         result: ReconciliationResult,
         prefix: str,
     ) -> bool:
-        return any(order.client_order_id.startswith(prefix) for order in result.orders) or any(
-            fill.client_order_id.startswith(prefix) for fill in result.fills
-        )
+        return any(
+            order.client_order_id.startswith(prefix) for order in result.orders
+        ) or any(fill.client_order_id.startswith(prefix) for fill in result.fills)
 
     async def _reconcile_active_executions_for_environment(
         self,
@@ -776,7 +827,9 @@ class ExecutionRuntime:
                     start_time_ms=start_time_ms,
                     end_time_ms=end_time_ms,
                 )
-                if self._record_returned_unavailable_reconciliation(environment, reconciled):
+                if self._record_returned_unavailable_reconciliation(
+                    environment, reconciled
+                ):
                     continue
                 self._remember_execution(reconciled)
                 self._cancel_background_loop_if_terminal(reconciled)
@@ -883,4 +936,6 @@ class ExecutionRuntime:
         return isinstance(raw, Mapping) and raw.get("e") == "listenKeyExpired"
 
     def _listen_key_retry_delay_seconds(self) -> float:
-        return min(self._stream_restart_delay_seconds, self._stream_keepalive_interval_seconds)
+        return min(
+            self._stream_restart_delay_seconds, self._stream_keepalive_interval_seconds
+        )

@@ -49,7 +49,9 @@ def test_pending_submit_exposure_is_included_in_invariant_and_can_be_released() 
     assert exposure.exposure.pending_submit_quantity == Decimal("0")
 
 
-def test_ambiguous_cancel_moves_live_open_into_pending_cancel_and_keeps_reserved() -> None:
+def test_ambiguous_cancel_moves_live_open_into_pending_cancel_and_keeps_reserved() -> (
+    None
+):
     exposure = tracker()
     exposure.reserve_live_open(Decimal("0.6"))
 
@@ -62,7 +64,9 @@ def test_ambiguous_cancel_moves_live_open_into_pending_cancel_and_keeps_reserved
         exposure.check_can_submit(Decimal("0.41"))
 
 
-def test_pending_cancel_request_larger_than_live_open_does_not_make_live_open_negative() -> None:
+def test_pending_cancel_request_larger_than_live_open_does_not_make_live_open_negative() -> (
+    None
+):
     exposure = tracker()
     exposure.reserve_live_open(Decimal("0.3"))
 
@@ -87,8 +91,14 @@ def test_overfill_invariant_rejects_combined_exposure_over_target() -> None:
 @pytest.mark.parametrize(
     ("reserve", "bucket"),
     [
-        (lambda exposure: exposure.reserve_live_open(Decimal("0.8")), "live_open_quantity"),
-        (lambda exposure: exposure.reserve_pending_submit(Decimal("0.8")), "pending_submit_quantity"),
+        (
+            lambda exposure: exposure.reserve_live_open(Decimal("0.8")),
+            "live_open_quantity",
+        ),
+        (
+            lambda exposure: exposure.reserve_pending_submit(Decimal("0.8")),
+            "pending_submit_quantity",
+        ),
         (
             lambda exposure: (
                 exposure.reserve_live_open(Decimal("0.8")),
@@ -96,7 +106,10 @@ def test_overfill_invariant_rejects_combined_exposure_over_target() -> None:
             ),
             "pending_cancel_quantity",
         ),
-        (lambda exposure: exposure.reserve_unknown_create(Decimal("0.8")), "unknown_order_quantity"),
+        (
+            lambda exposure: exposure.reserve_unknown_create(Decimal("0.8")),
+            "unknown_order_quantity",
+        ),
     ],
 )
 def test_each_reserved_bucket_contributes_to_overfill(reserve, bucket: str) -> None:

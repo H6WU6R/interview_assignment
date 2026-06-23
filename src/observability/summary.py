@@ -66,7 +66,9 @@ def summary_metrics(
         "target_dust_quantity": decimal_string(target_dust_quantity),
         "filled_quantity": decimal_string(filled_quantity),
         "unfilled_quantity": decimal_string(unfilled),
-        "completion_rate": decimal_string(completion_rate(filled_quantity, required_quantity)),
+        "completion_rate": decimal_string(
+            completion_rate(filled_quantity, required_quantity)
+        ),
         "arrival_bid": decimal_string(arrival_bid),
         "arrival_ask": decimal_string(arrival_ask),
         "arrival_mid": decimal_string(arrival_mid),
@@ -78,5 +80,7 @@ def summary_metrics(
         "duplicate_events_ignored": duplicate_events_ignored,
         "unknown_orders_reconciled": unknown_orders_reconciled,
         "max_reserved_exposure": decimal_string(max_reserved_exposure),
-        "overfill_quantity": decimal_string(overfill_quantity(filled_quantity, required_quantity)),
+        "overfill_quantity": decimal_string(
+            overfill_quantity(filled_quantity, required_quantity)
+        ),
     }

@@ -112,16 +112,26 @@ def test_sanitizer_preserves_order_trade_update_payload(tmp_path: Path) -> None:
             "event_time_ms": 1_700_000_000_001,
             "raw": {
                 "e": "ORDER_TRADE_UPDATE",
-                "o": {"c": "ce_abcdef123456_1", "i": 16277695886, "ps": "BOTH", "X": "FILLED"},
+                "o": {
+                    "c": "ce_abcdef123456_1",
+                    "i": 16277695886,
+                    "ps": "BOTH",
+                    "X": "FILLED",
+                },
             },
         },
     }
-    (evidence_dir / "execution_log.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+    (evidence_dir / "execution_log.jsonl").write_text(
+        json.dumps(event) + "\n", encoding="utf-8"
+    )
     (evidence_dir / "timeline.csv").write_text("event,user_event\n", encoding="utf-8")
 
     module.sanitize_evidence_dir(evidence_dir)
 
-    assert json.loads((evidence_dir / "execution_log.jsonl").read_text(encoding="utf-8")) == event
+    assert (
+        json.loads((evidence_dir / "execution_log.jsonl").read_text(encoding="utf-8"))
+        == event
+    )
 
 
 def test_sanitizer_rejects_remaining_private_account_keys(tmp_path: Path) -> None:
@@ -148,7 +158,9 @@ def test_sanitizer_rejects_remaining_private_account_keys(tmp_path: Path) -> Non
         module.sanitize_evidence_dir(evidence_dir)
 
 
-def test_sanitizer_rejects_private_keys_in_order_trade_update_siblings(tmp_path: Path) -> None:
+def test_sanitizer_rejects_private_keys_in_order_trade_update_siblings(
+    tmp_path: Path,
+) -> None:
     module = load_sanitizer_module()
     evidence_dir = tmp_path / "exec_1"
     evidence_dir.mkdir()
@@ -175,7 +187,9 @@ def test_sanitizer_rejects_private_keys_in_order_trade_update_siblings(tmp_path:
         module.sanitize_evidence_dir(evidence_dir)
 
 
-def test_sanitizer_rejects_private_keys_in_order_trade_update_raw_sibling_jsonl(tmp_path: Path) -> None:
+def test_sanitizer_rejects_private_keys_in_order_trade_update_raw_sibling_jsonl(
+    tmp_path: Path,
+) -> None:
     module = load_sanitizer_module()
     evidence_dir = tmp_path / "exec_1"
     evidence_dir.mkdir()
@@ -202,7 +216,9 @@ def test_sanitizer_rejects_private_keys_in_order_trade_update_raw_sibling_jsonl(
         module.sanitize_evidence_dir(evidence_dir)
 
 
-def test_sanitizer_rejects_private_keys_in_order_trade_update_raw_sibling_csv(tmp_path: Path) -> None:
+def test_sanitizer_rejects_private_keys_in_order_trade_update_raw_sibling_csv(
+    tmp_path: Path,
+) -> None:
     module = load_sanitizer_module()
     evidence_dir = tmp_path / "exec_1"
     evidence_dir.mkdir()

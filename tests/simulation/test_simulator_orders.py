@@ -10,7 +10,14 @@ from exchanges.simulator import (
 )
 from execution.clock import ManualClock
 from execution.ids import make_client_order_id, make_client_order_prefix
-from execution.models import ChildOrderStatus, Fill, OrderRequest, Side, SymbolRules, TimeInForce
+from execution.models import (
+    ChildOrderStatus,
+    Fill,
+    OrderRequest,
+    Side,
+    SymbolRules,
+    TimeInForce,
+)
 
 
 SYMBOL = "BTCUSDT"
@@ -41,7 +48,9 @@ def order_request(
 
 async def fresh_simulator() -> DeterministicSimulator:
     simulator = DeterministicSimulator(clock=ManualClock())
-    await simulator.push_market_data(SYMBOL, Decimal("100.00"), Decimal("101.00"), exchange_event_time=10)
+    await simulator.push_market_data(
+        SYMBOL, Decimal("100.00"), Decimal("101.00"), exchange_event_time=10
+    )
     return simulator
 
 
@@ -55,7 +64,10 @@ async def test_submit_stores_open_order_and_lookup_by_client_order_id() -> None:
     assert order.client_order_id == request.client_order_id
     assert order.submitted_quantity == Decimal("0.010")
     assert order.confirmed_filled_quantity == Decimal("0")
-    assert await simulator.get_order_by_client_order_id(SYMBOL, request.client_order_id) == order
+    assert (
+        await simulator.get_order_by_client_order_id(SYMBOL, request.client_order_id)
+        == order
+    )
 
 
 async def test_submit_requires_fresh_market_snapshot() -> None:
@@ -76,9 +88,13 @@ async def test_cancel_open_order_and_already_filled_cancel_is_not_fatal() -> Non
 
     filled_request = order_request(sequence=2)
     await simulator.submit_limit_order(filled_request)
-    await simulator.push_fill(filled_request.client_order_id, Decimal("0.010"), Decimal("99.00"))
+    await simulator.push_fill(
+        filled_request.client_order_id, Decimal("0.010"), Decimal("99.00")
+    )
 
-    already_terminal = await simulator.cancel_order(SYMBOL, filled_request.client_order_id)
+    already_terminal = await simulator.cancel_order(
+        SYMBOL, filled_request.client_order_id
+    )
 
     assert already_terminal.status == ChildOrderStatus.FILLED
 
@@ -92,7 +108,9 @@ async def test_fill_during_cancel_records_fill_event_and_reconciles_state() -> N
     simulator.script_fill_during_cancel(prefix, Decimal("0.004"))
 
     order = await simulator.cancel_order(SYMBOL, request.client_order_id)
-    result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
+    result = await simulator.reconcile_orders_and_fills(
+        SYMBOL, client_order_prefix=prefix
+    )
 
     assert order.status == ChildOrderStatus.CANCELLED
     assert order.confirmed_filled_quantity == Decimal("0.004")
@@ -100,13 +118,19 @@ async def test_fill_during_cancel_records_fill_event_and_reconciles_state() -> N
     assert result.orders == [order]
 
 
-async def test_repeated_partial_fills_accumulate_without_status_self_transition() -> None:
+async def test_repeated_partial_fills_accumulate_without_status_self_transition() -> (
+    None
+):
     simulator = await fresh_simulator()
     request = order_request(quantity=Decimal("0.010"))
     order = await simulator.submit_limit_order(request)
 
-    first_fill = await simulator.push_fill(request.client_order_id, Decimal("0.003"), Decimal("99.00"))
-    second_fill = await simulator.push_fill(request.client_order_id, Decimal("0.002"), Decimal("99.50"))
+    first_fill = await simulator.push_fill(
+        request.client_order_id, Decimal("0.003"), Decimal("99.00")
+    )
+    second_fill = await simulator.push_fill(
+        request.client_order_id, Decimal("0.002"), Decimal("99.50")
+    )
 
     assert order.status == ChildOrderStatus.PARTIALLY_FILLED
     assert order.confirmed_filled_quantity == Decimal("0.005")
@@ -121,25 +145,35 @@ async def test_repeated_partial_fills_accumulate_without_status_self_transition(
 async def test_push_fill_updates_position_by_order_side() -> None:
     simulator = await fresh_simulator()
     buy_request = order_request(sequence=1, side=Side.BUY, quantity=Decimal("0.010"))
-    sell_request = order_request(sequence=2, side=Side.SELL, quantity=Decimal("0.010"), price=Decimal("102.00"))
+    sell_request = order_request(
+        sequence=2, side=Side.SELL, quantity=Decimal("0.010"), price=Decimal("102.00")
+    )
     await simulator.submit_limit_order(buy_request)
     await simulator.submit_limit_order(sell_request)
 
-    await simulator.push_fill(buy_request.client_order_id, Decimal("0.004"), Decimal("99.00"))
-    await simulator.push_fill(sell_request.client_order_id, Decimal("0.001"), Decimal("102.00"))
+    await simulator.push_fill(
+        buy_request.client_order_id, Decimal("0.004"), Decimal("99.00")
+    )
+    await simulator.push_fill(
+        sell_request.client_order_id, Decimal("0.001"), Decimal("102.00")
+    )
 
     assert simulator.position == Decimal("0.003")
     assert (await simulator.get_position(SYMBOL)).position == Decimal("0.003")
 
 
-async def test_public_reconciliation_fill_helper_records_duplicate_and_out_of_order_fills() -> None:
+async def test_public_reconciliation_fill_helper_records_duplicate_and_out_of_order_fills() -> (
+    None
+):
     execution_id = "exec_0123456789abcdef"
     prefix = make_client_order_prefix(execution_id)
     simulator = await fresh_simulator()
     request = order_request(execution_id=execution_id, quantity=Decimal("0.010"))
     await simulator.submit_limit_order(request)
 
-    fill = await simulator.push_fill(request.client_order_id, Decimal("0.003"), Decimal("99.00"))
+    fill = await simulator.push_fill(
+        request.client_order_id, Decimal("0.003"), Decimal("99.00")
+    )
     simulator.inject_reconciliation_fill(
         Fill(
             client_order_id=request.client_order_id,
@@ -163,7 +197,9 @@ async def test_public_reconciliation_fill_helper_records_duplicate_and_out_of_or
         )
     )
 
-    result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
+    result = await simulator.reconcile_orders_and_fills(
+        SYMBOL, client_order_prefix=prefix
+    )
 
     assert [stored.trade_id for stored in result.fills] == [
         fill.trade_id,
@@ -177,7 +213,9 @@ async def test_public_reconciliation_fill_helper_records_duplicate_and_out_of_or
     ]
 
 
-async def test_cancel_reconcile_open_script_leaves_order_open_until_reconciliation() -> None:
+async def test_cancel_reconcile_open_script_leaves_order_open_until_reconciliation() -> (
+    None
+):
     execution_id = "exec_0123456789abcdef"
     prefix = make_client_order_prefix(execution_id)
     simulator = await fresh_simulator()
@@ -186,13 +224,17 @@ async def test_cancel_reconcile_open_script_leaves_order_open_until_reconciliati
     simulator.script_cancel_reconcile_open(prefix)
 
     order = await simulator.cancel_order(SYMBOL, request.client_order_id)
-    result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
+    result = await simulator.reconcile_orders_and_fills(
+        SYMBOL, client_order_prefix=prefix
+    )
 
     assert order.status == ChildOrderStatus.OPEN
     assert result.orders == [order]
 
 
-async def test_create_timeout_reconciliation_finds_open_order_for_same_execution_prefix() -> None:
+async def test_create_timeout_reconciliation_finds_open_order_for_same_execution_prefix() -> (
+    None
+):
     execution_id = "exec_0123456789abcdef"
     prefix = make_client_order_prefix(execution_id)
     simulator = await fresh_simulator()
@@ -202,9 +244,13 @@ async def test_create_timeout_reconciliation_finds_open_order_for_same_execution
     with pytest.raises(SimulatorOrderTimeout):
         await simulator.submit_limit_order(request)
 
-    result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
+    result = await simulator.reconcile_orders_and_fills(
+        SYMBOL, client_order_prefix=prefix
+    )
 
-    assert [order.client_order_id for order in result.orders] == [request.client_order_id]
+    assert [order.client_order_id for order in result.orders] == [
+        request.client_order_id
+    ]
     assert result.orders[0].status == ChildOrderStatus.OPEN
     assert result.warnings == []
 
@@ -220,8 +266,12 @@ async def test_create_timeout_not_found_warning_is_execution_specific() -> None:
     with pytest.raises(SimulatorOrderTimeout):
         await simulator.submit_limit_order(order_request(execution_id=execution_id))
 
-    same_result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
-    other_result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=other_prefix)
+    same_result = await simulator.reconcile_orders_and_fills(
+        SYMBOL, client_order_prefix=prefix
+    )
+    other_result = await simulator.reconcile_orders_and_fills(
+        SYMBOL, client_order_prefix=other_prefix
+    )
 
     assert same_result.orders == []
     assert same_result.fills == []
@@ -235,7 +285,9 @@ async def test_reconciliation_rejects_non_execution_scoped_prefixes() -> None:
 
     for invalid_prefix in (None, "ce_012345", "ce_0123456789ab", "manual_order_"):
         with pytest.raises(ValueError, match="execution-scoped"):
-            await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=invalid_prefix)
+            await simulator.reconcile_orders_and_fills(
+                SYMBOL, client_order_prefix=invalid_prefix
+            )
 
 
 async def test_scripts_reject_non_execution_scoped_prefixes() -> None:
@@ -262,23 +314,39 @@ async def test_reconcile_filters_orders_and_fills_by_exact_execution_prefix() ->
     other_request = order_request(execution_id=other_execution_id)
     await simulator.submit_limit_order(request)
     await simulator.submit_limit_order(other_request)
-    await simulator.push_fill(request.client_order_id, Decimal("0.003"), Decimal("99.00"))
-    await simulator.push_fill(other_request.client_order_id, Decimal("0.002"), Decimal("98.50"))
+    await simulator.push_fill(
+        request.client_order_id, Decimal("0.003"), Decimal("99.00")
+    )
+    await simulator.push_fill(
+        other_request.client_order_id, Decimal("0.002"), Decimal("98.50")
+    )
 
-    result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=prefix)
-    other_result = await simulator.reconcile_orders_and_fills(SYMBOL, client_order_prefix=other_prefix)
+    result = await simulator.reconcile_orders_and_fills(
+        SYMBOL, client_order_prefix=prefix
+    )
+    other_result = await simulator.reconcile_orders_and_fills(
+        SYMBOL, client_order_prefix=other_prefix
+    )
 
-    assert [order.client_order_id for order in result.orders] == [request.client_order_id]
+    assert [order.client_order_id for order in result.orders] == [
+        request.client_order_id
+    ]
     assert [fill.client_order_id for fill in result.fills] == [request.client_order_id]
-    assert [order.client_order_id for order in other_result.orders] == [other_request.client_order_id]
-    assert [fill.client_order_id for fill in other_result.fills] == [other_request.client_order_id]
+    assert [order.client_order_id for order in other_result.orders] == [
+        other_request.client_order_id
+    ]
+    assert [fill.client_order_id for fill in other_result.fills] == [
+        other_request.client_order_id
+    ]
 
 
 async def test_user_event_stream_yields_queued_order_and_fill_events() -> None:
     simulator = await fresh_simulator()
     request = order_request()
     order = await simulator.submit_limit_order(request)
-    fill = await simulator.push_fill(request.client_order_id, Decimal("0.010"), Decimal("99.00"))
+    fill = await simulator.push_fill(
+        request.client_order_id, Decimal("0.010"), Decimal("99.00")
+    )
     events = simulator.stream_user_events()
 
     first = await anext(events)
@@ -339,5 +407,7 @@ async def test_ioc_rejects_when_symbol_does_not_support_ioc() -> None:
 
     with pytest.raises(SimulatorOrderRejected, match="IOC"):
         await simulator.submit_limit_order(
-            order_request(post_only=False, price=Decimal("101.00"), time_in_force=TimeInForce.IOC)
+            order_request(
+                post_only=False, price=Decimal("101.00"), time_in_force=TimeInForce.IOC
+            )
         )

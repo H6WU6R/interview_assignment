@@ -126,7 +126,9 @@ def classify_mutation_timeout(kind: MutationKind) -> str:
     raise ValueError(f"unsupported mutation kind: {kind}")
 
 
-def build_new_order_params(order_request: OrderRequest, rules: SymbolRules) -> dict[str, str]:
+def build_new_order_params(
+    order_request: OrderRequest, rules: SymbolRules
+) -> dict[str, str]:
     """Build Binance LIMIT order parameters from an internal order request."""
 
     if len(order_request.client_order_id) > 36 or not ids.CLIENT_ORDER_ID_RE.fullmatch(
@@ -196,7 +198,9 @@ def normalize_order_status(raw_status: str) -> ChildOrderStatus:
     return status_map.get(raw_status, ChildOrderStatus.UNKNOWN)
 
 
-def parse_symbol_rules_from_exchange_info(payload: Mapping[str, Any], symbol: str) -> SymbolRules:
+def parse_symbol_rules_from_exchange_info(
+    payload: Mapping[str, Any], symbol: str
+) -> SymbolRules:
     """Extract symbol trading rules from a Binance exchangeInfo payload."""
 
     symbol_payload = _find_symbol_payload(payload, symbol)
@@ -208,9 +212,13 @@ def parse_symbol_rules_from_exchange_info(payload: Mapping[str, Any], symbol: st
     price_filter = filters["PRICE_FILTER"]
     lot_size = filters["LOT_SIZE"]
     min_notional_filter = filters["MIN_NOTIONAL"]
-    min_notional = min_notional_filter.get("notional", min_notional_filter.get("minNotional"))
+    min_notional = min_notional_filter.get(
+        "notional", min_notional_filter.get("minNotional")
+    )
     if min_notional is None:
-        raise KeyError(f"MIN_NOTIONAL filter for {symbol} is missing notional/minNotional")
+        raise KeyError(
+            f"MIN_NOTIONAL filter for {symbol} is missing notional/minNotional"
+        )
 
     return SymbolRules(
         symbol=symbol_payload["symbol"],
@@ -219,7 +227,9 @@ def parse_symbol_rules_from_exchange_info(payload: Mapping[str, Any], symbol: st
         min_quantity=Decimal(str(lot_size["minQty"])),
         min_notional=Decimal(str(min_notional)),
         status=str(symbol_payload.get("status", "UNKNOWN")),
-        supported_time_in_force=frozenset(str(value) for value in symbol_payload.get("timeInForce", [])),
+        supported_time_in_force=frozenset(
+            str(value) for value in symbol_payload.get("timeInForce", [])
+        ),
     )
 
 
@@ -248,7 +258,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
     latest_listen_key: str | None = None
     last_stream_error: str | None = None
     _latest_market: dict[str, MarketSnapshot] = field(default_factory=dict)
-    _client_order_id_by_order_id: dict[tuple[str, str], str] = field(default_factory=dict)
+    _client_order_id_by_order_id: dict[tuple[str, str], str] = field(
+        default_factory=dict
+    )
     _market_stream_symbol: str = "BTCUSDT"
 
     def __post_init__(self) -> None:
@@ -256,7 +268,10 @@ class BinanceUsdmAdapter(ExchangeAdapter):
 
     @property
     def ws_root_url(self) -> str:
-        if self.settings.environment == Environment.MAINNET and self.settings.can_trade_mainnet:
+        if (
+            self.settings.environment == Environment.MAINNET
+            and self.settings.can_trade_mainnet
+        ):
             return BINANCE_USDM_MAINNET_WS_ROOT
         return BINANCE_USDM_TESTNET_WS_ROOT
 
@@ -273,7 +288,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
 
     def signed_params(self, params: Mapping[str, Any], now_ms: int) -> dict[str, str]:
         if not self.settings.binance_api_secret:
-            raise ValueError("Binance API secret is required to sign authenticated REST requests")
+            raise ValueError(
+                "Binance API secret is required to sign authenticated REST requests"
+            )
 
         serialized = {key: _serialize_param(value) for key, value in params.items()}
         serialized["timestamp"] = str(now_ms + self.server_time_offset_ms)
@@ -292,21 +309,31 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             else:
                 response = await self.client.request("GET", url, timeout=timeout)
         except (httpx.TransportError, httpx.TimeoutException) as exc:
-            raise ServerTimeSynchronizationFailure("SERVER_TIME_SYNC_TRANSPORT_FAILURE") from exc
+            raise ServerTimeSynchronizationFailure(
+                "SERVER_TIME_SYNC_TRANSPORT_FAILURE"
+            ) from exc
 
         if response.status_code != 200:
-            raise ServerTimeSynchronizationFailure(f"SERVER_TIME_SYNC_HTTP_{response.status_code}")
+            raise ServerTimeSynchronizationFailure(
+                f"SERVER_TIME_SYNC_HTTP_{response.status_code}"
+            )
 
         try:
             payload = response.json()
         except ValueError as exc:
-            raise ServerTimeSynchronizationFailure("SERVER_TIME_SYNC_INVALID_JSON") from exc
+            raise ServerTimeSynchronizationFailure(
+                "SERVER_TIME_SYNC_INVALID_JSON"
+            ) from exc
         if not isinstance(payload, Mapping) or "serverTime" not in payload:
-            raise ServerTimeSynchronizationFailure("SERVER_TIME_SYNC_MALFORMED_RESPONSE")
+            raise ServerTimeSynchronizationFailure(
+                "SERVER_TIME_SYNC_MALFORMED_RESPONSE"
+            )
         try:
             server_time_ms = int(payload["serverTime"])
         except (TypeError, ValueError) as exc:
-            raise ServerTimeSynchronizationFailure("SERVER_TIME_SYNC_MALFORMED_RESPONSE") from exc
+            raise ServerTimeSynchronizationFailure(
+                "SERVER_TIME_SYNC_MALFORMED_RESPONSE"
+            ) from exc
 
         self.server_time_offset_ms = server_time_ms - self._clock_wall_ms()
         return self.server_time_offset_ms
@@ -318,13 +345,20 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         params: Mapping[str, Any],
         mutation_kind: MutationKind | None = None,
     ) -> Any:
-        if mutation_kind is not None and self.settings.environment == Environment.MAINNET:
+        if (
+            mutation_kind is not None
+            and self.settings.environment == Environment.MAINNET
+        ):
             if not self.settings.can_trade_mainnet:
                 raise ExchangeTerminalReject("MAINNET_TRADING_NOT_ALLOWED")
         if not self.settings.binance_api_key:
-            raise ValueError("Binance API key is required for authenticated REST requests")
+            raise ValueError(
+                "Binance API key is required for authenticated REST requests"
+            )
         if not self.settings.binance_api_secret:
-            raise ValueError("Binance API secret is required to sign authenticated REST requests")
+            raise ValueError(
+                "Binance API secret is required to sign authenticated REST requests"
+            )
 
         signed = self.signed_params(params, now_ms=self._clock_wall_ms())
         headers = {"X-MBX-APIKEY": self.settings.binance_api_key}
@@ -334,7 +368,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         try:
             if self.client is None:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.request(method, url, params=signed, headers=headers)
+                    response = await client.request(
+                        method, url, params=signed, headers=headers
+                    )
             else:
                 response = await self.client.request(
                     method,
@@ -345,9 +381,13 @@ class BinanceUsdmAdapter(ExchangeAdapter):
                 )
         except (httpx.TransportError, httpx.TimeoutException) as exc:
             if mutation_kind is MutationKind.CREATE:
-                raise UnknownCreateOutcome(classify_mutation_timeout(MutationKind.CREATE)) from exc
+                raise UnknownCreateOutcome(
+                    classify_mutation_timeout(MutationKind.CREATE)
+                ) from exc
             if mutation_kind is MutationKind.CANCEL:
-                raise PendingCancelOutcome(classify_mutation_timeout(MutationKind.CANCEL)) from exc
+                raise PendingCancelOutcome(
+                    classify_mutation_timeout(MutationKind.CANCEL)
+                ) from exc
             raise RetryableReadFailure("SIGNED_READ_TIMEOUT") from exc
 
         status = classify_http_status(response.status_code)
@@ -356,9 +396,13 @@ class BinanceUsdmAdapter(ExchangeAdapter):
 
         if response.status_code == 408:
             if mutation_kind is MutationKind.CREATE:
-                raise UnknownCreateOutcome(classify_mutation_timeout(MutationKind.CREATE))
+                raise UnknownCreateOutcome(
+                    classify_mutation_timeout(MutationKind.CREATE)
+                )
             if mutation_kind is MutationKind.CANCEL:
-                raise PendingCancelOutcome(classify_mutation_timeout(MutationKind.CANCEL))
+                raise PendingCancelOutcome(
+                    classify_mutation_timeout(MutationKind.CANCEL)
+                )
             raise RetryableReadFailure("SIGNED_READ_TIMEOUT")
         if response.status_code == 429:
             raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
@@ -368,7 +412,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         if response.status_code == 503:
             error_payload = _json_payload_or_retryable_read_failure(response)
         else:
-            error_payload = _json_payload_or_conservative_failure(response, mutation_kind)
+            error_payload = _json_payload_or_conservative_failure(
+                response, mutation_kind
+            )
         if 500 <= response.status_code <= 599:
             if mutation_kind is not None:
                 reason = _terminal_reject_reason(response.status_code, error_payload)
@@ -393,7 +439,10 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             raise RetryableReadFailure("RETRYABLE_READ_FAILURE")
         if 400 <= response.status_code <= 499:
             reason = _terminal_reject_reason(response.status_code, error_payload)
-            if mutation_kind is MutationKind.CREATE and _is_retryable_order_reject_reason(reason):
+            if (
+                mutation_kind is MutationKind.CREATE
+                and _is_retryable_order_reject_reason(reason)
+            ):
                 raise OrderRejected(reason)
             raise ExchangeTerminalReject(reason)
         raise RuntimeError(f"unexpected Binance HTTP status: {response.status_code}")
@@ -404,7 +453,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             raise NoFreshMarketData(f"no fresh market data for {symbol}")
         if snapshot.is_crossed:
             raise NoFreshMarketData(f"crossed market data for {symbol}")
-        age_ms = (self.clock.monotonic() - snapshot.last_market_event_time_local_monotonic) * 1000
+        age_ms = (
+            self.clock.monotonic() - snapshot.last_market_event_time_local_monotonic
+        ) * 1000
         if age_ms > self.settings.stale_market_data_ms:
             raise NoFreshMarketData(f"stale market data for {symbol}: age_ms={age_ms}")
         return snapshot
@@ -467,7 +518,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         self._remember_order_identity(order)
         return order
 
-    async def get_order_by_client_order_id(self, symbol: str, client_order_id: str) -> ChildOrder | None:
+    async def get_order_by_client_order_id(
+        self, symbol: str, client_order_id: str
+    ) -> ChildOrder | None:
         try:
             raw = await self._signed_request(
                 "GET",
@@ -483,7 +536,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         return order
 
     async def get_position(self, symbol: str) -> PositionSnapshot:
-        rows = await self._signed_request("GET", POSITION_RISK_V3_PATH, {"symbol": symbol})
+        rows = await self._signed_request(
+            "GET", POSITION_RISK_V3_PATH, {"symbol": symbol}
+        )
         symbol_rows = [row for row in rows if row.get("symbol") == symbol]
         if not symbol_rows:
             return PositionSnapshot(symbol=symbol, position=Decimal("0"))
@@ -519,7 +574,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             raise RetryableReadFailure("RETRYABLE_READ_FAILURE")
         if status_code != 200:
             error_payload = _json_payload_or_retryable_read_failure(response)
-            raise ExchangeTerminalReject(_terminal_reject_reason(status_code, error_payload))
+            raise ExchangeTerminalReject(
+                _terminal_reject_reason(status_code, error_payload)
+            )
 
         try:
             data = response.json()
@@ -560,7 +617,10 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         try:
             await self._api_key_request("PUT", LISTEN_KEY_PATH, params=None)
         except StreamHealthFailure as exc:
-            if exc.code == "LISTEN_KEY_EXPIRED" and self.latest_listen_key == listen_key:
+            if (
+                exc.code == "LISTEN_KEY_EXPIRED"
+                and self.latest_listen_key == listen_key
+            ):
                 self.latest_listen_key = None
             raise
 
@@ -578,7 +638,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         try:
             if self.client is None:
                 async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.request(method, url, params=params, headers=headers)
+                    response = await client.request(
+                        method, url, params=params, headers=headers
+                    )
             else:
                 response = await self.client.request(
                     method,
@@ -592,7 +654,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
 
         if response.status_code != 200:
             payload = _listen_key_error_payload(response)
-            raise StreamHealthFailure(_listen_key_failure_reason(response.status_code, payload))
+            raise StreamHealthFailure(
+                _listen_key_failure_reason(response.status_code, payload)
+            )
 
         try:
             payload = response.json()
@@ -620,7 +684,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             "raw": dict(message),
         }
 
-    def reconciliation_from_user_event(self, event: object) -> ReconciliationResult | None:
+    def reconciliation_from_user_event(
+        self, event: object
+    ) -> ReconciliationResult | None:
         return reconciliation_from_user_event(event)
 
     async def reconcile_orders_and_fills(
@@ -632,14 +698,20 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         end_time_ms: int | None = None,
     ) -> ReconciliationResult:
         _require_execution_prefix(client_order_prefix)
-        open_orders_raw = await self._signed_request("GET", OPEN_ORDERS_PATH, {"symbol": symbol})
+        open_orders_raw = await self._signed_request(
+            "GET", OPEN_ORDERS_PATH, {"symbol": symbol}
+        )
         historical_params = _historical_reconciliation_params(
             symbol,
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms,
         )
-        all_orders_raw = await self._signed_request("GET", ALL_ORDERS_PATH, historical_params)
-        trades_raw = await self._signed_request("GET", USER_TRADES_PATH, historical_params)
+        all_orders_raw = await self._signed_request(
+            "GET", ALL_ORDERS_PATH, historical_params
+        )
+        trades_raw = await self._signed_request(
+            "GET", USER_TRADES_PATH, historical_params
+        )
 
         orders_by_client_id: dict[str, ChildOrder] = {}
         order_id_to_client_id: dict[str, str] = {}
@@ -659,27 +731,40 @@ class BinanceUsdmAdapter(ExchangeAdapter):
             client_order_id = raw_fill.get("clientOrderId")
             if client_order_id is not None:
                 client_order_id = str(client_order_id)
-            order_id = str(raw_fill["orderId"]) if raw_fill.get("orderId") is not None else None
+            order_id = (
+                str(raw_fill["orderId"])
+                if raw_fill.get("orderId") is not None
+                else None
+            )
             if client_order_id in {None, ""} and order_id is not None:
                 client_order_id = order_id_to_client_id.get(order_id)
                 if client_order_id is None:
-                    client_order_id = self._client_order_id_by_order_id.get((symbol, order_id))
-            if client_order_id is None or not client_order_id.startswith(client_order_prefix):
+                    client_order_id = self._client_order_id_by_order_id.get(
+                        (symbol, order_id)
+                    )
+            if client_order_id is None or not client_order_id.startswith(
+                client_order_prefix
+            ):
                 continue
 
-            cumulative = cumulative_by_client_id.get(client_order_id, Decimal("0")) + Decimal(
-                str(raw_fill.get("qty", "0"))
-            )
+            cumulative = cumulative_by_client_id.get(
+                client_order_id, Decimal("0")
+            ) + Decimal(str(raw_fill.get("qty", "0")))
             cumulative_by_client_id[client_order_id] = cumulative
             fills.append(parse_fill(raw_fill, client_order_id, cumulative))
 
-        return ReconciliationResult(orders=list(orders_by_client_id.values()), fills=fills)
+        return ReconciliationResult(
+            orders=list(orders_by_client_id.values()), fills=fills
+        )
 
     async def health_check_streams(self) -> bool:
         return self.market_stream_healthy and self.user_stream_healthy
 
     def _select_base_url(self) -> str:
-        if self.settings.environment == Environment.MAINNET and self.settings.can_trade_mainnet:
+        if (
+            self.settings.environment == Environment.MAINNET
+            and self.settings.can_trade_mainnet
+        ):
             return BINANCE_USDM_MAINNET_BASE_URL
         return BINANCE_USDM_TESTNET_BASE_URL
 
@@ -689,7 +774,9 @@ class BinanceUsdmAdapter(ExchangeAdapter):
     def _remember_order_identity(self, order: ChildOrder) -> None:
         if order.exchange_order_id is None:
             return
-        self._client_order_id_by_order_id[(order.symbol, order.exchange_order_id)] = order.client_order_id
+        self._client_order_id_by_order_id[(order.symbol, order.exchange_order_id)] = (
+            order.client_order_id
+        )
 
 
 def _find_symbol_payload(payload: Mapping[str, Any], symbol: str) -> Mapping[str, Any]:
@@ -707,17 +794,39 @@ def _serialize_param(value: Any) -> str:
     return str(value)
 
 
-def parse_order(raw: Mapping[str, Any], fallback: ChildOrder | None = None) -> ChildOrder:
+def parse_order(
+    raw: Mapping[str, Any], fallback: ChildOrder | None = None
+) -> ChildOrder:
     """Parse a Binance order payload into an internal child order."""
 
-    client_order_id = str(raw.get("clientOrderId") or raw.get("origClientOrderId") or _fallback_attr(fallback, "client_order_id", ""))
-    raw_status = str(raw.get("status", _fallback_attr(fallback, "raw_status", "UNKNOWN")))
+    client_order_id = str(
+        raw.get("clientOrderId")
+        or raw.get("origClientOrderId")
+        or _fallback_attr(fallback, "client_order_id", "")
+    )
+    raw_status = str(
+        raw.get("status", _fallback_attr(fallback, "raw_status", "UNKNOWN"))
+    )
     status = normalize_order_status(raw_status)
     submitted_quantity = Decimal(
-        str(raw.get("origQty", raw.get("quantity", _fallback_attr(fallback, "submitted_quantity", "0"))))
+        str(
+            raw.get(
+                "origQty",
+                raw.get(
+                    "quantity", _fallback_attr(fallback, "submitted_quantity", "0")
+                ),
+            )
+        )
     )
     confirmed_filled_quantity = Decimal(
-        str(raw.get("executedQty", raw.get("cumQty", _fallback_attr(fallback, "confirmed_filled_quantity", "0"))))
+        str(
+            raw.get(
+                "executedQty",
+                raw.get(
+                    "cumQty", _fallback_attr(fallback, "confirmed_filled_quantity", "0")
+                ),
+            )
+        )
     )
     child = ChildOrder(
         child_order_id=str(_fallback_attr(fallback, "child_order_id", client_order_id)),
@@ -728,9 +837,13 @@ def parse_order(raw: Mapping[str, Any], fallback: ChildOrder | None = None) -> C
         price=Decimal(str(raw.get("price", _fallback_attr(fallback, "price", "0")))),
         status=status,
         confirmed_filled_quantity=confirmed_filled_quantity,
-        exchange_order_id=str(raw["orderId"]) if raw.get("orderId") is not None else _fallback_attr(fallback, "exchange_order_id", None),
+        exchange_order_id=str(raw["orderId"])
+        if raw.get("orderId") is not None
+        else _fallback_attr(fallback, "exchange_order_id", None),
         raw_status=raw_status,
-        terminal_reason=raw_status if raw_status in {"EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"} else None,
+        terminal_reason=raw_status
+        if raw_status in {"EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}
+        else None,
     )
     return child
 
@@ -789,9 +902,13 @@ def reconciliation_from_user_event(event: object) -> ReconciliationResult | None
         price=order_price,
         status=normalize_order_status(raw_status),
         confirmed_filled_quantity=cumulative_filled_quantity,
-        exchange_order_id=str(order_payload["i"]) if order_payload.get("i") is not None else None,
+        exchange_order_id=str(order_payload["i"])
+        if order_payload.get("i") is not None
+        else None,
         raw_status=raw_status,
-        terminal_reason=raw_status if raw_status in {"EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"} else None,
+        terminal_reason=raw_status
+        if raw_status in {"EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}
+        else None,
     )
 
     fills: list[Fill] = []
@@ -818,8 +935,12 @@ def reconciliation_from_user_event(event: object) -> ReconciliationResult | None
 
 
 def _require_execution_prefix(client_order_prefix: str | None) -> None:
-    if not client_order_prefix or not EXECUTION_CLIENT_ORDER_PREFIX_RE.fullmatch(client_order_prefix):
-        raise ValueError("client_order_prefix must be execution-scoped: ce_<12 lowercase hex chars>_")
+    if not client_order_prefix or not EXECUTION_CLIENT_ORDER_PREFIX_RE.fullmatch(
+        client_order_prefix
+    ):
+        raise ValueError(
+            "client_order_prefix must be execution-scoped: ce_<12 lowercase hex chars>_"
+        )
 
 
 def _parse_side(value: Any) -> Side:
@@ -938,7 +1059,9 @@ def _listen_key_error_payload(response: Any) -> Mapping[str, Any] | None:
     return payload
 
 
-def _listen_key_failure_reason(status_code: int, payload: Mapping[str, Any] | None) -> str:
+def _listen_key_failure_reason(
+    status_code: int, payload: Mapping[str, Any] | None
+) -> str:
     if status_code == 429:
         return "LISTEN_KEY_RATE_LIMIT_BACKOFF"
     if status_code == 418:

@@ -20,7 +20,9 @@ from _sim_demo_common import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a deterministic simulator cancel/fill race demo.")
+    parser = argparse.ArgumentParser(
+        description="Run a deterministic simulator cancel/fill race demo."
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -39,13 +41,24 @@ async def main() -> None:
     execution = await service.create_execution(make_request(Algorithm.CHASE))
     prefix = make_client_order_prefix(execution.execution_id)
     simulator.script_fill_during_cancel(prefix, Decimal("0.004"))
-    events = [log_event(clock, execution, "execution_created", extra={"armed_prefix": prefix})]
+    events = [
+        log_event(clock, execution, "execution_created", extra={"armed_prefix": prefix})
+    ]
 
     execution = await service.run_once(execution.execution_id)
-    events.append(log_event(clock, execution, "initial_child_submitted", child=execution.child_orders[-1]))
+    events.append(
+        log_event(
+            clock,
+            execution,
+            "initial_child_submitted",
+            child=execution.child_orders[-1],
+        )
+    )
 
     clock.advance(0.6)
-    await seed_market(clock, simulator, bid=Decimal("50030.00"), ask=Decimal("50031.00"))
+    await seed_market(
+        clock, simulator, bid=Decimal("50030.00"), ask=Decimal("50031.00")
+    )
     execution = await service.run_once(execution.execution_id)
     events.append(
         log_event(
@@ -56,7 +69,9 @@ async def main() -> None:
             extra={"filled_during_cancel_quantity": Decimal("0.004")},
         )
     )
-    events.append(log_event(clock, execution, "result_summary", extra=summary_snapshot(execution)))
+    events.append(
+        log_event(clock, execution, "result_summary", extra=summary_snapshot(execution))
+    )
 
     artifact_dir = write_artifacts(
         args.output_dir,

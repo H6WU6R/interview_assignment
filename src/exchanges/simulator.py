@@ -9,7 +9,12 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Literal
 
-from exchanges.base import ExchangeAdapter, NoFreshMarketData, OrderCreateTimeout, OrderRejected
+from exchanges.base import (
+    ExchangeAdapter,
+    NoFreshMarketData,
+    OrderCreateTimeout,
+    OrderRejected,
+)
 from execution.clock import Clock, ManualClock
 from execution.models import (
     ChildOrder,
@@ -63,12 +68,16 @@ class DeterministicSimulator(ExchangeAdapter):
     _symbol_rules: dict[str, SymbolRules] = field(default_factory=dict)
     _orders: dict[tuple[str, str], ChildOrder] = field(default_factory=dict)
     _fills: list[Fill] = field(default_factory=list)
-    _user_event_queue: asyncio.Queue[SimulatorOrderEvent] = field(default_factory=asyncio.Queue)
+    _user_event_queue: asyncio.Queue[SimulatorOrderEvent] = field(
+        default_factory=asyncio.Queue
+    )
     _trade_sequence: int = 0
     _exchange_order_sequence: int = 0
     _create_timeout_prefixes: list[str] = field(default_factory=list)
     _create_timeout_not_found_prefixes: list[str] = field(default_factory=list)
-    _create_timeout_not_found_warnings: set[tuple[str, str]] = field(default_factory=set)
+    _create_timeout_not_found_warnings: set[tuple[str, str]] = field(
+        default_factory=set
+    )
     _fill_during_cancel_scripts: list[tuple[str, Decimal]] = field(default_factory=list)
     _cancel_reconcile_open_prefixes: list[str] = field(default_factory=list)
     _user_stream_healthy: bool = True
@@ -136,7 +145,9 @@ class DeterministicSimulator(ExchangeAdapter):
             order_request.client_order_id,
         ):
             self._create_timeout_not_found_warnings.add((order_request.symbol, prefix))
-            raise SimulatorOrderTimeout(f"create timed out for {order_request.client_order_id}")
+            raise SimulatorOrderTimeout(
+                f"create timed out for {order_request.client_order_id}"
+            )
 
         order = self._create_open_order(order_request)
         await self._user_event_queue.put(
@@ -147,8 +158,12 @@ class DeterministicSimulator(ExchangeAdapter):
             )
         )
 
-        if self._pop_matching_prefix(self._create_timeout_prefixes, order_request.client_order_id):
-            raise SimulatorOrderTimeout(f"create timed out for {order_request.client_order_id}")
+        if self._pop_matching_prefix(
+            self._create_timeout_prefixes, order_request.client_order_id
+        ):
+            raise SimulatorOrderTimeout(
+                f"create timed out for {order_request.client_order_id}"
+            )
 
         return order
 
@@ -169,14 +184,18 @@ class DeterministicSimulator(ExchangeAdapter):
         if order.status.is_terminal:
             return order
 
-        if self._pop_matching_prefix(self._cancel_reconcile_open_prefixes, client_order_id):
+        if self._pop_matching_prefix(
+            self._cancel_reconcile_open_prefixes, client_order_id
+        ):
             target = self._open_status_for(order)
             if order.status != target:
                 order.status = transition_child(order.status, target)
             return order
 
         if order.status != ChildOrderStatus.PENDING_CANCEL:
-            order.status = transition_child(order.status, ChildOrderStatus.PENDING_CANCEL)
+            order.status = transition_child(
+                order.status, ChildOrderStatus.PENDING_CANCEL
+            )
         order.status = transition_child(order.status, ChildOrderStatus.CANCELLED)
         await self._user_event_queue.put(
             SimulatorOrderEvent(
@@ -194,7 +213,9 @@ class DeterministicSimulator(ExchangeAdapter):
     ) -> ChildOrder | None:
         return self._orders.get((symbol, client_order_id))
 
-    async def push_fill(self, client_order_id: str, fill_quantity: Decimal, price: Decimal) -> Fill:
+    async def push_fill(
+        self, client_order_id: str, fill_quantity: Decimal, price: Decimal
+    ) -> Fill:
         if not isinstance(fill_quantity, Decimal) or not isinstance(price, Decimal):
             raise TypeError("simulator fills require Decimal quantity and price")
         if fill_quantity <= Decimal("0"):
@@ -206,9 +227,13 @@ class DeterministicSimulator(ExchangeAdapter):
             ChildOrderStatus.FILLED,
             ChildOrderStatus.REJECTED,
         }:
-            raise SimulatorOrderRejected(f"cannot fill terminal order {client_order_id}")
+            raise SimulatorOrderRejected(
+                f"cannot fill terminal order {client_order_id}"
+            )
         if fill_quantity > order.remaining_quantity:
-            raise SimulatorOrderRejected(f"fill exceeds remaining quantity for {client_order_id}")
+            raise SimulatorOrderRejected(
+                f"fill exceeds remaining quantity for {client_order_id}"
+            )
 
         order.confirmed_filled_quantity += fill_quantity
         target = self._open_status_for(order)
@@ -292,7 +317,9 @@ class DeterministicSimulator(ExchangeAdapter):
     async def health_check_streams(self) -> bool:
         return self._user_stream_healthy
 
-    def script_fill_during_cancel(self, client_order_prefix: str, fill_quantity: Decimal) -> None:
+    def script_fill_during_cancel(
+        self, client_order_prefix: str, fill_quantity: Decimal
+    ) -> None:
         self._reject_broad_client_order_prefix(client_order_prefix)
         if not isinstance(fill_quantity, Decimal):
             raise TypeError("fill quantity must be Decimal")
@@ -366,7 +393,9 @@ class DeterministicSimulator(ExchangeAdapter):
             raise KeyError(f"unknown simulator order: {client_order_id}")
         return matches[0]
 
-    def _pop_matching_prefix(self, prefixes: list[str], client_order_id: str) -> str | None:
+    def _pop_matching_prefix(
+        self, prefixes: list[str], client_order_id: str
+    ) -> str | None:
         for index, prefix in enumerate(prefixes):
             if client_order_id.startswith(prefix):
                 del prefixes[index]
@@ -374,7 +403,9 @@ class DeterministicSimulator(ExchangeAdapter):
         return None
 
     def _consume_fill_during_cancel(self, client_order_id: str) -> Decimal | None:
-        for index, (prefix, fill_quantity) in enumerate(self._fill_during_cancel_scripts):
+        for index, (prefix, fill_quantity) in enumerate(
+            self._fill_during_cancel_scripts
+        ):
             if client_order_id.startswith(prefix):
                 del self._fill_during_cancel_scripts[index]
                 return fill_quantity
@@ -415,9 +446,12 @@ class DeterministicSimulator(ExchangeAdapter):
     def _clock_time_ms(self) -> int:
         return int(self.clock.utc_now().timestamp() * 1000)
 
-    def _reject_broad_client_order_prefix(self, client_order_prefix: str | None) -> None:
-        if client_order_prefix is None or not EXECUTION_CLIENT_ORDER_PREFIX_RE.fullmatch(
-            client_order_prefix
+    def _reject_broad_client_order_prefix(
+        self, client_order_prefix: str | None
+    ) -> None:
+        if (
+            client_order_prefix is None
+            or not EXECUTION_CLIENT_ORDER_PREFIX_RE.fullmatch(client_order_prefix)
         ):
             raise ValueError(
                 "client_order_prefix must be execution-scoped: ce_<12 lowercase hex chars>_"

@@ -46,7 +46,9 @@ async def test_market_data_stream_can_be_consumed_from_adapter_typed_variable() 
     simulator = DeterministicSimulator(clock=ManualClock())
     adapter: ExchangeAdapter = simulator
 
-    await simulator.push_market_data("BTCUSDT", Decimal("100"), Decimal("101"), exchange_event_time=10)
+    await simulator.push_market_data(
+        "BTCUSDT", Decimal("100"), Decimal("101"), exchange_event_time=10
+    )
 
     async for snapshot in adapter.stream_market_data():
         assert snapshot == MarketSnapshot(
@@ -59,7 +61,9 @@ async def test_market_data_stream_can_be_consumed_from_adapter_typed_variable() 
         break
 
 
-def test_market_data_stream_returns_async_iterator_from_adapter_typed_variable() -> None:
+def test_market_data_stream_returns_async_iterator_from_adapter_typed_variable() -> (
+    None
+):
     adapter: ExchangeAdapter = DeterministicSimulator(clock=ManualClock())
 
     market_data = adapter.stream_market_data()
@@ -68,7 +72,9 @@ def test_market_data_stream_returns_async_iterator_from_adapter_typed_variable()
     assert not inspect.isawaitable(market_data)
 
 
-def test_user_events_stream_returns_async_iterator_from_adapter_typed_variable() -> None:
+def test_user_events_stream_returns_async_iterator_from_adapter_typed_variable() -> (
+    None
+):
     adapter: ExchangeAdapter = DeterministicSimulator(clock=ManualClock())
 
     user_events = adapter.stream_user_events()

@@ -64,13 +64,18 @@ async def test_aggressive_deadline_with_stale_market_terminalizes() -> None:
 
     assert terminal.status is ExecutionStatus.EXPIRED
     assert terminal.completed_monotonic is not None
-    assert terminal.final_reason in {"DEADLINE_AGGRESSIVE_ATTEMPTED", "MARKET_DATA_STALE_RECONCILED"}
+    assert terminal.final_reason in {
+        "DEADLINE_AGGRESSIVE_ATTEMPTED",
+        "MARKET_DATA_STALE_RECONCILED",
+    }
     assert terminal.summary is not None
 
 
 async def test_late_actual_trade_price_replaces_snapshot_limit_price_for_vwap() -> None:
     service, _simulator, _clock = await fresh_service()
-    execution = await service.create_execution(execution_request(target_position=Decimal("0.005")))
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0.005"))
+    )
     opened = await service.run_once(execution.execution_id)
     child = opened.child_orders[0]
 
@@ -115,7 +120,9 @@ async def test_late_actual_trade_price_replaces_snapshot_limit_price_for_vwap() 
 
 async def test_out_of_order_fills_compute_vwap_from_each_trade_delta() -> None:
     service, _simulator, _clock = await fresh_service()
-    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0.006"))
+    )
     opened = await service.run_once(execution.execution_id)
     child = opened.child_orders[0]
 
@@ -149,9 +156,13 @@ async def test_out_of_order_fills_compute_vwap_from_each_trade_delta() -> None:
     assert after.summary.metrics["execution_vwap"] == "95006.66666666666666666666667"
 
 
-async def test_split_batch_out_of_order_actual_trade_repairs_vwap_without_exposure_change() -> None:
+async def test_split_batch_out_of_order_actual_trade_repairs_vwap_without_exposure_change() -> (
+    None
+):
     service, _simulator, _clock = await fresh_service()
-    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0.006"))
+    )
     opened = await service.run_once(execution.execution_id)
     child = opened.child_orders[0]
 
@@ -173,10 +184,12 @@ async def test_split_batch_out_of_order_actual_trade_repairs_vwap_without_exposu
     assert after_second.exposure.confirmed_filled_quantity == Decimal("0.006")
     assert after_second.summary is not None
     expected_after_second_vwap = (
-        Decimal("95000") * Decimal("0.004")
-        + Decimal("95010") * Decimal("0.002")
+        Decimal("95000") * Decimal("0.004") + Decimal("95010") * Decimal("0.002")
     ) / Decimal("0.006")
-    assert Decimal(after_second.summary.metrics["execution_vwap"]) == expected_after_second_vwap
+    assert (
+        Decimal(after_second.summary.metrics["execution_vwap"])
+        == expected_after_second_vwap
+    )
 
     first_fill_late = Fill(
         client_order_id=child.client_order_id,
@@ -194,7 +207,9 @@ async def test_split_batch_out_of_order_actual_trade_repairs_vwap_without_exposu
     )
 
     assert after_late_first.exposure.confirmed_filled_quantity == Decimal("0.006")
-    assert after_late_first.child_orders[0].confirmed_filled_quantity == Decimal("0.006")
+    assert after_late_first.child_orders[0].confirmed_filled_quantity == Decimal(
+        "0.006"
+    )
     assert after_late_first.summary is not None
     assert (
         after_late_first.summary.metrics["execution_vwap"]
@@ -220,9 +235,13 @@ async def test_split_batch_out_of_order_actual_trade_repairs_vwap_without_exposu
     assert after_duplicate.metric_counts["duplicate_events_ignored"] == 1
 
 
-async def test_window_local_rest_trade_after_snapshot_fills_uncovered_interval() -> None:
+async def test_window_local_rest_trade_after_snapshot_fills_uncovered_interval() -> (
+    None
+):
     service, _simulator, _clock = await fresh_service()
-    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0.006"))
+    )
     opened = await service.run_once(execution.execution_id)
     child = opened.child_orders[0]
 
@@ -278,8 +297,7 @@ async def test_window_local_rest_trade_after_snapshot_fills_uncovered_interval()
     )
 
     expected_vwap = (
-        Decimal("95000") * Decimal("0.004")
-        + Decimal("95010") * Decimal("0.002")
+        Decimal("95000") * Decimal("0.004") + Decimal("95010") * Decimal("0.002")
     ) / Decimal("0.006")
     assert completed.status is ExecutionStatus.COMPLETED
     assert completed.exposure.confirmed_filled_quantity == Decimal("0.006")
@@ -292,7 +310,9 @@ async def test_window_local_rest_trade_after_snapshot_fills_uncovered_interval()
 
 async def test_same_batch_snapshot_limit_accepts_window_local_rest_trade() -> None:
     service, _simulator, _clock = await fresh_service()
-    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0.006"))
+    )
     opened = await service.run_once(execution.execution_id)
     child = opened.child_orders[0]
 
@@ -341,8 +361,7 @@ async def test_same_batch_snapshot_limit_accepts_window_local_rest_trade() -> No
     )
 
     expected_vwap = (
-        Decimal("95000") * Decimal("0.004")
-        + Decimal("95010") * Decimal("0.002")
+        Decimal("95000") * Decimal("0.004") + Decimal("95010") * Decimal("0.002")
     ) / Decimal("0.006")
     assert completed.status is ExecutionStatus.COMPLETED
     assert completed.exposure.confirmed_filled_quantity == Decimal("0.006")
@@ -354,9 +373,13 @@ async def test_same_batch_snapshot_limit_accepts_window_local_rest_trade() -> No
     assert completed.metric_counts.get("duplicate_events_ignored", 0) == 0
 
 
-async def test_overlapping_stale_unique_trade_does_not_poison_vwap_or_block_repair() -> None:
+async def test_overlapping_stale_unique_trade_does_not_poison_vwap_or_block_repair() -> (
+    None
+):
     service, _simulator, _clock = await fresh_service()
-    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0.006"))
+    )
     opened = await service.run_once(execution.execution_id)
     child = opened.child_orders[0]
 
@@ -378,10 +401,12 @@ async def test_overlapping_stale_unique_trade_does_not_poison_vwap_or_block_repa
     assert after_second.exposure.confirmed_filled_quantity == Decimal("0.006")
     assert after_second.summary is not None
     expected_after_second_vwap = (
-        Decimal("95000") * Decimal("0.004")
-        + Decimal("95010") * Decimal("0.002")
+        Decimal("95000") * Decimal("0.004") + Decimal("95010") * Decimal("0.002")
     ) / Decimal("0.006")
-    assert Decimal(after_second.summary.metrics["execution_vwap"]) == expected_after_second_vwap
+    assert (
+        Decimal(after_second.summary.metrics["execution_vwap"])
+        == expected_after_second_vwap
+    )
 
     stale_overlapping_fill = Fill(
         client_order_id=child.client_order_id,
@@ -400,7 +425,10 @@ async def test_overlapping_stale_unique_trade_does_not_poison_vwap_or_block_repa
 
     assert after_stale.exposure.confirmed_filled_quantity == Decimal("0.006")
     assert after_stale.summary is not None
-    assert Decimal(after_stale.summary.metrics["execution_vwap"]) == expected_after_second_vwap
+    assert (
+        Decimal(after_stale.summary.metrics["execution_vwap"])
+        == expected_after_second_vwap
+    )
     assert after_stale.summary.metrics["maker_filled_quantity"] == Decimal("0")
     assert after_stale.summary.metrics["taker_filled_quantity"] == Decimal("0.002")
 
@@ -420,7 +448,9 @@ async def test_overlapping_stale_unique_trade_does_not_poison_vwap_or_block_repa
     )
 
     assert after_late_first.exposure.confirmed_filled_quantity == Decimal("0.006")
-    assert after_late_first.child_orders[0].confirmed_filled_quantity == Decimal("0.006")
+    assert after_late_first.child_orders[0].confirmed_filled_quantity == Decimal(
+        "0.006"
+    )
     assert after_late_first.summary is not None
     assert (
         after_late_first.summary.metrics["execution_vwap"]
@@ -431,9 +461,13 @@ async def test_overlapping_stale_unique_trade_does_not_poison_vwap_or_block_repa
     assert after_late_first.metric_counts["duplicate_events_ignored"] == 1
 
 
-async def test_overlapping_higher_cumulative_authoritative_fill_does_not_advance_exposure() -> None:
+async def test_overlapping_higher_cumulative_authoritative_fill_does_not_advance_exposure() -> (
+    None
+):
     service, _simulator, _clock = await fresh_service()
-    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0.006"))
+    )
     opened = await service.run_once(execution.execution_id)
     child = opened.child_orders[0]
 
@@ -496,15 +530,21 @@ async def test_overlapping_higher_cumulative_authoritative_fill_does_not_advance
     assert completed.status is ExecutionStatus.COMPLETED
     assert completed.exposure.confirmed_filled_quantity == Decimal("0.006")
     assert completed.summary is not None
-    assert completed.summary.metrics["execution_vwap"] == "95001.66666666666666666666667"
+    assert (
+        completed.summary.metrics["execution_vwap"] == "95001.66666666666666666666667"
+    )
     assert completed.summary.metrics["maker_filled_quantity"] == Decimal("0.004")
     assert completed.summary.metrics["taker_filled_quantity"] == Decimal("0.002")
     assert completed.summary.metrics["duplicate_events_ignored"] == 1
 
 
-async def test_unique_lower_cumulative_trade_does_not_overcount_authoritative_metrics() -> None:
+async def test_unique_lower_cumulative_trade_does_not_overcount_authoritative_metrics() -> (
+    None
+):
     service, _simulator, _clock = await fresh_service()
-    execution = await service.create_execution(execution_request(target_position=Decimal("0.003")))
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0.003"))
+    )
     opened = await service.run_once(execution.execution_id)
     child = opened.child_orders[0]
 
@@ -553,7 +593,9 @@ async def test_unique_lower_cumulative_trade_does_not_overcount_authoritative_me
 
 async def test_snapshot_then_older_actual_trade_repairs_provisional_summary() -> None:
     service, _simulator, _clock = await fresh_service()
-    execution = await service.create_execution(execution_request(target_position=Decimal("0.006")))
+    execution = await service.create_execution(
+        execution_request(target_position=Decimal("0.006"))
+    )
     opened = await service.run_once(execution.execution_id)
     child = opened.child_orders[0]
 
@@ -597,8 +639,7 @@ async def test_snapshot_then_older_actual_trade_repairs_provisional_summary() ->
     assert after_actual.child_orders[0].confirmed_filled_quantity == Decimal("0.006")
     assert after_actual.summary is not None
     expected_vwap = (
-        Decimal("94990") * Decimal("0.004")
-        + Decimal("95000") * Decimal("0.002")
+        Decimal("94990") * Decimal("0.004") + Decimal("95000") * Decimal("0.002")
     ) / Decimal("0.006")
     assert Decimal(after_actual.summary.metrics["execution_vwap"]) == expected_vwap
     assert after_actual.summary.metrics["maker_filled_quantity"] == Decimal("0.004")
@@ -628,7 +669,9 @@ async def test_temporary_sell_min_notional_waits_until_price_becomes_valid() -> 
     assert waiting.arrival_bid == Decimal("4000")
     assert waiting.arrival_ask == Decimal("4001")
 
-    await simulator.push_market_data(SYMBOL, Decimal("5000"), Decimal("5001"), exchange_event_time=20)
+    await simulator.push_market_data(
+        SYMBOL, Decimal("5000"), Decimal("5001"), exchange_event_time=20
+    )
     active = await service.run_once(execution.execution_id)
 
     assert active.status is ExecutionStatus.RUNNING
@@ -661,7 +704,9 @@ async def test_temporary_buy_min_notional_waits_until_price_becomes_valid() -> N
     assert waiting.arrival_bid == Decimal("4000")
     assert waiting.arrival_ask == Decimal("4001")
 
-    await simulator.push_market_data(SYMBOL, Decimal("5000"), Decimal("5001"), exchange_event_time=20)
+    await simulator.push_market_data(
+        SYMBOL, Decimal("5000"), Decimal("5001"), exchange_event_time=20
+    )
     active = await service.run_once(execution.execution_id)
 
     assert active.status is ExecutionStatus.RUNNING
@@ -691,7 +736,9 @@ async def test_temporary_sell_min_notional_terminalizes_at_deadline() -> None:
 
     waiting = await service.run_once(execution.execution_id)
     clock.advance(2)
-    await simulator.push_market_data(SYMBOL, Decimal("4000"), Decimal("4001"), exchange_event_time=20)
+    await simulator.push_market_data(
+        SYMBOL, Decimal("4000"), Decimal("4001"), exchange_event_time=20
+    )
     terminal = await service.run_once(execution.execution_id)
 
     assert waiting.status is ExecutionStatus.RUNNING

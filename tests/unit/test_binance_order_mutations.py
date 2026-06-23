@@ -14,7 +14,12 @@ import httpx
 import pytest
 
 from config import Settings
-from exchanges.base import ExchangeRateLimited, OrderCreateTimeout, OrderRejected, VenueBanHardStop
+from exchanges.base import (
+    ExchangeRateLimited,
+    OrderCreateTimeout,
+    OrderRejected,
+    VenueBanHardStop,
+)
 from exchanges.binance_usdm import (
     LISTEN_KEY_PATH,
     ORDER_QUERY_PATH,
@@ -54,7 +59,9 @@ from execution.models import (
 )
 
 
-def runner_execution_record(execution_id: str, *, final_reason: str | None) -> ExecutionRecord:
+def runner_execution_record(
+    execution_id: str, *, final_reason: str | None
+) -> ExecutionRecord:
     return ExecutionRecord(
         execution_id=execution_id,
         request=SimpleNamespace(environment=Environment.TESTNET, symbol="BTCUSDT"),
@@ -68,7 +75,9 @@ def runner_execution_record(execution_id: str, *, final_reason: str | None) -> E
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload: Any, *, json_error: Exception | None = None) -> None:
+    def __init__(
+        self, status_code: int, payload: Any, *, json_error: Exception | None = None
+    ) -> None:
         self.status_code = status_code
         self._payload = payload
         self._json_error = json_error
@@ -220,9 +229,13 @@ def test_new_order_payload_serializes_decimals_and_uses_time_in_force() -> None:
     assert decimal_to_api(Decimal("1.2300")) == "1.2300"
 
 
-def test_new_order_payload_rejects_post_only_without_gtx_and_invalid_client_id() -> None:
+def test_new_order_payload_rejects_post_only_without_gtx_and_invalid_client_id() -> (
+    None
+):
     with pytest.raises(ExchangeTerminalReject, match="POST_ONLY_GTX_UNSUPPORTED"):
-        build_new_order_params(order_request(post_only=True), rules(tif=frozenset({"GTC"})))
+        build_new_order_params(
+            order_request(post_only=True), rules(tif=frozenset({"GTC"}))
+        )
 
     with pytest.raises(ExchangeTerminalReject, match="INVALID_CLIENT_ORDER_ID"):
         build_new_order_params(order_request(client_order_id="INVALID SPACE"), rules())
@@ -234,7 +247,9 @@ def test_new_order_payload_rejects_post_only_without_gtx_and_invalid_client_id()
 def test_new_order_payload_uses_explicit_ioc_and_rejects_unsupported_ioc() -> None:
     request = order_request(post_only=False, time_in_force=TimeInForce.IOC)
 
-    params = build_new_order_params(request, rules(tif=frozenset({"GTC", "GTX", "IOC"})))
+    params = build_new_order_params(
+        request, rules(tif=frozenset({"GTC", "GTX", "IOC"}))
+    )
 
     assert params["timeInForce"] == "IOC"
     with pytest.raises(ExchangeTerminalReject, match="IOC_TIME_IN_FORCE_UNSUPPORTED"):
@@ -257,9 +272,13 @@ async def test_signed_request_timeout_maps_by_mutation_kind() -> None:
     read_adapter = authed_adapter(RecordingClient(timeout=True))
 
     with pytest.raises(UnknownCreateOutcome):
-        await create_adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+        await create_adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
     with pytest.raises(PendingCancelOutcome):
-        await cancel_adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
+        await cancel_adapter._signed_request(
+            "DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL
+        )
     with pytest.raises(RetryableReadFailure):
         await read_adapter._signed_request("GET", ORDER_QUERY_PATH, {})
 
@@ -275,23 +294,31 @@ async def test_signed_request_timeout_maps_by_mutation_kind() -> None:
         httpx.TimeoutException("timed out"),
     ],
 )
-async def test_signed_request_transport_errors_map_by_operation(transport_error: Exception) -> None:
+async def test_signed_request_transport_errors_map_by_operation(
+    transport_error: Exception,
+) -> None:
     with pytest.raises(UnknownCreateOutcome):
-        await authed_adapter(RecordingClient(exception=transport_error))._signed_request(
+        await authed_adapter(
+            RecordingClient(exception=transport_error)
+        )._signed_request(
             "POST",
             ORDER_REST_PATH,
             {},
             mutation_kind=MutationKind.CREATE,
         )
     with pytest.raises(PendingCancelOutcome):
-        await authed_adapter(RecordingClient(exception=transport_error))._signed_request(
+        await authed_adapter(
+            RecordingClient(exception=transport_error)
+        )._signed_request(
             "DELETE",
             ORDER_REST_PATH,
             {},
             mutation_kind=MutationKind.CANCEL,
         )
     with pytest.raises(RetryableReadFailure):
-        await authed_adapter(RecordingClient(exception=transport_error))._signed_request(
+        await authed_adapter(
+            RecordingClient(exception=transport_error)
+        )._signed_request(
             "GET",
             ORDER_QUERY_PATH,
             {},
@@ -328,19 +355,31 @@ async def test_signed_request_status_only_hard_stops_ignore_malformed_json(
 
 
 async def test_signed_request_http_408_maps_mutations_to_ambiguous_outcome() -> None:
-    create_adapter = authed_adapter(RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"})))
-    cancel_adapter = authed_adapter(RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"})))
-    read_adapter = authed_adapter(RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"})))
+    create_adapter = authed_adapter(
+        RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"}))
+    )
+    cancel_adapter = authed_adapter(
+        RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"}))
+    )
+    read_adapter = authed_adapter(
+        RecordingClient(FakeResponse(408, {"code": -1007, "msg": "Timeout"}))
+    )
 
     with pytest.raises(UnknownCreateOutcome):
-        await create_adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+        await create_adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
     with pytest.raises(PendingCancelOutcome):
-        await cancel_adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
+        await cancel_adapter._signed_request(
+            "DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL
+        )
     with pytest.raises(RetryableReadFailure):
         await read_adapter._signed_request("GET", ORDER_QUERY_PATH, {})
 
 
-async def test_signed_request_invalid_json_after_http_success_maps_conservatively() -> None:
+async def test_signed_request_invalid_json_after_http_success_maps_conservatively() -> (
+    None
+):
     bad_json = FakeResponse(200, "not-json", json_error=ValueError("invalid json"))
 
     with pytest.raises(UnknownCreateOutcome):
@@ -367,7 +406,9 @@ async def test_signed_request_invalid_json_after_http_success_maps_conservativel
 
 async def test_get_symbol_rules_success_preserves_parsing_and_rate_limits() -> None:
     client = RecordingClient(FakeResponse(200, exchange_info_payload()))
-    adapter = BinanceUsdmAdapter(settings=Settings(environment=Environment.TESTNET), client=client)
+    adapter = BinanceUsdmAdapter(
+        settings=Settings(environment=Environment.TESTNET), client=client
+    )
 
     symbol_rules = await adapter.get_symbol_rules("BTCUSDT")
 
@@ -421,7 +462,9 @@ async def test_get_symbol_rules_public_5xx_maps_to_retryable_read_failure() -> N
         await adapter.get_symbol_rules("BTCUSDT")
 
 
-async def test_get_symbol_rules_malformed_success_json_maps_to_retryable_read_failure() -> None:
+async def test_get_symbol_rules_malformed_success_json_maps_to_retryable_read_failure() -> (
+    None
+):
     response = FakeResponse(200, "", json_error=ValueError("invalid json"))
     adapter = BinanceUsdmAdapter(
         settings=Settings(environment=Environment.TESTNET),
@@ -432,8 +475,9 @@ async def test_get_symbol_rules_malformed_success_json_maps_to_retryable_read_fa
         await adapter.get_symbol_rules("BTCUSDT")
 
 
-async def test_signed_request_malformed_error_json_maps_conservatively_by_operation(
-) -> None:
+async def test_signed_request_malformed_error_json_maps_conservatively_by_operation() -> (
+    None
+):
     def malformed_response() -> FakeResponse:
         return FakeResponse(400, "not-json", json_error=ValueError("invalid json"))
 
@@ -459,11 +503,15 @@ async def test_signed_request_malformed_error_json_maps_conservatively_by_operat
         )
 
 
-async def test_signed_request_malformed_503_json_is_retryable_not_unknown_or_pending() -> None:
+async def test_signed_request_malformed_503_json_is_retryable_not_unknown_or_pending() -> (
+    None
+):
     def malformed_response() -> FakeResponse:
         return FakeResponse(503, "not-json", json_error=ValueError("invalid json"))
 
-    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as create_exc:
+    with pytest.raises(
+        RetryableReadFailure, match="RETRYABLE_READ_FAILURE"
+    ) as create_exc:
         await authed_adapter(RecordingClient(malformed_response()))._signed_request(
             "POST",
             ORDER_REST_PATH,
@@ -472,7 +520,9 @@ async def test_signed_request_malformed_503_json_is_retryable_not_unknown_or_pen
         )
     assert not isinstance(create_exc.value, UnknownCreateOutcome)
 
-    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as cancel_exc:
+    with pytest.raises(
+        RetryableReadFailure, match="RETRYABLE_READ_FAILURE"
+    ) as cancel_exc:
         await authed_adapter(RecordingClient(malformed_response()))._signed_request(
             "DELETE",
             ORDER_REST_PATH,
@@ -489,11 +539,15 @@ async def test_signed_request_malformed_503_json_is_retryable_not_unknown_or_pen
         )
 
 
-async def test_signed_request_503_json_string_is_retryable_not_unknown_or_pending() -> None:
+async def test_signed_request_503_json_string_is_retryable_not_unknown_or_pending() -> (
+    None
+):
     def string_response() -> FakeResponse:
         return FakeResponse(503, "Service unavailable")
 
-    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as create_exc:
+    with pytest.raises(
+        RetryableReadFailure, match="RETRYABLE_READ_FAILURE"
+    ) as create_exc:
         await authed_adapter(RecordingClient(string_response()))._signed_request(
             "POST",
             ORDER_REST_PATH,
@@ -502,7 +556,9 @@ async def test_signed_request_503_json_string_is_retryable_not_unknown_or_pendin
         )
     assert not isinstance(create_exc.value, UnknownCreateOutcome)
 
-    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as cancel_exc:
+    with pytest.raises(
+        RetryableReadFailure, match="RETRYABLE_READ_FAILURE"
+    ) as cancel_exc:
         await authed_adapter(RecordingClient(string_response()))._signed_request(
             "DELETE",
             ORDER_REST_PATH,
@@ -512,7 +568,9 @@ async def test_signed_request_503_json_string_is_retryable_not_unknown_or_pendin
     assert not isinstance(cancel_exc.value, PendingCancelOutcome)
 
 
-async def test_signed_create_503_with_specific_terminal_reject_is_not_ambiguous() -> None:
+async def test_signed_create_503_with_specific_terminal_reject_is_not_ambiguous() -> (
+    None
+):
     adapter = authed_adapter(
         RecordingClient(
             FakeResponse(
@@ -523,10 +581,14 @@ async def test_signed_create_503_with_specific_terminal_reject_is_not_ambiguous(
     )
 
     with pytest.raises(ExchangeTerminalReject, match="Margin is insufficient"):
-        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+        await adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
 
 
-async def test_signed_create_503_system_overload_is_retryable_not_unknown_or_terminal() -> None:
+async def test_signed_create_503_system_overload_is_retryable_not_unknown_or_terminal() -> (
+    None
+):
     adapter = authed_adapter(
         RecordingClient(
             FakeResponse(
@@ -536,13 +598,19 @@ async def test_signed_create_503_system_overload_is_retryable_not_unknown_or_ter
         )
     )
 
-    with pytest.raises(ExchangeSystemOverload, match="SYSTEM_OVERLOAD_RETRYABLE") as exc_info:
-        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+    with pytest.raises(
+        ExchangeSystemOverload, match="SYSTEM_OVERLOAD_RETRYABLE"
+    ) as exc_info:
+        await adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
     assert not isinstance(exc_info.value, ExchangeTerminalReject)
     assert not isinstance(exc_info.value, UnknownCreateOutcome)
 
 
-async def test_signed_cancel_503_system_overload_is_retryable_not_pending_or_terminal() -> None:
+async def test_signed_cancel_503_system_overload_is_retryable_not_pending_or_terminal() -> (
+    None
+):
     adapter = authed_adapter(
         RecordingClient(
             FakeResponse(
@@ -552,8 +620,12 @@ async def test_signed_cancel_503_system_overload_is_retryable_not_pending_or_ter
         )
     )
 
-    with pytest.raises(ExchangeSystemOverload, match="SYSTEM_OVERLOAD_RETRYABLE") as exc_info:
-        await adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
+    with pytest.raises(
+        ExchangeSystemOverload, match="SYSTEM_OVERLOAD_RETRYABLE"
+    ) as exc_info:
+        await adapter._signed_request(
+            "DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL
+        )
     assert not isinstance(exc_info.value, ExchangeTerminalReject)
     assert not isinstance(exc_info.value, PendingCancelOutcome)
 
@@ -571,27 +643,45 @@ async def test_signed_create_503_retryable_failure_messages_are_not_unknown(
     adapter = authed_adapter(RecordingClient(FakeResponse(503, payload)))
 
     with pytest.raises(RetryableReadFailure, match="RETRYABLE_503_FAILURE") as exc_info:
-        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+        await adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
     assert not isinstance(exc_info.value, UnknownCreateOutcome)
 
 
-async def test_signed_create_503_unrecognized_message_is_retryable_not_unknown() -> None:
+async def test_signed_create_503_unrecognized_message_is_retryable_not_unknown() -> (
+    None
+):
     adapter = authed_adapter(
-        RecordingClient(FakeResponse(503, {"msg": "Temporarily unavailable for maintenance."}))
+        RecordingClient(
+            FakeResponse(503, {"msg": "Temporarily unavailable for maintenance."})
+        )
     )
 
-    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as exc_info:
-        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+    with pytest.raises(
+        RetryableReadFailure, match="RETRYABLE_READ_FAILURE"
+    ) as exc_info:
+        await adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
     assert not isinstance(exc_info.value, UnknownCreateOutcome)
 
 
-async def test_signed_cancel_503_unrecognized_message_is_retryable_not_pending() -> None:
+async def test_signed_cancel_503_unrecognized_message_is_retryable_not_pending() -> (
+    None
+):
     adapter = authed_adapter(
-        RecordingClient(FakeResponse(503, {"msg": "Temporarily unavailable for maintenance."}))
+        RecordingClient(
+            FakeResponse(503, {"msg": "Temporarily unavailable for maintenance."})
+        )
     )
 
-    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE") as exc_info:
-        await adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
+    with pytest.raises(
+        RetryableReadFailure, match="RETRYABLE_READ_FAILURE"
+    ) as exc_info:
+        await adapter._signed_request(
+            "DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL
+        )
     assert not isinstance(exc_info.value, PendingCancelOutcome)
 
 
@@ -606,7 +696,9 @@ async def test_signed_create_503_unknown_error_message_remains_unknown_create() 
     )
 
     with pytest.raises(UnknownCreateOutcome, match="UNKNOWN_CREATE_OUTCOME"):
-        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+        await adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
 
 
 async def test_signed_cancel_503_unknown_error_message_remains_pending_cancel() -> None:
@@ -620,10 +712,14 @@ async def test_signed_cancel_503_unknown_error_message_remains_pending_cancel() 
     )
 
     with pytest.raises(PendingCancelOutcome, match="PENDING_CANCEL_OUTCOME"):
-        await adapter._signed_request("DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL)
+        await adapter._signed_request(
+            "DELETE", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CANCEL
+        )
 
 
-async def test_signed_read_503_unknown_error_message_is_retryable_read_failure() -> None:
+async def test_signed_read_503_unknown_error_message_is_retryable_read_failure() -> (
+    None
+):
     adapter = authed_adapter(
         RecordingClient(
             FakeResponse(
@@ -692,11 +788,15 @@ async def test_signed_create_post_only_reject_remains_retryable_order_reject() -
     )
 
     with pytest.raises(OrderRejected, match="Post Only") as exc_info:
-        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+        await adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
     assert type(exc_info.value) is OrderRejected
 
 
-async def test_signed_create_non_post_only_4xx_with_maker_text_remains_terminal() -> None:
+async def test_signed_create_non_post_only_4xx_with_maker_text_remains_terminal() -> (
+    None
+):
     adapter = authed_adapter(
         RecordingClient(
             FakeResponse(
@@ -710,7 +810,9 @@ async def test_signed_create_non_post_only_4xx_with_maker_text_remains_terminal(
     )
 
     with pytest.raises(ExchangeTerminalReject, match="Maker account"):
-        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+        await adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
 
 
 async def test_signed_create_insufficient_margin_is_terminal_reject() -> None:
@@ -724,14 +826,20 @@ async def test_signed_create_insufficient_margin_is_terminal_reject() -> None:
     )
 
     with pytest.raises(ExchangeTerminalReject, match="Margin is insufficient"):
-        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+        await adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
 
 
-async def test_signed_request_uses_api_key_header_and_signed_params_without_secret() -> None:
+async def test_signed_request_uses_api_key_header_and_signed_params_without_secret() -> (
+    None
+):
     client = RecordingClient(FakeResponse(200, {"ok": True}))
     adapter = authed_adapter(client)
 
-    result = await adapter._signed_request("GET", "/fapi/v1/account", {"symbol": "BTCUSDT"})
+    result = await adapter._signed_request(
+        "GET", "/fapi/v1/account", {"symbol": "BTCUSDT"}
+    )
 
     call = client.calls[0]
     assert result == {"ok": True}
@@ -744,7 +852,9 @@ async def test_signed_request_uses_api_key_header_and_signed_params_without_secr
     assert "fake-secret" not in str(call)
 
 
-async def test_signed_mutation_hard_stops_requested_mainnet_without_explicit_guard() -> None:
+async def test_signed_mutation_hard_stops_requested_mainnet_without_explicit_guard() -> (
+    None
+):
     client = RecordingClient(FakeResponse(200, {"unexpected": True}))
     adapter = BinanceUsdmAdapter(
         settings=Settings(
@@ -757,7 +867,9 @@ async def test_signed_mutation_hard_stops_requested_mainnet_without_explicit_gua
     )
 
     with pytest.raises(ExchangeTerminalReject, match="MAINNET_TRADING_NOT_ALLOWED"):
-        await adapter._signed_request("POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE)
+        await adapter._signed_request(
+            "POST", ORDER_REST_PATH, {}, mutation_kind=MutationKind.CREATE
+        )
 
     assert client.calls == []
 
@@ -792,7 +904,10 @@ async def test_submit_cancel_and_query_use_order_endpoint_and_orig_client_id() -
     assert submitted.status is ChildOrderStatus.OPEN
     assert cancelled.exchange_order_id == "123"
     assert queried.client_order_id == "ce_abcdef123456_1"
-    assert [(call["method"], call["url"].split(adapter.base_url, 1)[1]) for call in client.calls] == [
+    assert [
+        (call["method"], call["url"].split(adapter.base_url, 1)[1])
+        for call in client.calls
+    ] == [
         ("POST", "/fapi/v1/order"),
         ("DELETE", "/fapi/v1/order"),
         ("GET", "/fapi/v1/order"),
@@ -801,8 +916,12 @@ async def test_submit_cancel_and_query_use_order_endpoint_and_orig_client_id() -
     assert client.calls[2]["params"]["origClientOrderId"] == "ce_abcdef123456_1"
 
 
-async def test_query_order_not_found_returns_none_for_create_timeout_reconciliation() -> None:
-    client = RecordingClient(FakeResponse(400, {"code": -2013, "msg": "Order does not exist."}))
+async def test_query_order_not_found_returns_none_for_create_timeout_reconciliation() -> (
+    None
+):
+    client = RecordingClient(
+        FakeResponse(400, {"code": -2013, "msg": "Order does not exist."})
+    )
     adapter = authed_adapter(client)
 
     order = await adapter.get_order_by_client_order_id("BTCUSDT", "ce_abcdef123456_1")
@@ -813,7 +932,9 @@ async def test_query_order_not_found_returns_none_for_create_timeout_reconciliat
     assert client.calls[0]["params"]["origClientOrderId"] == "ce_abcdef123456_1"
 
 
-async def test_reconciliation_requires_prefix_filters_manual_orders_and_joins_trades_by_order_id() -> None:
+async def test_reconciliation_requires_prefix_filters_manual_orders_and_joins_trades_by_order_id() -> (
+    None
+):
     payloads = {
         ("GET", "/fapi/v1/openOrders"): [
             {
@@ -860,16 +981,39 @@ async def test_reconciliation_requires_prefix_filters_manual_orders_and_joins_tr
             },
         ],
         ("GET", "/fapi/v1/userTrades"): [
-            {"symbol": "BTCUSDT", "orderId": 222, "id": 1, "qty": "0.002", "price": "95000", "time": 10},
-            {"symbol": "BTCUSDT", "orderId": 222, "id": 2, "qty": "0.004", "price": "95001", "time": 11},
-            {"symbol": "BTCUSDT", "orderId": 999, "id": 3, "qty": "1", "price": "1", "time": 12},
+            {
+                "symbol": "BTCUSDT",
+                "orderId": 222,
+                "id": 1,
+                "qty": "0.002",
+                "price": "95000",
+                "time": 10,
+            },
+            {
+                "symbol": "BTCUSDT",
+                "orderId": 222,
+                "id": 2,
+                "qty": "0.004",
+                "price": "95001",
+                "time": 11,
+            },
+            {
+                "symbol": "BTCUSDT",
+                "orderId": 999,
+                "id": 3,
+                "qty": "1",
+                "price": "1",
+                "time": 12,
+            },
         ],
     }
 
     class ReconciliationClient(RecordingClient):
         async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
             self.calls.append({"method": method, "url": url, **kwargs})
-            return FakeResponse(200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])])
+            return FakeResponse(
+                200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])]
+            )
 
     adapter = authed_adapter(ReconciliationClient())
 
@@ -895,7 +1039,9 @@ async def test_reconciliation_requires_prefix_filters_manual_orders_and_joins_tr
     ]
 
 
-async def test_reconcile_uses_cached_order_identity_when_bounded_all_orders_omits_trade_order() -> None:
+async def test_reconcile_uses_cached_order_identity_when_bounded_all_orders_omits_trade_order() -> (
+    None
+):
     payloads = {
         ("GET", "/fapi/v1/openOrders"): [],
         ("GET", "/fapi/v1/allOrders"): [],
@@ -914,7 +1060,9 @@ async def test_reconcile_uses_cached_order_identity_when_bounded_all_orders_omit
     class ReconciliationClient(RecordingClient):
         async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
             self.calls.append({"method": method, "url": url, **kwargs})
-            return FakeResponse(200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])])
+            return FakeResponse(
+                200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])]
+            )
 
     adapter = authed_adapter(ReconciliationClient())
     adapter._remember_order_identity(
@@ -939,7 +1087,9 @@ async def test_reconcile_uses_cached_order_identity_when_bounded_all_orders_omit
     assert [fill.client_order_id for fill in result.fills] == ["ce_abcdef123456_1"]
 
 
-async def test_reconcile_ignores_cached_order_identity_for_other_execution_prefix() -> None:
+async def test_reconcile_ignores_cached_order_identity_for_other_execution_prefix() -> (
+    None
+):
     payloads = {
         ("GET", "/fapi/v1/openOrders"): [],
         ("GET", "/fapi/v1/allOrders"): [],
@@ -958,7 +1108,9 @@ async def test_reconcile_ignores_cached_order_identity_for_other_execution_prefi
     class ReconciliationClient(RecordingClient):
         async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
             self.calls.append({"method": method, "url": url, **kwargs})
-            return FakeResponse(200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])])
+            return FakeResponse(
+                200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])]
+            )
 
     adapter = authed_adapter(ReconciliationClient())
     adapter._remember_order_identity(
@@ -1002,7 +1154,9 @@ async def test_reconcile_ignores_cached_order_identity_for_other_symbol() -> Non
     class ReconciliationClient(RecordingClient):
         async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
             self.calls.append({"method": method, "url": url, **kwargs})
-            return FakeResponse(200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])])
+            return FakeResponse(
+                200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])]
+            )
 
     adapter = authed_adapter(ReconciliationClient())
     adapter._remember_order_identity(
@@ -1027,7 +1181,9 @@ async def test_reconcile_ignores_cached_order_identity_for_other_symbol() -> Non
     assert result.fills == []
 
 
-async def test_reconcile_treats_empty_trade_client_order_id_as_missing_for_cached_identity() -> None:
+async def test_reconcile_treats_empty_trade_client_order_id_as_missing_for_cached_identity() -> (
+    None
+):
     payloads = {
         ("GET", "/fapi/v1/openOrders"): [],
         ("GET", "/fapi/v1/allOrders"): [],
@@ -1047,7 +1203,9 @@ async def test_reconcile_treats_empty_trade_client_order_id_as_missing_for_cache
     class ReconciliationClient(RecordingClient):
         async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
             self.calls.append({"method": method, "url": url, **kwargs})
-            return FakeResponse(200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])])
+            return FakeResponse(
+                200, payloads[(method, url.split(BinanceUsdmAdapter().base_url, 1)[1])]
+            )
 
     adapter = authed_adapter(ReconciliationClient())
     adapter._remember_order_identity(
@@ -1072,7 +1230,9 @@ async def test_reconcile_treats_empty_trade_client_order_id_as_missing_for_cache
     assert [fill.client_order_id for fill in result.fills] == ["ce_abcdef123456_1"]
 
 
-async def test_reconcile_uses_identity_cached_by_order_query_when_bounded_all_orders_omits_trade_order() -> None:
+async def test_reconcile_uses_identity_cached_by_order_query_when_bounded_all_orders_omits_trade_order() -> (
+    None
+):
     payloads = {
         ("GET", "/fapi/v1/openOrders"): [],
         ("GET", "/fapi/v1/allOrders"): [],
@@ -1122,7 +1282,9 @@ async def test_reconcile_uses_identity_cached_by_order_query_when_bounded_all_or
     assert [fill.client_order_id for fill in result.fills] == ["ce_abcdef123456_1"]
 
 
-async def test_reconciliation_passes_time_window_and_limit_to_historical_endpoints() -> None:
+async def test_reconciliation_passes_time_window_and_limit_to_historical_endpoints() -> (
+    None
+):
     class EmptyReconciliationClient(RecordingClient):
         async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
             self.calls.append({"method": method, "url": url, **kwargs})
@@ -1153,17 +1315,30 @@ async def test_reconciliation_passes_time_window_and_limit_to_historical_endpoin
     assert params_by_path["/fapi/v1/userTrades"]["endTime"] == "2000"
 
 
-async def test_position_lookup_rejects_hedge_mode_and_returns_zero_for_missing_symbol() -> None:
+async def test_position_lookup_rejects_hedge_mode_and_returns_zero_for_missing_symbol() -> (
+    None
+):
     hedge = RecordingClient(
         FakeResponse(
             200,
-            [{"symbol": "BTCUSDT", "positionSide": "LONG", "positionAmt": "0.1", "updateTime": 1}],
+            [
+                {
+                    "symbol": "BTCUSDT",
+                    "positionSide": "LONG",
+                    "positionAmt": "0.1",
+                    "updateTime": 1,
+                }
+            ],
         )
     )
     with pytest.raises(ExchangeTerminalReject, match="HEDGE_MODE_UNSUPPORTED"):
         await authed_adapter(hedge).get_position("BTCUSDT")
 
-    missing = RecordingClient(FakeResponse(200, [{"symbol": "ETHUSDT", "positionSide": "BOTH", "positionAmt": "1"}]))
+    missing = RecordingClient(
+        FakeResponse(
+            200, [{"symbol": "ETHUSDT", "positionSide": "BOTH", "positionAmt": "1"}]
+        )
+    )
     position = await authed_adapter(missing).get_position("BTCUSDT")
 
     assert position.symbol == "BTCUSDT"
@@ -1172,12 +1347,19 @@ async def test_position_lookup_rejects_hedge_mode_and_returns_zero_for_missing_s
 
 def test_stream_parsers_preserve_exchange_timestamps() -> None:
     clock = ManualClock(current=123.456)
-    adapter = BinanceUsdmAdapter(settings=Settings(environment=Environment.TESTNET), clock=clock)
+    adapter = BinanceUsdmAdapter(
+        settings=Settings(environment=Environment.TESTNET), clock=clock
+    )
 
     snapshot = adapter.parse_book_ticker(
-        {"stream": "btcusdt@bookTicker", "data": {"s": "BTCUSDT", "b": "100.10", "a": "100.20", "E": 99}}
+        {
+            "stream": "btcusdt@bookTicker",
+            "data": {"s": "BTCUSDT", "b": "100.10", "a": "100.20", "E": 99},
+        }
     )
-    event = adapter.parse_user_event({"e": "ORDER_TRADE_UPDATE", "E": 100, "T": 101, "o": {"x": "TRADE"}})
+    event = adapter.parse_user_event(
+        {"e": "ORDER_TRADE_UPDATE", "E": 100, "T": 101, "o": {"x": "TRADE"}}
+    )
 
     assert snapshot.symbol == "BTCUSDT"
     assert snapshot.bid == Decimal("100.10")
@@ -1248,7 +1430,12 @@ def test_order_trade_update_event_maps_to_reconciliation_result() -> None:
 
 
 def test_non_order_trade_update_event_does_not_create_reconciliation_result() -> None:
-    assert reconciliation_from_user_event({"event_type": "ACCOUNT_UPDATE", "raw": {"e": "ACCOUNT_UPDATE"}}) is None
+    assert (
+        reconciliation_from_user_event(
+            {"event_type": "ACCOUNT_UPDATE", "raw": {"e": "ACCOUNT_UPDATE"}}
+        )
+        is None
+    )
 
 
 async def test_market_stream_marks_health_around_iterator_lifecycle(
@@ -1264,9 +1451,13 @@ async def test_market_stream_marks_health_around_iterator_lifecycle(
             )
         ]
     )
-    adapter = BinanceUsdmAdapter(settings=Settings(environment=Environment.TESTNET), clock=ManualClock())
+    adapter = BinanceUsdmAdapter(
+        settings=Settings(environment=Environment.TESTNET), clock=ManualClock()
+    )
 
-    monkeypatch.setattr("exchanges.binance_usdm.websockets.connect", lambda _url: websocket)
+    monkeypatch.setattr(
+        "exchanges.binance_usdm.websockets.connect", lambda _url: websocket
+    )
 
     stream = adapter.stream_market_data()
     snapshot = await anext(stream)
@@ -1299,7 +1490,9 @@ async def test_user_stream_creates_listen_key_tracks_health_and_degrades_on_disc
     )
     adapter = authed_adapter(client)
 
-    monkeypatch.setattr("exchanges.binance_usdm.websockets.connect", lambda _url: websocket)
+    monkeypatch.setattr(
+        "exchanges.binance_usdm.websockets.connect", lambda _url: websocket
+    )
 
     stream = adapter.stream_user_events()
     event = await anext(stream)
@@ -1321,10 +1514,22 @@ async def test_user_stream_creates_listen_key_tracks_health_and_degrades_on_disc
 @pytest.mark.parametrize(
     ("status_code", "payload", "match"),
     [
-        (429, {"code": -1003, "msg": "Too many requests."}, "LISTEN_KEY_RATE_LIMIT_BACKOFF"),
+        (
+            429,
+            {"code": -1003, "msg": "Too many requests."},
+            "LISTEN_KEY_RATE_LIMIT_BACKOFF",
+        ),
         (418, {"code": -1003, "msg": "IP banned."}, "LISTEN_KEY_VENUE_BAN_HARD_STOP"),
-        (408, {"code": -1007, "msg": "Timeout waiting for response."}, "LISTEN_KEY_RETRYABLE_FAILURE"),
-        (503, {"code": -1008, "msg": "Request throttled by system-level protection."}, "LISTEN_KEY_RETRYABLE_FAILURE"),
+        (
+            408,
+            {"code": -1007, "msg": "Timeout waiting for response."},
+            "LISTEN_KEY_RETRYABLE_FAILURE",
+        ),
+        (
+            503,
+            {"code": -1008, "msg": "Request throttled by system-level protection."},
+            "LISTEN_KEY_RETRYABLE_FAILURE",
+        ),
     ],
 )
 async def test_listen_key_request_classifies_status_failures(
@@ -1358,9 +1563,15 @@ async def test_listen_key_request_transport_errors_are_retryable(
 @pytest.mark.parametrize(
     ("response", "match"),
     [
-        (FakeResponse(200, "not-json", json_error=ValueError("invalid json")), "LISTEN_KEY_INVALID_JSON"),
+        (
+            FakeResponse(200, "not-json", json_error=ValueError("invalid json")),
+            "LISTEN_KEY_INVALID_JSON",
+        ),
         (FakeResponse(200, ["listen-1"]), "LISTEN_KEY_MALFORMED_RESPONSE"),
-        (FakeResponse(400, "not-json", json_error=ValueError("invalid json")), "LISTEN_KEY_ERROR_INVALID_JSON"),
+        (
+            FakeResponse(400, "not-json", json_error=ValueError("invalid json")),
+            "LISTEN_KEY_ERROR_INVALID_JSON",
+        ),
     ],
 )
 async def test_listen_key_request_malformed_payloads_fail_conservatively(
@@ -1374,7 +1585,9 @@ async def test_listen_key_request_malformed_payloads_fail_conservatively(
 
 
 async def test_renew_listen_key_expired_payload_invalidates_latest_key() -> None:
-    client = RecordingClient(FakeResponse(400, {"code": -1125, "msg": "This listenKey does not exist."}))
+    client = RecordingClient(
+        FakeResponse(400, {"code": -1125, "msg": "This listenKey does not exist."})
+    )
     adapter = authed_adapter(client)
     adapter.latest_listen_key = "listen-1"
 
@@ -1399,7 +1612,9 @@ def test_market_stream_url_uses_requested_symbol_and_public_route() -> None:
 def test_testnet_runner_normalizes_symbol_for_rest_and_stream_usage() -> None:
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -1413,7 +1628,9 @@ def test_testnet_runner_default_runtime_guard_covers_requested_duration(
 ) -> None:
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -1433,7 +1650,9 @@ def test_testnet_runner_rejects_runtime_guard_shorter_than_requested_duration(
 ) -> None:
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -1442,13 +1661,22 @@ def test_testnet_runner_rejects_runtime_guard_shorter_than_requested_duration(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["run_testnet_twap.py", "--duration-seconds", "60", "--max-runtime-seconds", "30"],
+        [
+            "run_testnet_twap.py",
+            "--duration-seconds",
+            "60",
+            "--max-runtime-seconds",
+            "30",
+        ],
     )
 
     with pytest.raises(SystemExit):
         module.parse_args(Algorithm.TWAP)
 
-    assert "--max-runtime-seconds must be at least --duration-seconds" in capsys.readouterr().err
+    assert (
+        "--max-runtime-seconds must be at least --duration-seconds"
+        in capsys.readouterr().err
+    )
 
 
 def test_testnet_runner_preserves_explicit_longer_runtime_guard(
@@ -1456,7 +1684,9 @@ def test_testnet_runner_preserves_explicit_longer_runtime_guard(
 ) -> None:
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -1465,7 +1695,13 @@ def test_testnet_runner_preserves_explicit_longer_runtime_guard(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["run_testnet_twap.py", "--duration-seconds", "60", "--max-runtime-seconds", "90"],
+        [
+            "run_testnet_twap.py",
+            "--duration-seconds",
+            "60",
+            "--max-runtime-seconds",
+            "90",
+        ],
     )
 
     args = module.parse_args(Algorithm.TWAP)
@@ -1505,7 +1741,9 @@ async def test_testnet_runner_keeps_market_stream_running_until_stopped() -> Non
 
             return events()
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -1603,7 +1841,9 @@ async def test_testnet_runner_starts_and_stops_market_and_user_stream_tasks(
             assert self.adapter.user_started.is_set()
             raise PlannedExit("stop after stream startup")
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -1746,7 +1986,9 @@ async def test_testnet_runner_backs_off_and_retries_precreate_rate_limit(
                 child_orders=[],
             )
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -1812,7 +2054,9 @@ async def test_testnet_runner_backs_off_and_retries_precreate_rate_limit(
     assert adapter.submitted_orders == []
     assert [delay for delay in sleeps if delay == 0.1] == [0.1]
     backoff_events = [
-        event for event in artifact_call["log_events"] if event["event"] == "precreate_rate_limit_backoff"
+        event
+        for event in artifact_call["log_events"]
+        if event["event"] == "precreate_rate_limit_backoff"
     ]
     assert backoff_events == [
         {
@@ -1902,7 +2146,9 @@ async def test_testnet_runner_exits_when_precreate_rate_limit_budget_exhausts(
         async def run_once(self, _execution_id: str) -> Any:
             raise AssertionError("runner reached order flow without an execution")
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2031,7 +2277,9 @@ async def test_testnet_runner_exits_cleanly_when_precreate_venue_ban_hard_stops(
         async def run_once(self, _execution_id: str) -> Any:
             raise AssertionError("runner reached order flow after venue ban")
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2088,7 +2336,9 @@ async def test_testnet_runner_backs_off_and_retries_post_run_reconciliation_rate
             self.clock = ManualClock()
             self.calls = 0
 
-        async def reconcile_orders_and_fills(self, symbol: str, *, client_order_prefix: str | None = None) -> Any:
+        async def reconcile_orders_and_fills(
+            self, symbol: str, *, client_order_prefix: str | None = None
+        ) -> Any:
             self.calls += 1
             assert symbol == "BTCUSDT"
             assert client_order_prefix == "ce_exec_123456_"
@@ -2096,7 +2346,9 @@ async def test_testnet_runner_backs_off_and_retries_post_run_reconciliation_rate
                 raise ExchangeRateLimited("RATE_LIMIT_BACKOFF\napi-key=secret")
             return SimpleNamespace(orders=[], fills=[], warnings=[])
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2191,7 +2443,9 @@ async def test_testnet_runner_applies_successful_post_run_reconciliation_before_
         async def get_symbol_rules(self, _symbol: str) -> SymbolRules:
             return rules()
 
-        async def reconcile_orders_and_fills(self, *_args: Any, **_kwargs: Any) -> ReconciliationResult:
+        async def reconcile_orders_and_fills(
+            self, *_args: Any, **_kwargs: Any
+        ) -> ReconciliationResult:
             order = ChildOrder(
                 child_order_id="child_0001",
                 client_order_id="ce_exec_1234567890abcdef_1",
@@ -2267,7 +2521,9 @@ async def test_testnet_runner_applies_successful_post_run_reconciliation_before_
                 summary=None,
             )
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2338,7 +2594,9 @@ async def test_testnet_runner_exits_when_post_run_reconciliation_rate_limit_budg
             self.calls += 1
             raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2373,7 +2631,9 @@ async def test_testnet_runner_exits_when_post_run_reconciliation_rate_limit_budg
     ]
 
 
-async def test_testnet_runner_exits_cleanly_when_post_run_reconciliation_venue_ban_hard_stops() -> None:
+async def test_testnet_runner_exits_cleanly_when_post_run_reconciliation_venue_ban_hard_stops() -> (
+    None
+):
     import importlib.util
 
     class FakeAdapter:
@@ -2385,7 +2645,9 @@ async def test_testnet_runner_exits_cleanly_when_post_run_reconciliation_venue_b
             self.calls += 1
             raise VenueBanHardStop("VENUE_BAN_HARD_STOP api-key=secret")
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2451,7 +2713,9 @@ async def test_testnet_runner_stops_before_service_flow_when_server_time_sync_fa
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             raise AssertionError("service created after failed server-time sync")
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2520,7 +2784,11 @@ async def test_testnet_runner_user_stream_logs_and_applies_matching_event() -> N
                 self.user_stream_healthy = True
                 self.started.set()
                 try:
-                    yield {"event_type": "ORDER_TRADE_UPDATE", "event_time_ms": 1000, "raw": {"c": client_order_id}}
+                    yield {
+                        "event_type": "ORDER_TRADE_UPDATE",
+                        "event_time_ms": 1000,
+                        "raw": {"c": client_order_id},
+                    }
                     await self.applied.wait()
                     await asyncio.Event().wait()
                 finally:
@@ -2543,7 +2811,9 @@ async def test_testnet_runner_user_stream_logs_and_applies_matching_event() -> N
             self.adapter = adapter
             self.applied_execution_ids: list[str] = []
 
-        async def apply_reconciliation_result(self, applied_execution_id: str, _result: Any) -> Any:
+        async def apply_reconciliation_result(
+            self, applied_execution_id: str, _result: Any
+        ) -> Any:
             self.applied_execution_ids.append(applied_execution_id)
             self.adapter.applied.set()
             return SimpleNamespace(
@@ -2554,7 +2824,9 @@ async def test_testnet_runner_user_stream_logs_and_applies_matching_event() -> N
                 child_orders=[],
             )
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2575,7 +2847,10 @@ async def test_testnet_runner_user_stream_logs_and_applies_matching_event() -> N
     await module._stop_stream_task(task)
 
     assert service.applied_execution_ids == [execution_id]
-    assert [event["event"] for event in events] == ["user_stream_event", "user_stream_applied"]
+    assert [event["event"] for event in events] == [
+        "user_stream_event",
+        "user_stream_applied",
+    ]
     assert events[0]["utc_timestamp"].startswith("1970-01-01T00:00:10")
     assert events[0]["monotonic_time"] == Decimal("10.0")
     assert adapter.closed.is_set()
@@ -2588,10 +2863,14 @@ async def test_testnet_runner_user_stream_logs_and_applies_matching_event() -> N
         {"raw": {"e": "listenKeyExpired"}},
     ],
 )
-def test_testnet_runner_detects_listen_key_expired_user_events(event: dict[str, Any]) -> None:
+def test_testnet_runner_detects_listen_key_expired_user_events(
+    event: dict[str, Any],
+) -> None:
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2600,7 +2879,9 @@ def test_testnet_runner_detects_listen_key_expired_user_events(event: dict[str, 
     assert module._is_listen_key_expired_event(event) is True
 
 
-async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_restarting() -> None:
+async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_restarting() -> (
+    None
+):
     import importlib.util
 
     execution_id = "exec_1234567890abcdef"
@@ -2651,7 +2932,9 @@ async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_re
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ) -> Any:
-            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            self.reconciliation_calls.append(
+                (reconciled_execution_id, start_time_ms, end_time_ms)
+            )
             return SimpleNamespace(
                 execution_id=reconciled_execution_id,
                 status=ExecutionStatus.RUNNING,
@@ -2660,7 +2943,9 @@ async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_re
                 child_orders=[],
             )
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2709,7 +2994,9 @@ async def test_testnet_runner_recovers_expired_user_stream_by_reconciling_and_re
     assert adapter.second_closed.is_set()
 
 
-async def test_testnet_runner_listen_key_expired_reconciliation_rate_limit_exits_cleanly() -> None:
+async def test_testnet_runner_listen_key_expired_reconciliation_rate_limit_exits_cleanly() -> (
+    None
+):
     import importlib.util
 
     execution_id = "exec_listen_key_expired_rate_limit"
@@ -2747,10 +3034,14 @@ async def test_testnet_runner_listen_key_expired_reconciliation_rate_limit_exits
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ) -> Any:
-            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            self.reconciliation_calls.append(
+                (reconciled_execution_id, start_time_ms, end_time_ms)
+            )
             raise ExchangeRateLimited("RATE_LIMIT_BACKOFF api-key=secret")
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2760,7 +3051,9 @@ async def test_testnet_runner_listen_key_expired_reconciliation_rate_limit_exits
     service = FakeService()
     events: list[dict[str, Any]] = []
 
-    with pytest.raises(SystemExit, match="RATE_LIMIT_BACKOFF api-key=\\[redacted\\]") as exc_info:
+    with pytest.raises(
+        SystemExit, match="RATE_LIMIT_BACKOFF api-key=\\[redacted\\]"
+    ) as exc_info:
         await module._start_user_stream(
             adapter,
             service,
@@ -2785,7 +3078,9 @@ async def test_testnet_runner_listen_key_expired_reconciliation_rate_limit_exits
     }
 
 
-async def test_testnet_runner_listen_key_expired_returned_rate_limit_record_exits_cleanly() -> None:
+async def test_testnet_runner_listen_key_expired_returned_rate_limit_record_exits_cleanly() -> (
+    None
+):
     import importlib.util
 
     execution_id = "exec_listen_key_expired_returned_rate_limit"
@@ -2823,13 +3118,17 @@ async def test_testnet_runner_listen_key_expired_returned_rate_limit_record_exit
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ) -> ExecutionRecord:
-            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            self.reconciliation_calls.append(
+                (reconciled_execution_id, start_time_ms, end_time_ms)
+            )
             return runner_execution_record(
                 reconciled_execution_id,
                 final_reason=ExchangeRateLimited.code,
             )
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2861,7 +3160,9 @@ async def test_testnet_runner_listen_key_expired_returned_rate_limit_record_exit
     }
 
 
-async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_reconcile() -> None:
+async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_reconcile() -> (
+    None
+):
     import importlib.util
 
     execution_id = "exec_stream_disconnect"
@@ -2904,7 +3205,9 @@ async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ) -> Any:
-            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            self.reconciliation_calls.append(
+                (reconciled_execution_id, start_time_ms, end_time_ms)
+            )
             return SimpleNamespace(
                 execution_id=reconciled_execution_id,
                 status=ExecutionStatus.RUNNING,
@@ -2913,7 +3216,9 @@ async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_
                 child_orders=[],
             )
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2929,7 +3234,10 @@ async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_
         adapter=adapter,
         service=service,
         events=events,
-        active_execution={"execution_id": execution_id, "user_stream_started_ms": "10000"},
+        active_execution={
+            "execution_id": execution_id,
+            "user_stream_started_ms": "10000",
+        },
         market_task=None,
         user_task=user_task,
         timeout_seconds=1.0,
@@ -2939,7 +3247,9 @@ async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_
         await asyncio.wait_for(adapter.restarted.wait(), timeout=1.0)
         assert restarted_task is not user_task
         assert service.reconciliation_calls == [(execution_id, 65_000, 125_000)]
-        assert [event["event"] for event in events] == ["user_stream_disconnect_reconciled"]
+        assert [event["event"] for event in events] == [
+            "user_stream_disconnect_reconciled"
+        ]
         assert events[0]["reconciliation_window"] == {
             "start_time_ms": 65_000,
             "end_time_ms": 125_000,
@@ -2951,8 +3261,14 @@ async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_
 @pytest.mark.parametrize(
     ("failure", "expected_reason"),
     [
-        (VenueBanHardStop("VENUE_BAN_HARD_STOP api-key=secret"), "VENUE_BAN_HARD_STOP api-key=[redacted]"),
-        (ExchangeRateLimited("RATE_LIMIT_BACKOFF api-key=secret"), "RATE_LIMIT_BACKOFF api-key=[redacted]"),
+        (
+            VenueBanHardStop("VENUE_BAN_HARD_STOP api-key=secret"),
+            "VENUE_BAN_HARD_STOP api-key=[redacted]",
+        ),
+        (
+            ExchangeRateLimited("RATE_LIMIT_BACKOFF api-key=secret"),
+            "RATE_LIMIT_BACKOFF api-key=[redacted]",
+        ),
     ],
 )
 async def test_testnet_runner_user_stream_disconnect_reconciliation_hard_stops_exit_cleanly(
@@ -2974,10 +3290,14 @@ async def test_testnet_runner_user_stream_disconnect_reconciliation_hard_stops_e
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ) -> Any:
-            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            self.reconciliation_calls.append(
+                (reconciled_execution_id, start_time_ms, end_time_ms)
+            )
             raise failure
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2987,7 +3307,9 @@ async def test_testnet_runner_user_stream_disconnect_reconciliation_hard_stops_e
     service = FakeService()
     events: list[dict[str, Any]] = []
 
-    with pytest.raises(SystemExit, match=expected_reason.replace("[", "\\[").replace("]", "\\]")) as exc_info:
+    with pytest.raises(
+        SystemExit, match=expected_reason.replace("[", "\\[").replace("]", "\\]")
+    ) as exc_info:
         await module._reconcile_user_stream_disconnect(
             adapter,
             service,
@@ -2999,7 +3321,9 @@ async def test_testnet_runner_user_stream_disconnect_reconciliation_hard_stops_e
     assert type(failure).__name__ not in str(exc_info.value)
     assert "secret" not in str(exc_info.value)
     assert service.reconciliation_calls == [(execution_id, 65_000, 125_000)]
-    assert [event["event"] for event in events] == ["user_stream_disconnect_reconciliation_failed"]
+    assert [event["event"] for event in events] == [
+        "user_stream_disconnect_reconciliation_failed"
+    ]
     assert events[0]["reason"] == expected_reason
     assert events[0]["reconciliation_window"] == {
         "start_time_ms": 65_000,
@@ -3007,7 +3331,9 @@ async def test_testnet_runner_user_stream_disconnect_reconciliation_hard_stops_e
     }
 
 
-async def test_testnet_runner_user_stream_disconnect_returned_hard_stop_record_exits_cleanly() -> None:
+async def test_testnet_runner_user_stream_disconnect_returned_hard_stop_record_exits_cleanly() -> (
+    None
+):
     import importlib.util
 
     execution_id = "exec_disconnect_returned_hard_stop"
@@ -3023,7 +3349,9 @@ async def test_testnet_runner_user_stream_disconnect_returned_hard_stop_record_e
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ) -> ExecutionRecord:
-            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            self.reconciliation_calls.append(
+                (reconciled_execution_id, start_time_ms, end_time_ms)
+            )
             record = runner_execution_record(
                 reconciled_execution_id,
                 final_reason=VenueBanHardStop.code,
@@ -3031,7 +3359,9 @@ async def test_testnet_runner_user_stream_disconnect_returned_hard_stop_record_e
             record.status = ExecutionStatus.FAILED
             return record
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -3050,7 +3380,9 @@ async def test_testnet_runner_user_stream_disconnect_returned_hard_stop_record_e
         )
 
     assert service.reconciliation_calls == [(execution_id, 65_000, 125_000)]
-    assert [event["event"] for event in events] == ["user_stream_disconnect_reconciliation_failed"]
+    assert [event["event"] for event in events] == [
+        "user_stream_disconnect_reconciliation_failed"
+    ]
     assert events[0]["reason"] == "VENUE_BAN_HARD_STOP"
     assert events[0]["reconciliation_window"] == {
         "start_time_ms": 65_000,
@@ -3058,13 +3390,17 @@ async def test_testnet_runner_user_stream_disconnect_returned_hard_stop_record_e
     }
 
 
-async def test_testnet_runner_stream_recovery_helper_raises_on_unexpected_user_stream_exit_without_active_execution() -> None:
+async def test_testnet_runner_stream_recovery_helper_raises_on_unexpected_user_stream_exit_without_active_execution() -> (
+    None
+):
     import importlib.util
 
     async def exits_normally() -> None:
         return None
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -3112,13 +3448,19 @@ async def test_testnet_runner_user_stream_startup_retryable_failure_exhausts_cle
         async def health_check_streams(self) -> bool:
             return self.user_stream_healthy
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS", 3, raising=False)
-    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS", 0, raising=False)
+    monkeypatch.setattr(
+        module, "_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS", 3, raising=False
+    )
+    monkeypatch.setattr(
+        module, "_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS", 0, raising=False
+    )
 
     adapter = FailingStartupAdapter()
 
@@ -3134,7 +3476,9 @@ async def test_testnet_runner_user_stream_startup_retryable_failure_exhausts_cle
     assert adapter.started_count == 3
 
 
-async def test_testnet_runner_user_stream_startup_venue_ban_hard_stop_exits_cleanly() -> None:
+async def test_testnet_runner_user_stream_startup_venue_ban_hard_stop_exits_cleanly() -> (
+    None
+):
     import importlib.util
 
     class FailingStartupAdapter:
@@ -3146,7 +3490,9 @@ async def test_testnet_runner_user_stream_startup_venue_ban_hard_stop_exits_clea
         def stream_user_events(self):
             async def events():
                 self.started_count += 1
-                raise StreamHealthFailure("LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=secret")
+                raise StreamHealthFailure(
+                    "LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=secret"
+                )
                 yield {"event_type": "noop"}
 
             return events()
@@ -3154,7 +3500,9 @@ async def test_testnet_runner_user_stream_startup_venue_ban_hard_stop_exits_clea
         async def health_check_streams(self) -> bool:
             return self.user_stream_healthy
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -3163,7 +3511,9 @@ async def test_testnet_runner_user_stream_startup_venue_ban_hard_stop_exits_clea
     adapter = FailingStartupAdapter()
     events: list[dict[str, Any]] = []
 
-    with pytest.raises(SystemExit, match="LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=\\[redacted\\]"):
+    with pytest.raises(
+        SystemExit, match="LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=\\[redacted\\]"
+    ):
         await module._start_user_stream(
             adapter,
             SimpleNamespace(),
@@ -3226,7 +3576,9 @@ async def test_testnet_runner_user_stream_reconnect_retryable_failure_exhausts_c
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ) -> Any:
-            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            self.reconciliation_calls.append(
+                (reconciled_execution_id, start_time_ms, end_time_ms)
+            )
             return SimpleNamespace(
                 execution_id=reconciled_execution_id,
                 status=ExecutionStatus.RUNNING,
@@ -3235,13 +3587,19 @@ async def test_testnet_runner_user_stream_reconnect_retryable_failure_exhausts_c
                 child_orders=[],
             )
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS", 3, raising=False)
-    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS", 0, raising=False)
+    monkeypatch.setattr(
+        module, "_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS", 3, raising=False
+    )
+    monkeypatch.setattr(
+        module, "_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS", 0, raising=False
+    )
 
     adapter = FailingRestartAdapter()
     service = FakeService()
@@ -3254,7 +3612,10 @@ async def test_testnet_runner_user_stream_reconnect_retryable_failure_exhausts_c
             adapter=adapter,
             service=service,
             events=[],
-            active_execution={"execution_id": execution_id, "user_stream_started_ms": "10000"},
+            active_execution={
+                "execution_id": execution_id,
+                "user_stream_started_ms": "10000",
+            },
             market_task=None,
             user_task=user_task,
             timeout_seconds=1.0,
@@ -3310,7 +3671,9 @@ async def test_testnet_runner_user_stream_post_health_retryable_reconnects_are_b
             stream_index: int,
             task: asyncio.Task[Any],
         ) -> asyncio.Task[Any]:
-            await asyncio.wait_for(self.started_events[stream_index].wait(), timeout=1.0)
+            await asyncio.wait_for(
+                self.started_events[stream_index].wait(), timeout=1.0
+            )
             self.clock.advance(10.0)
             self.fail_events[stream_index].set()
             with pytest.raises(StreamHealthFailure, match=failure_reason):
@@ -3328,7 +3691,9 @@ async def test_testnet_runner_user_stream_post_health_retryable_reconnects_are_b
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ) -> Any:
-            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            self.reconciliation_calls.append(
+                (reconciled_execution_id, start_time_ms, end_time_ms)
+            )
             return SimpleNamespace(
                 execution_id=reconciled_execution_id,
                 status=ExecutionStatus.RUNNING,
@@ -3337,13 +3702,19 @@ async def test_testnet_runner_user_stream_post_health_retryable_reconnects_are_b
                 child_orders=[],
             )
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS", 3, raising=False)
-    monkeypatch.setattr(module, "_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS", 0.25, raising=False)
+    monkeypatch.setattr(
+        module, "_USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS", 3, raising=False
+    )
+    monkeypatch.setattr(
+        module, "_USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS", 0.25, raising=False
+    )
     original_sleep = asyncio.sleep
     sleep_calls: list[float] = []
 
@@ -3393,7 +3764,9 @@ async def test_testnet_runner_user_stream_post_health_retryable_reconnects_are_b
         (execution_id, 125_000, 135_000),
         (execution_id, 135_000, 145_000),
     ]
-    retry_events = [event for event in events if event["event"] == "user_stream_retryable_reconnect"]
+    retry_events = [
+        event for event in events if event["event"] == "user_stream_retryable_reconnect"
+    ]
     assert retry_events == [
         {
             "event": "user_stream_retryable_reconnect",
@@ -3425,7 +3798,9 @@ async def test_testnet_runner_user_stream_post_health_retryable_reconnects_are_b
     ]
 
 
-async def test_testnet_runner_user_stream_reconnect_venue_ban_hard_stop_reconciles_then_exits_cleanly() -> None:
+async def test_testnet_runner_user_stream_reconnect_venue_ban_hard_stop_reconciles_then_exits_cleanly() -> (
+    None
+):
     import importlib.util
 
     execution_id = "exec_runner_hard_stop_reconnect"
@@ -3454,7 +3829,9 @@ async def test_testnet_runner_user_stream_reconnect_venue_ban_hard_stop_reconcil
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ) -> Any:
-            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            self.reconciliation_calls.append(
+                (reconciled_execution_id, start_time_ms, end_time_ms)
+            )
             return SimpleNamespace(
                 execution_id=reconciled_execution_id,
                 status=ExecutionStatus.RUNNING,
@@ -3463,7 +3840,9 @@ async def test_testnet_runner_user_stream_reconnect_venue_ban_hard_stop_reconcil
                 child_orders=[],
             )
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -3476,12 +3855,17 @@ async def test_testnet_runner_user_stream_reconnect_venue_ban_hard_stop_reconcil
     with pytest.raises(StreamHealthFailure):
         await user_task
 
-    with pytest.raises(SystemExit, match="LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=\\[redacted\\]"):
+    with pytest.raises(
+        SystemExit, match="LISTEN_KEY_VENUE_BAN_HARD_STOP api-key=\\[redacted\\]"
+    ):
         await module._recover_or_raise_stream_task_failure(
             adapter=adapter,
             service=service,
             events=events,
-            active_execution={"execution_id": execution_id, "user_stream_started_ms": "10000"},
+            active_execution={
+                "execution_id": execution_id,
+                "user_stream_started_ms": "10000",
+            },
             market_task=None,
             user_task=user_task,
             timeout_seconds=1.0,
@@ -3587,7 +3971,9 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
             await asyncio.sleep(0)
             return submitted
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -3639,8 +4025,12 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
     assert any(adapter.health_checks)
     assert adapter.submitted_orders
     assert adapter.call_order[0] == "synchronize_server_time"
-    assert adapter.call_order.index("synchronize_server_time") < adapter.call_order.index("get_position")
-    assert adapter.call_order.index("synchronize_server_time") < adapter.call_order.index("submit_limit_order")
+    assert adapter.call_order.index(
+        "synchronize_server_time"
+    ) < adapter.call_order.index("get_position")
+    assert adapter.call_order.index(
+        "synchronize_server_time"
+    ) < adapter.call_order.index("submit_limit_order")
     assert adapter.symbol_rule_calls >= 1
     assert adapter.market_closed.is_set()
     assert adapter.user_closed.is_set()
@@ -3660,7 +4050,9 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
         },
         "rate_limits": {"REQUEST_WEIGHT": 2400, "ORDERS": 1200},
     }
-    reconciliation_orders = artifact_call["extra_csv_artifacts"]["reconciliation_orders.csv"]
+    reconciliation_orders = artifact_call["extra_csv_artifacts"][
+        "reconciliation_orders.csv"
+    ]
     assert [row["client_order_id"] for row in reconciliation_orders] == [
         adapter.submitted_orders[0].client_order_id
     ]
@@ -3680,11 +4072,18 @@ async def test_testnet_runner_run_progresses_past_two_stream_health_gate(
     }
     assert evidence_manifest["reconciled_order_count"] == 1
     assert evidence_manifest["reconciled_fill_count"] == 0
-    assert evidence_manifest["client_order_ids"] == [adapter.submitted_orders[0].client_order_id]
-    assert evidence_manifest["exchange_order_ids"] == [reconciliation_orders[0]["exchange_order_id"]]
+    assert evidence_manifest["client_order_ids"] == [
+        adapter.submitted_orders[0].client_order_id
+    ]
+    assert evidence_manifest["exchange_order_ids"] == [
+        reconciliation_orders[0]["exchange_order_id"]
+    ]
     assert evidence_manifest["exchange_order_id_count"] == 1
     assert evidence_manifest["reconciled_exchange_order_id_count"] == 1
-    assert evidence_manifest["exchange_order_evidence_status"] == "reconciled_exchange_order_ids_observed"
+    assert (
+        evidence_manifest["exchange_order_evidence_status"]
+        == "reconciled_exchange_order_ids_observed"
+    )
     assert evidence_manifest["accepted_exchange_order_evidence"] is True
     assert evidence_manifest["has_private_user_stream_events"] is True
     assert evidence_manifest["has_execution_matching_private_order_event"] is False
@@ -3792,7 +4191,9 @@ async def test_testnet_runner_stops_before_next_tick_when_stream_task_fails(
         async def cancel_execution(self, _execution_id: str) -> Any:
             raise AssertionError("runner cancelled execution after stream task failure")
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -3911,9 +4312,13 @@ async def test_testnet_runner_cleanup_stops_market_without_masking_primary_excep
             assert self.adapter.synchronized
             self.adapter.fail_user_stream.set()
             await self.adapter.user_failed.wait()
-            raise AssertionError("runner reached execution creation after stream task failure")
+            raise AssertionError(
+                "runner reached execution creation after stream task failure"
+            )
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -3964,7 +4369,9 @@ async def test_testnet_runner_cleanup_stops_market_without_masking_primary_excep
     assert adapter.user_closed.is_set()
 
 
-async def test_testnet_runner_shutdown_consumes_already_observed_stream_task_failure() -> None:
+async def test_testnet_runner_shutdown_consumes_already_observed_stream_task_failure() -> (
+    None
+):
     import importlib.util
 
     class StreamFailed(RuntimeError):
@@ -3973,7 +4380,9 @@ async def test_testnet_runner_shutdown_consumes_already_observed_stream_task_fai
     async def failed_stream_task() -> None:
         raise StreamFailed("unsanitized stream failure api-key=secret")
 
-    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    spec = importlib.util.spec_from_file_location(
+        "testnet_runner", Path("scripts/testnet_runner.py")
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -3986,7 +4395,9 @@ async def test_testnet_runner_shutdown_consumes_already_observed_stream_task_fai
     await module._stop_stream_tasks(user_task)
 
 
-def test_testnet_scripts_refuse_without_credentials_and_never_fallback_to_simulator() -> None:
+def test_testnet_scripts_refuse_without_credentials_and_never_fallback_to_simulator() -> (
+    None
+):
     script = Path("scripts/run_testnet_chase.py")
     env = os.environ.copy()
     env.pop("BINANCE_USDM_API_KEY", None)
@@ -4005,10 +4416,14 @@ def test_testnet_scripts_refuse_without_credentials_and_never_fallback_to_simula
     assert result.returncode != 0
     assert "never falls back to simulation" in result.stderr
     assert "DeterministicSimulator" not in script.read_text()
-    assert "DeterministicSimulator" not in Path("scripts/run_testnet_twap.py").read_text()
+    assert (
+        "DeterministicSimulator" not in Path("scripts/run_testnet_twap.py").read_text()
+    )
 
 
-def test_testnet_scripts_require_confirm_before_network_work_with_fake_credentials() -> None:
+def test_testnet_scripts_require_confirm_before_network_work_with_fake_credentials() -> (
+    None
+):
     env = os.environ.copy()
     env["BINANCE_USDM_API_KEY"] = "fake-key"
     env["BINANCE_USDM_API_SECRET"] = "fake-secret"

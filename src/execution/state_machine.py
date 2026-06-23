@@ -13,7 +13,11 @@ class InvalidStateTransition(ValueError):
 
 EXECUTION_TRANSITIONS: dict[ExecutionStatus, set[ExecutionStatus]] = {
     ExecutionStatus.CREATED: {ExecutionStatus.VALIDATING, ExecutionStatus.FAILED},
-    ExecutionStatus.VALIDATING: {ExecutionStatus.RUNNING, ExecutionStatus.COMPLETED, ExecutionStatus.FAILED},
+    ExecutionStatus.VALIDATING: {
+        ExecutionStatus.RUNNING,
+        ExecutionStatus.COMPLETED,
+        ExecutionStatus.FAILED,
+    },
     ExecutionStatus.RUNNING: {
         ExecutionStatus.CANCELLING,
         ExecutionStatus.COMPLETED,
@@ -69,17 +73,25 @@ CHILD_TRANSITIONS: dict[ChildOrderStatus, set[ChildOrderStatus]] = {
 }
 
 
-def transition_execution(current: ExecutionStatus, target: ExecutionStatus) -> ExecutionStatus:
+def transition_execution(
+    current: ExecutionStatus, target: ExecutionStatus
+) -> ExecutionStatus:
     """Validate and return a legal parent execution state transition."""
 
     if target not in EXECUTION_TRANSITIONS.get(current, set()):
-        raise InvalidStateTransition(f"execution transition {current} -> {target} is not allowed")
+        raise InvalidStateTransition(
+            f"execution transition {current} -> {target} is not allowed"
+        )
     return target
 
 
-def transition_child(current: ChildOrderStatus, target: ChildOrderStatus) -> ChildOrderStatus:
+def transition_child(
+    current: ChildOrderStatus, target: ChildOrderStatus
+) -> ChildOrderStatus:
     """Validate and return a legal child order state transition."""
 
     if target not in CHILD_TRANSITIONS.get(current, set()):
-        raise InvalidStateTransition(f"child order transition {current} -> {target} is not allowed")
+        raise InvalidStateTransition(
+            f"child order transition {current} -> {target} is not allowed"
+        )
     return target

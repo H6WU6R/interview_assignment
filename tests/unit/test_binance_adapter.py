@@ -86,7 +86,11 @@ def test_sign_params_adds_signature_without_exposing_secret() -> None:
     ).hexdigest()
 
     assert signed is not params
-    assert params == {"symbol": "BTCUSDT", "timestamp": "1710000000000", "recvWindow": "5000"}
+    assert params == {
+        "symbol": "BTCUSDT",
+        "timestamp": "1710000000000",
+        "recvWindow": "5000",
+    }
     assert signed["signature"] == expected_signature
     assert signed["signature"] != "super-secret"
     assert "super-secret" not in signed.values()
@@ -101,7 +105,9 @@ def test_signed_params_uses_offset_recv_window_and_secret() -> None:
     adapter = BinanceUsdmAdapter(settings=settings, clock=ManualClock())
     adapter.server_time_offset_ms = 250
 
-    signed = adapter.signed_params({"symbol": "BTCUSDT", "quantity": Decimal("0.010")}, now_ms=1000)
+    signed = adapter.signed_params(
+        {"symbol": "BTCUSDT", "quantity": Decimal("0.010")}, now_ms=1000
+    )
 
     expected_unsigned = {
         "symbol": "BTCUSDT",
@@ -110,11 +116,14 @@ def test_signed_params_uses_offset_recv_window_and_secret() -> None:
         "recvWindow": "7000",
     }
     assert {k: signed[k] for k in expected_unsigned} == expected_unsigned
-    assert signed["signature"] == hmac.new(
-        b"secret",
-        urlencode(expected_unsigned).encode(),
-        sha256,
-    ).hexdigest()
+    assert (
+        signed["signature"]
+        == hmac.new(
+            b"secret",
+            urlencode(expected_unsigned).encode(),
+            sha256,
+        ).hexdigest()
+    )
 
 
 def test_signed_params_requires_secret() -> None:
@@ -210,10 +219,15 @@ def test_exchange_info_parsing_uses_filters_and_rate_limits() -> None:
         status="TRADING",
         supported_time_in_force=frozenset({"GTC", "IOC", "GTX"}),
     )
-    assert parse_exchange_info_rate_limits(payload) == {"REQUEST_WEIGHT": 2400, "ORDERS": 1200}
+    assert parse_exchange_info_rate_limits(payload) == {
+        "REQUEST_WEIGHT": 2400,
+        "ORDERS": 1200,
+    }
 
 
-async def test_get_symbol_rules_uses_current_testnet_exchange_info_endpoint_without_params() -> None:
+async def test_get_symbol_rules_uses_current_testnet_exchange_info_endpoint_without_params() -> (
+    None
+):
     payload = {
         "symbols": [
             {
@@ -233,13 +247,18 @@ async def test_get_symbol_rules_uses_current_testnet_exchange_info_endpoint_with
         ],
     }
     client = FakeExchangeInfoClient(payload)
-    adapter = BinanceUsdmAdapter(settings=Settings(environment="testnet"), client=client)
+    adapter = BinanceUsdmAdapter(
+        settings=Settings(environment="testnet"), client=client
+    )
 
     rules = await adapter.get_symbol_rules("BTCUSDT")
 
     assert rules.symbol == "BTCUSDT"
     assert adapter.rate_limits == {"REQUEST_WEIGHT": 2400, "ORDERS": 1200}
-    assert client.calls[0]["url"] == f"{BINANCE_USDM_TESTNET_BASE_URL}/fapi/v1/exchangeInfo"
+    assert (
+        client.calls[0]["url"]
+        == f"{BINANCE_USDM_TESTNET_BASE_URL}/fapi/v1/exchangeInfo"
+    )
     assert "params" not in client.calls[0]
 
 
@@ -270,7 +289,9 @@ async def test_market_snapshots_require_present_uncrossed_and_fresh_data() -> No
         last_market_event_time_exchange=2,
         last_market_event_time_local_monotonic=clock.monotonic(),
     )
-    assert await adapter.get_best_bid_ask("BTCUSDT") == adapter._latest_market["BTCUSDT"]
+    assert (
+        await adapter.get_best_bid_ask("BTCUSDT") == adapter._latest_market["BTCUSDT"]
+    )
 
     clock.advance(1.501)
     with pytest.raises(NoFreshMarketData, match="stale market data"):

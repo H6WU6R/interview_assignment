@@ -1,6 +1,12 @@
 import re
 
-from execution.ids import child_order_id, client_order_id, execution_id, make_client_order_id, make_client_order_prefix
+from execution.ids import (
+    child_order_id,
+    client_order_id,
+    execution_id,
+    make_client_order_id,
+    make_client_order_prefix,
+)
 
 
 def test_client_order_id_is_binance_compatible() -> None:
@@ -15,7 +21,9 @@ def test_client_order_id_is_binance_compatible() -> None:
 
 def test_client_order_id_changes_by_child_sequence() -> None:
     execution = "exec_0123456789abcdef"
-    assert client_order_id(execution, child_order_id(1)) != client_order_id(execution, child_order_id(2))
+    assert client_order_id(execution, child_order_id(1)) != client_order_id(
+        execution, child_order_id(2)
+    )
 
 
 def test_client_order_prefix_matches_derived_order_ids() -> None:

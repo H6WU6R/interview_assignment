@@ -12,7 +12,9 @@ class ExecutionService:
     """Application facade over the execution engine."""
 
     def __init__(self, adapter: ExchangeAdapter, clock: Clock | None = None) -> None:
-        self._engine = ExecutionEngine(adapter, clock=clock or getattr(adapter, "clock", None) or ManualClock())
+        self._engine = ExecutionEngine(
+            adapter, clock=clock or getattr(adapter, "clock", None) or ManualClock()
+        )
 
     async def create_execution(self, request: ExecutionRequest) -> ExecutionRecord:
         return await self._engine.create_execution(request)
@@ -23,7 +25,10 @@ class ExecutionService:
         symbol: str,
     ) -> ExecutionRecord | None:
         for record in await self.active_executions():
-            if record.request.environment is environment and record.request.symbol == symbol:
+            if (
+                record.request.environment is environment
+                and record.request.symbol == symbol
+            ):
                 return record
         return None
 

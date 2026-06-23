@@ -57,7 +57,9 @@ def execution_payload(
     return payload
 
 
-async def post_json(app: Any, url: str, payload: dict[str, Any] | None = None) -> httpx.Response:
+async def post_json(
+    app: Any, url: str, payload: dict[str, Any] | None = None
+) -> httpx.Response:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         return await client.post(url, json=payload)
@@ -255,7 +257,9 @@ async def test_testnet_create_maps_precreate_get_position_rate_limit_to_503(
         "load_binance_usdm_credentials",
         lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
     )
-    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", RateLimitedPositionBinanceAdapter)
+    monkeypatch.setattr(
+        runtime_module, "BinanceUsdmAdapter", RateLimitedPositionBinanceAdapter
+    )
     app = create_app()
 
     response = await post_json(
@@ -299,7 +303,9 @@ async def test_testnet_create_maps_precreate_get_position_venue_ban_to_503(
         "load_binance_usdm_credentials",
         lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
     )
-    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", BannedPositionBinanceAdapter)
+    monkeypatch.setattr(
+        runtime_module, "BinanceUsdmAdapter", BannedPositionBinanceAdapter
+    )
     app = create_app()
 
     response = await post_json(
@@ -375,7 +381,9 @@ async def test_mainnet_request_constructs_adapter_only_when_allowed(
     monkeypatch.setattr(
         runtime_module,
         "load_binance_usdm_credentials",
-        lambda: BinanceUsdmCredentials(api_key="mainnet-key", api_secret="mainnet-secret"),
+        lambda: BinanceUsdmCredentials(
+            api_key="mainnet-key", api_secret="mainnet-secret"
+        ),
     )
     monkeypatch.setattr(runtime_module, "load_allow_mainnet_trading", lambda: True)
     monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", RecordingMainnetAdapter)
@@ -410,8 +418,12 @@ async def test_runtime_applies_matching_user_event_without_rest_reconciliation(
     opened = await runtime.run_once(created.execution_id)
     child = opened.child_orders[0]
 
-    async def unexpected_rest_reconcile(*_args: Any, **_kwargs: Any) -> ReconciliationResult:
-        raise AssertionError("REST reconciliation should not be used for a matching user event")
+    async def unexpected_rest_reconcile(
+        *_args: Any, **_kwargs: Any
+    ) -> ReconciliationResult:
+        raise AssertionError(
+            "REST reconciliation should not be used for a matching user event"
+        )
 
     def parse_event(_event: object) -> ReconciliationResult:
         return ReconciliationResult(
@@ -441,8 +453,12 @@ async def test_runtime_applies_matching_user_event_without_rest_reconciliation(
             ],
         )
 
-    monkeypatch.setattr(adapter, "reconcile_orders_and_fills", unexpected_rest_reconcile)
-    monkeypatch.setattr(adapter, "reconciliation_from_user_event", parse_event, raising=False)
+    monkeypatch.setattr(
+        adapter, "reconcile_orders_and_fills", unexpected_rest_reconcile
+    )
+    monkeypatch.setattr(
+        adapter, "reconciliation_from_user_event", parse_event, raising=False
+    )
 
     applied = await runtime._apply_user_event_reconciliation(
         Environment.SIMULATION,
@@ -470,7 +486,9 @@ async def test_runtime_applies_matching_user_event_to_terminal_execution_summary
     await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
     opened = await runtime.run_once(created.execution_id)
     child = opened.child_orders[0]
-    await adapter.push_fill(child.client_order_id, Decimal("0.004"), Decimal("95010.00"))
+    await adapter.push_fill(
+        child.client_order_id, Decimal("0.004"), Decimal("95010.00")
+    )
 
     terminal = await runtime.run_once(created.execution_id)
     assert terminal.status.value == "COMPLETED"
@@ -480,8 +498,12 @@ async def test_runtime_applies_matching_user_event_to_terminal_execution_summary
     assert terminal.summary.metrics["maker_fills"] == 0
     assert terminal.summary.metrics["taker_fills"] == 0
 
-    async def unexpected_rest_reconcile(*_args: Any, **_kwargs: Any) -> ReconciliationResult:
-        raise AssertionError("REST reconciliation should not be used for a matching user event")
+    async def unexpected_rest_reconcile(
+        *_args: Any, **_kwargs: Any
+    ) -> ReconciliationResult:
+        raise AssertionError(
+            "REST reconciliation should not be used for a matching user event"
+        )
 
     def parse_event(_event: object) -> ReconciliationResult:
         return ReconciliationResult(
@@ -500,8 +522,12 @@ async def test_runtime_applies_matching_user_event_to_terminal_execution_summary
             ],
         )
 
-    monkeypatch.setattr(adapter, "reconcile_orders_and_fills", unexpected_rest_reconcile)
-    monkeypatch.setattr(adapter, "reconciliation_from_user_event", parse_event, raising=False)
+    monkeypatch.setattr(
+        adapter, "reconcile_orders_and_fills", unexpected_rest_reconcile
+    )
+    monkeypatch.setattr(
+        adapter, "reconciliation_from_user_event", parse_event, raising=False
+    )
 
     applied = await runtime._apply_user_event_reconciliation(
         Environment.SIMULATION,
@@ -534,15 +560,21 @@ async def test_runtime_stale_partial_terminal_user_event_cannot_replace_full_sum
     await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
     opened = await runtime.run_once(created.execution_id)
     child = opened.child_orders[0]
-    await adapter.push_fill(child.client_order_id, Decimal("0.006"), Decimal("95000.00"))
+    await adapter.push_fill(
+        child.client_order_id, Decimal("0.006"), Decimal("95000.00")
+    )
 
     terminal = await runtime.run_once(created.execution_id)
     assert terminal.status.value == "COMPLETED"
     assert terminal.summary is not None
     assert terminal.summary.metrics["execution_vwap"] == "95000"
 
-    async def unexpected_rest_reconcile(*_args: Any, **_kwargs: Any) -> ReconciliationResult:
-        raise AssertionError("REST reconciliation should not be used for a matching user event")
+    async def unexpected_rest_reconcile(
+        *_args: Any, **_kwargs: Any
+    ) -> ReconciliationResult:
+        raise AssertionError(
+            "REST reconciliation should not be used for a matching user event"
+        )
 
     def parse_event(_event: object) -> ReconciliationResult:
         return ReconciliationResult(
@@ -561,8 +593,12 @@ async def test_runtime_stale_partial_terminal_user_event_cannot_replace_full_sum
             ],
         )
 
-    monkeypatch.setattr(adapter, "reconcile_orders_and_fills", unexpected_rest_reconcile)
-    monkeypatch.setattr(adapter, "reconciliation_from_user_event", parse_event, raising=False)
+    monkeypatch.setattr(
+        adapter, "reconcile_orders_and_fills", unexpected_rest_reconcile
+    )
+    monkeypatch.setattr(
+        adapter, "reconciliation_from_user_event", parse_event, raising=False
+    )
 
     applied = await runtime._apply_user_event_reconciliation(
         Environment.SIMULATION,
@@ -571,8 +607,7 @@ async def test_runtime_stale_partial_terminal_user_event_cannot_replace_full_sum
     updated = await runtime.get_execution(created.execution_id)
 
     expected_vwap = (
-        Decimal("94000.00") * Decimal("0.002")
-        + Decimal("95000.00") * Decimal("0.004")
+        Decimal("94000.00") * Decimal("0.002") + Decimal("95000.00") * Decimal("0.004")
     ) / Decimal("0.006")
     assert applied is True
     assert updated.exposure.confirmed_filled_quantity == Decimal("0.006")
@@ -694,7 +729,9 @@ async def test_runtime_starts_binance_stream_supervisors_and_renews_listen_key(
 
 
 @pytest.mark.asyncio
-async def test_runtime_listen_key_keepalive_restarts_user_stream_after_invalidation() -> None:
+async def test_runtime_listen_key_keepalive_restarts_user_stream_after_invalidation() -> (
+    None
+):
     import importlib
 
     runtime_module = importlib.import_module("api.runtime")
@@ -748,7 +785,9 @@ async def test_runtime_listen_key_keepalive_restarts_user_stream_after_invalidat
         adapter,
         adapter.stream_user_events,
     )
-    task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
+    task = asyncio.create_task(
+        runtime._run_listen_key_keepalive(Environment.TESTNET, adapter)
+    )
     try:
         await asyncio.wait_for(adapter.first_user_started.wait(), timeout=0.5)
         await asyncio.wait_for(adapter.invalidated.wait(), timeout=0.5)
@@ -766,11 +805,15 @@ async def test_runtime_listen_key_keepalive_restarts_user_stream_after_invalidat
         for stream_task in runtime._stream_tasks.values():
             stream_task.cancel()
         task.cancel()
-        await asyncio.gather(task, *runtime._stream_tasks.values(), return_exceptions=True)
+        await asyncio.gather(
+            task, *runtime._stream_tasks.values(), return_exceptions=True
+        )
 
 
 @pytest.mark.asyncio
-async def test_runtime_listen_key_invalidation_reconciles_stale_user_stream_window() -> None:
+async def test_runtime_listen_key_invalidation_reconciles_stale_user_stream_window() -> (
+    None
+):
     import importlib
 
     runtime_module = importlib.import_module("api.runtime")
@@ -847,7 +890,9 @@ async def test_runtime_listen_key_invalidation_reconciles_stale_user_stream_wind
         adapter,
         adapter.stream_user_events,
     )
-    task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
+    task = asyncio.create_task(
+        runtime._run_listen_key_keepalive(Environment.TESTNET, adapter)
+    )
     try:
         await asyncio.wait_for(adapter.first_user_started.wait(), timeout=0.5)
         clock.advance(120.0)
@@ -860,7 +905,9 @@ async def test_runtime_listen_key_invalidation_reconciles_stale_user_stream_wind
         for stream_task in runtime._stream_tasks.values():
             stream_task.cancel()
         task.cancel()
-        await asyncio.gather(task, *runtime._stream_tasks.values(), return_exceptions=True)
+        await asyncio.gather(
+            task, *runtime._stream_tasks.values(), return_exceptions=True
+        )
 
 
 @pytest.mark.asyncio
@@ -1090,7 +1137,9 @@ async def test_runtime_listen_key_keepalive_retryable_failure_retries_before_ful
     adapter = RetryableKeepaliveAdapter()
     runtime._started = True
     runtime._adapters[Environment.TESTNET] = adapter
-    task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
+    task = asyncio.create_task(
+        runtime._run_listen_key_keepalive(Environment.TESTNET, adapter)
+    )
     try:
         await asyncio.wait_for(adapter.first_failed.wait(), timeout=0.5)
         await asyncio.wait_for(adapter.second_attempted.wait(), timeout=0.03)
@@ -1103,7 +1152,9 @@ async def test_runtime_listen_key_keepalive_retryable_failure_retries_before_ful
 
 
 @pytest.mark.asyncio
-async def test_runtime_listen_key_keepalive_persistent_retryable_failure_exhausts_recovery() -> None:
+async def test_runtime_listen_key_keepalive_persistent_retryable_failure_exhausts_recovery() -> (
+    None
+):
     import importlib
 
     runtime_module = importlib.import_module("api.runtime")
@@ -1146,7 +1197,9 @@ async def test_runtime_listen_key_keepalive_persistent_retryable_failure_exhaust
             return None
 
         async def create_execution(self, _request: Any) -> ExecutionRecord:
-            raise AssertionError("unavailable runtime should reject before service create")
+            raise AssertionError(
+                "unavailable runtime should reject before service create"
+            )
 
     class PersistentRetryableKeepaliveAdapter:
         def __init__(self) -> None:
@@ -1191,7 +1244,9 @@ async def test_runtime_listen_key_keepalive_persistent_retryable_failure_exhaust
         adapter,
         adapter.stream_user_events,
     )
-    task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
+    task = asyncio.create_task(
+        runtime._run_listen_key_keepalive(Environment.TESTNET, adapter)
+    )
     try:
         await asyncio.wait_for(adapter.user_started.wait(), timeout=0.5)
         clock.advance(120.0)
@@ -1214,11 +1269,15 @@ async def test_runtime_listen_key_keepalive_persistent_retryable_failure_exhaust
         for stream_task in runtime._stream_tasks.values():
             stream_task.cancel()
         task.cancel()
-        await asyncio.gather(task, *runtime._stream_tasks.values(), return_exceptions=True)
+        await asyncio.gather(
+            task, *runtime._stream_tasks.values(), return_exceptions=True
+        )
 
 
 @pytest.mark.asyncio
-async def test_runtime_user_stream_startup_persistent_retryable_failure_exhausts_recovery() -> None:
+async def test_runtime_user_stream_startup_persistent_retryable_failure_exhausts_recovery() -> (
+    None
+):
     import importlib
 
     runtime_module = importlib.import_module("api.runtime")
@@ -1261,7 +1320,9 @@ async def test_runtime_user_stream_startup_persistent_retryable_failure_exhausts
             return None
 
         async def create_execution(self, _request: Any) -> ExecutionRecord:
-            raise AssertionError("unavailable runtime should reject before service create")
+            raise AssertionError(
+                "unavailable runtime should reject before service create"
+            )
 
     class PersistentRetryableStartupAdapter:
         def __init__(self) -> None:
@@ -1312,7 +1373,11 @@ async def test_runtime_user_stream_startup_persistent_retryable_failure_exhausts
 
         assert adapter.user_runs == 3
         assert keepalive_task.done()
-        assert service.windows[-1] == ("exec_user_stream_retry_exhausted", 183_000, 243_000)
+        assert service.windows[-1] == (
+            "exec_user_stream_retry_exhausted",
+            183_000,
+            243_000,
+        )
         assert runtime.runtime_errors["testnet.user_stream.unavailable"] == [
             "StreamHealthFailure: LISTEN_KEY_RATE_LIMIT_BACKOFF"
         ]
@@ -1395,7 +1460,9 @@ async def test_runtime_user_stream_startup_hard_stop_does_not_retry() -> None:
             return None
 
         async def create_execution(self, _request: Any) -> ExecutionRecord:
-            raise AssertionError("unavailable runtime should reject before service create")
+            raise AssertionError(
+                "unavailable runtime should reject before service create"
+            )
 
     runtime = runtime_module.ExecutionRuntime(
         stream_keepalive_interval_seconds=0.05,
@@ -1517,7 +1584,9 @@ async def test_runtime_listen_key_keepalive_hard_stop_stops_loop() -> None:
             return None
 
         async def create_execution(self, _request: Any) -> ExecutionRecord:
-            raise AssertionError("unavailable runtime should reject before service create")
+            raise AssertionError(
+                "unavailable runtime should reject before service create"
+            )
 
     runtime = runtime_module.ExecutionRuntime(stream_keepalive_interval_seconds=0.01)
     adapter = HardStopKeepaliveAdapter()
@@ -1534,7 +1603,9 @@ async def test_runtime_listen_key_keepalive_hard_stop_stops_loop() -> None:
         adapter,
         adapter.stream_user_events,
     )
-    task = asyncio.create_task(runtime._run_listen_key_keepalive(Environment.TESTNET, adapter))
+    task = asyncio.create_task(
+        runtime._run_listen_key_keepalive(Environment.TESTNET, adapter)
+    )
     try:
         await asyncio.wait_for(adapter.user_started.wait(), timeout=0.5)
         clock.advance(120.0)
@@ -1558,7 +1629,9 @@ async def test_runtime_listen_key_keepalive_hard_stop_stops_loop() -> None:
         for stream_task in runtime._stream_tasks.values():
             stream_task.cancel()
         task.cancel()
-        await asyncio.gather(task, *runtime._stream_tasks.values(), return_exceptions=True)
+        await asyncio.gather(
+            task, *runtime._stream_tasks.values(), return_exceptions=True
+        )
 
 
 @pytest.mark.asyncio
@@ -1585,7 +1658,9 @@ async def test_runtime_restarts_binance_user_stream_after_disconnect(
             self.disconnect_user = asyncio.Event()
             self.user_continue = asyncio.Event()
             self.user_runs = 0
-            self.reconciliation_windows: list[tuple[str | None, int | None, int | None]] = []
+            self.reconciliation_windows: list[
+                tuple[str | None, int | None, int | None]
+            ] = []
             constructed.append(self)
 
         async def synchronize_server_time(self) -> int:
@@ -1641,7 +1716,9 @@ async def test_runtime_restarts_binance_user_stream_after_disconnect(
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ):
-            self.reconciliation_windows.append((client_order_prefix, start_time_ms, end_time_ms))
+            self.reconciliation_windows.append(
+                (client_order_prefix, start_time_ms, end_time_ms)
+            )
             return await super().reconcile_orders_and_fills(
                 symbol,
                 client_order_prefix=client_order_prefix,
@@ -1654,7 +1731,9 @@ async def test_runtime_restarts_binance_user_stream_after_disconnect(
         "load_binance_usdm_credentials",
         lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
     )
-    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", DisconnectingUserStreamAdapter)
+    monkeypatch.setattr(
+        runtime_module, "BinanceUsdmAdapter", DisconnectingUserStreamAdapter
+    )
 
     runtime = runtime_module.ExecutionRuntime(
         background_tick_interval_seconds=0.01,
@@ -1831,10 +1910,14 @@ async def test_runtime_stream_recovery_returned_unavailable_record_records_error
             )
 
         async def active_execution_for(self, *_args: Any, **_kwargs: Any) -> None:
-            raise AssertionError("unavailable runtime should reject before service create")
+            raise AssertionError(
+                "unavailable runtime should reject before service create"
+            )
 
         async def create_execution(self, *_args: Any, **_kwargs: Any) -> None:
-            raise AssertionError("unavailable runtime should reject before service create")
+            raise AssertionError(
+                "unavailable runtime should reject before service create"
+            )
 
     runtime = runtime_module.ExecutionRuntime()
     service = ReturnedUnavailableReconcileService()
@@ -1873,7 +1956,9 @@ async def test_user_stream_event_reconciles_active_execution_with_event_time_bou
             self.latest_listen_key = "listen-1"
             self.user_started = asyncio.Event()
             self.event_to_emit: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-            self.reconciliation_windows: list[tuple[str | None, int | None, int | None]] = []
+            self.reconciliation_windows: list[
+                tuple[str | None, int | None, int | None]
+            ] = []
             constructed.append(self)
 
         async def synchronize_server_time(self) -> int:
@@ -1899,7 +1984,9 @@ async def test_user_stream_event_reconciles_active_execution_with_event_time_bou
             start_time_ms: int | None = None,
             end_time_ms: int | None = None,
         ):
-            self.reconciliation_windows.append((client_order_prefix, start_time_ms, end_time_ms))
+            self.reconciliation_windows.append(
+                (client_order_prefix, start_time_ms, end_time_ms)
+            )
             return await super().reconcile_orders_and_fills(
                 symbol,
                 client_order_prefix=client_order_prefix,
@@ -1912,7 +1999,9 @@ async def test_user_stream_event_reconciles_active_execution_with_event_time_bou
         "load_binance_usdm_credentials",
         lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
     )
-    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", EventReconcilingUserStreamAdapter)
+    monkeypatch.setattr(
+        runtime_module, "BinanceUsdmAdapter", EventReconcilingUserStreamAdapter
+    )
 
     runtime = runtime_module.ExecutionRuntime(background_tick_interval_seconds=0.01)
     await runtime.start()
@@ -1924,7 +2013,9 @@ async def test_user_stream_event_reconciles_active_execution_with_event_time_bou
         adapter = constructed[0]
         await asyncio.wait_for(adapter.user_started.wait(), timeout=0.5)
 
-        await adapter.event_to_emit.put({"event_type": "ORDER_TRADE_UPDATE", "event_time_ms": 123_456})
+        await adapter.event_to_emit.put(
+            {"event_type": "ORDER_TRADE_UPDATE", "event_time_ms": 123_456}
+        )
 
         deadline = asyncio.get_running_loop().time() + 0.5
         while (
@@ -2050,13 +2141,17 @@ async def test_default_simulation_background_loop_advances_manual_clock_to_deadl
         assert app.state.clock.current >= 1
         assert body["status"] == "EXPIRED"
         assert body["final_reason"] == "DEADLINE_CANCEL_REMAINDER"
-        assert Decimal(body["summary_metrics"]["actual_duration_seconds"]) >= Decimal("1")
+        assert Decimal(body["summary_metrics"]["actual_duration_seconds"]) >= Decimal(
+            "1"
+        )
     finally:
         await app.state.runtime.stop()
 
 
 @pytest.mark.asyncio
-async def test_background_loop_reconciles_unknown_child_without_manual_reconcile() -> None:
+async def test_background_loop_reconciles_unknown_child_without_manual_reconcile() -> (
+    None
+):
     app = create_app(simulator_position="0", background_tick_interval_seconds=0.01)
     await app.state.runtime.start()
     try:
@@ -2064,13 +2159,17 @@ async def test_background_loop_reconciles_unknown_child_without_manual_reconcile
         created = created_response.json()
         prefix = ids.make_client_order_prefix(created["execution_id"])
         app.state.adapter.script_create_timeout(prefix)
-        await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+        await app.state.adapter.push_market_data(
+            SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+        )
 
         reconciled = await wait_for_execution(
             app,
             created["execution_id"],
-            lambda body: bool(body["child_orders"])
-            and body["child_orders"][0]["status"] == "OPEN",
+            lambda body: (
+                bool(body["child_orders"])
+                and body["child_orders"][0]["status"] == "OPEN"
+            ),
             timeout_seconds=1.0,
         )
 
@@ -2088,7 +2187,9 @@ async def test_background_loop_records_unexpected_failure_and_retries(
     app = create_app(simulator_position="0", background_tick_interval_seconds=0.01)
     created_response = await post_json(app, "/executions", execution_payload())
     created = created_response.json()
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
     original_run_once = app.state.service.run_once
     calls = 0
 
@@ -2111,7 +2212,10 @@ async def test_background_loop_records_unexpected_failure_and_retries(
 
         assert progressed["child_orders"][0]["status"] == "OPEN"
         assert calls >= 2
-        assert "background loop boom" in app.state.runtime.runtime_errors[created["execution_id"]][-1]
+        assert (
+            "background loop boom"
+            in app.state.runtime.runtime_errors[created["execution_id"]][-1]
+        )
         assert app.state.runtime.background_task_count == 1
     finally:
         await app.state.runtime.stop()
@@ -2129,7 +2233,9 @@ async def test_background_loop_uses_rate_limit_backoff_for_rate_limit_failure(
         background_tick_interval_seconds=0.01,
         stream_restart_delay_seconds=0.05,
     )
-    created = await runtime.create_execution(ExecutionCreateRequest(**execution_payload()).to_domain())
+    created = await runtime.create_execution(
+        ExecutionCreateRequest(**execution_payload()).to_domain()
+    )
     calls = 0
     sleeps: list[float] = []
 
@@ -2156,9 +2262,10 @@ async def test_background_loop_uses_rate_limit_backoff_for_rate_limit_failure(
         assert calls == 2
         assert sleeps[0] == runtime._stream_restart_delay_seconds
         assert runtime._background_tick_interval_seconds in sleeps[1:]
-        assert "ExchangeRateLimited: RATE_LIMIT_BACKOFF" in runtime.runtime_errors[
-            created.execution_id
-        ][-1]
+        assert (
+            "ExchangeRateLimited: RATE_LIMIT_BACKOFF"
+            in runtime.runtime_errors[created.execution_id][-1]
+        )
     finally:
         runtime._started = False
         if not task.done():
@@ -2191,9 +2298,10 @@ async def test_background_loop_stops_when_run_once_raises_venue_ban_hard_stop(
         )
 
         assert calls == 1
-        assert "VenueBanHardStop: VENUE_BAN_HARD_STOP" in app.state.runtime.runtime_errors[
-            created["execution_id"]
-        ][-1]
+        assert (
+            "VenueBanHardStop: VENUE_BAN_HARD_STOP"
+            in app.state.runtime.runtime_errors[created["execution_id"]][-1]
+        )
         assert app.state.runtime.background_task_count == 0
     finally:
         await app.state.runtime.stop()
@@ -2206,7 +2314,9 @@ async def test_background_loop_stops_when_engine_terminalizes_venue_ban_hard_sto
     app = create_app(simulator_position="0", background_tick_interval_seconds=0.01)
     created_response = await post_json(app, "/executions", execution_payload())
     created = created_response.json()
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
     submissions = 0
 
     async def banned_submit(order_request):
@@ -2221,7 +2331,8 @@ async def test_background_loop_stops_when_engine_terminalizes_venue_ban_hard_sto
             app,
             created["execution_id"],
             lambda body: (
-                body["status"] == "FAILED" and app.state.runtime.background_task_count == 0
+                body["status"] == "FAILED"
+                and app.state.runtime.background_task_count == 0
             ),
             timeout_seconds=1.0,
         )
@@ -2243,7 +2354,9 @@ async def test_background_loop_resolves_unknown_by_exact_lookup_without_broad_re
     created = created_response.json()
     prefix = ids.make_client_order_prefix(created["execution_id"])
     app.state.adapter.script_create_timeout(prefix)
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
 
     calls = 0
 
@@ -2258,7 +2371,9 @@ async def test_background_loop_resolves_unknown_by_exact_lookup_without_broad_re
         reconciled = await wait_for_execution(
             app,
             created["execution_id"],
-            lambda body: bool(body["child_orders"]) and body["unknown_order_quantity"] == "0",
+            lambda body: (
+                bool(body["child_orders"]) and body["unknown_order_quantity"] == "0"
+            ),
             timeout_seconds=1.0,
         )
 
@@ -2275,8 +2390,12 @@ async def test_runtime_stop_cancels_and_reconciles_active_execution() -> None:
     await app.state.runtime.start()
     created_response = await post_json(app, "/executions", execution_payload())
     created = created_response.json()
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
-    opened_response = await post_json(app, f"/executions/{created['execution_id']}/run-once")
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
+    opened_response = await post_json(
+        app, f"/executions/{created['execution_id']}/run-once"
+    )
 
     assert created_response.status_code == 200
     assert opened_response.status_code == 200
@@ -2320,7 +2439,9 @@ async def test_runtime_start_during_stop_does_not_restart_until_shutdown_finishe
         stop_entered.set()
         await release_stop.wait()
 
-    monkeypatch.setattr(runtime, "_cancel_and_reconcile_active_executions", slow_cancel_and_reconcile)
+    monkeypatch.setattr(
+        runtime, "_cancel_and_reconcile_active_executions", slow_cancel_and_reconcile
+    )
 
     await runtime.start()
     stop_task = asyncio.create_task(runtime.stop())
@@ -2374,11 +2495,15 @@ async def test_create_nonzero_execution_then_get_returns_running_buy() -> None:
 
 
 @pytest.mark.asyncio
-async def test_second_active_execution_for_same_environment_and_symbol_returns_409() -> None:
+async def test_second_active_execution_for_same_environment_and_symbol_returns_409() -> (
+    None
+):
     app = create_app(simulator_position="0")
     first = await post_json(app, "/executions", execution_payload())
 
-    second = await post_json(app, "/executions", execution_payload(target_position="0.020"))
+    second = await post_json(
+        app, "/executions", execution_payload(target_position="0.020")
+    )
 
     assert first.status_code == 200
     assert second.status_code == 409
@@ -2389,7 +2514,9 @@ async def test_second_active_execution_for_same_environment_and_symbol_returns_4
 async def test_create_execution_below_step_returns_untradeable_dust_fields() -> None:
     app = create_app(simulator_position="0")
 
-    response = await post_json(app, "/executions", execution_payload(target_position="0.0005"))
+    response = await post_json(
+        app, "/executions", execution_payload(target_position="0.0005")
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -2406,7 +2533,9 @@ async def test_create_execution_below_step_returns_untradeable_dust_fields() -> 
 async def test_run_once_creates_child_order_when_market_data_is_present() -> None:
     app = create_app(simulator_position="0")
     created = (await post_json(app, "/executions", execution_payload())).json()
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
 
     response = await post_json(app, f"/executions/{created['execution_id']}/run-once")
 
@@ -2431,7 +2560,9 @@ async def test_run_once_route_maps_returned_submit_rate_limit_backoff_to_503(
 ) -> None:
     app = create_app(simulator_position="0")
     created = (await post_json(app, "/executions", execution_payload())).json()
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
 
     async def rate_limited_submit(*_args: Any, **_kwargs: Any) -> ChildOrder:
         raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
@@ -2450,7 +2581,9 @@ async def test_cancel_route_maps_returned_cancel_rate_limit_backoff_to_503(
 ) -> None:
     app = create_app(simulator_position="0")
     created = (await post_json(app, "/executions", execution_payload())).json()
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
     opened = await post_json(app, f"/executions/{created['execution_id']}/run-once")
     assert opened.status_code == 200
     assert opened.json()["child_orders"][0]["status"] == "OPEN"
@@ -2472,15 +2605,21 @@ async def test_run_once_route_marks_returned_submit_venue_ban_unavailable(
 ) -> None:
     app = create_app(simulator_position="0")
     created = (await post_json(app, "/executions", execution_payload())).json()
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
 
     async def banned_submit(*_args: Any, **_kwargs: Any) -> ChildOrder:
         raise VenueBanHardStop("VENUE_BAN_HARD_STOP")
 
     monkeypatch.setattr(app.state.adapter, "submit_limit_order", banned_submit)
 
-    run_response = await post_json(app, f"/executions/{created['execution_id']}/run-once")
-    create_response = await post_json(app, "/executions", execution_payload(target_position="0.020"))
+    run_response = await post_json(
+        app, f"/executions/{created['execution_id']}/run-once"
+    )
+    create_response = await post_json(
+        app, "/executions", execution_payload(target_position="0.020")
+    )
 
     assert run_response.status_code == 503
     assert run_response.json()["detail"] == "VENUE_BAN_HARD_STOP"
@@ -2530,11 +2669,19 @@ async def test_run_once_route_maps_runtime_unavailable_to_503(
 @pytest.mark.asyncio
 async def test_terminal_response_serializes_rich_summary_metrics() -> None:
     app = create_app(simulator_position="0")
-    created = (await post_json(app, "/executions", execution_payload(target_position="0.004"))).json()
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
-    opened = (await post_json(app, f"/executions/{created['execution_id']}/run-once")).json()
+    created = (
+        await post_json(app, "/executions", execution_payload(target_position="0.004"))
+    ).json()
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
+    opened = (
+        await post_json(app, f"/executions/{created['execution_id']}/run-once")
+    ).json()
     child = opened["child_orders"][0]
-    await app.state.adapter.push_fill(child["client_order_id"], Decimal("0.004"), Decimal("95010.00"))
+    await app.state.adapter.push_fill(
+        child["client_order_id"], Decimal("0.004"), Decimal("95010.00")
+    )
 
     response = await post_json(app, f"/executions/{created['execution_id']}/reconcile")
 
@@ -2580,14 +2727,22 @@ async def test_reconcile_endpoint_maps_rate_limit_backoff_snapshot_to_503(
 ) -> None:
     app = create_app(simulator_position="0")
     created = (await post_json(app, "/executions", execution_payload())).json()
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
-    opened = (await post_json(app, f"/executions/{created['execution_id']}/run-once")).json()
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
+    opened = (
+        await post_json(app, f"/executions/{created['execution_id']}/run-once")
+    ).json()
     assert opened["child_orders"]
 
-    async def rate_limited_reconcile(*_args: Any, **_kwargs: Any) -> ReconciliationResult:
+    async def rate_limited_reconcile(
+        *_args: Any, **_kwargs: Any
+    ) -> ReconciliationResult:
         raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
 
-    monkeypatch.setattr(app.state.adapter, "reconcile_orders_and_fills", rate_limited_reconcile)
+    monkeypatch.setattr(
+        app.state.adapter, "reconcile_orders_and_fills", rate_limited_reconcile
+    )
 
     response = await post_json(app, f"/executions/{created['execution_id']}/reconcile")
 
@@ -2615,7 +2770,9 @@ async def test_unknown_execution_id_returns_404(method: str, path: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_internal_key_error_is_not_converted_to_404(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_internal_key_error_is_not_converted_to_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = create_app()
 
     async def raise_key_error(execution_id: str) -> None:
@@ -2704,7 +2861,9 @@ async def test_empty_parameters_default_and_repricing_mode_accepts_enum() -> Non
         execution_payload(parameters={"max_post_only_reject_retries": 0}),
     ],
 )
-async def test_invalid_execution_request_fields_are_rejected(payload: dict[str, Any]) -> None:
+async def test_invalid_execution_request_fields_are_rejected(
+    payload: dict[str, Any],
+) -> None:
     app = create_app()
 
     response = await post_json(app, "/executions", payload)
@@ -2713,10 +2872,14 @@ async def test_invalid_execution_request_fields_are_rejected(payload: dict[str, 
 
 
 @pytest.mark.asyncio
-async def test_response_child_and_exposure_decimal_fields_are_strings_after_run_once() -> None:
+async def test_response_child_and_exposure_decimal_fields_are_strings_after_run_once() -> (
+    None
+):
     app = create_app(simulator_position="0")
     created = (await post_json(app, "/executions", execution_payload())).json()
-    await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
+    await app.state.adapter.push_market_data(
+        SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10
+    )
 
     response = await post_json(app, f"/executions/{created['execution_id']}/run-once")
 
@@ -2737,7 +2900,12 @@ async def test_response_child_and_exposure_decimal_fields_are_strings_after_run_
         assert isinstance(body[field], str)
 
     child = body["child_orders"][0]
-    for field in ["submitted_quantity", "filled_quantity", "remaining_quantity", "price"]:
+    for field in [
+        "submitted_quantity",
+        "filled_quantity",
+        "remaining_quantity",
+        "price",
+    ]:
         assert isinstance(child[field], str)
     assert body["request"]["target_position"] == "0.010"
     assert body["request"]["target_price_lower"] == "94000"

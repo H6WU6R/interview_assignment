@@ -23,7 +23,9 @@ def test_accepted_chase_and_twap_testnet_manifests_pass(
 ) -> None:
     monkeypatch.setattr(verify_submission, "ROOT", tmp_path)
     write_manifest(tmp_path, "chase", algorithm="CHASE", environment="testnet")
-    write_manifest(tmp_path, "twap", algorithm="TWAP", environment="Environment.TESTNET")
+    write_manifest(
+        tmp_path, "twap", algorithm="TWAP", environment="Environment.TESTNET"
+    )
 
     assert verify_submission.testnet_evidence_failures() == []
 
@@ -144,11 +146,15 @@ def monkeypatch_verifier_gate(
         monkeypatch.setattr(verify_submission, "run", lambda _cmd: None)
     else:
         monkeypatch.setattr(verify_submission, "run", lambda cmd: commands.append(cmd))
-    monkeypatch.setattr(verify_submission, "build_wheel", lambda _dist_dir: root / "test.whl")
+    monkeypatch.setattr(
+        verify_submission, "build_wheel", lambda _dist_dir: root / "test.whl"
+    )
     monkeypatch.setattr(verify_submission, "verify_wheel", lambda _wheel_path: None)
 
 
-def write_manifest(root: Path, run_name: str, *, algorithm: str, environment: str) -> Path:
+def write_manifest(
+    root: Path, run_name: str, *, algorithm: str, environment: str
+) -> Path:
     manifest_path = evidence_root(root) / run_name / "evidence_manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(

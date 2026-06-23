@@ -19,7 +19,9 @@ from _sim_demo_common import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a deterministic simulator create-timeout demo.")
+    parser = argparse.ArgumentParser(
+        description="Run a deterministic simulator create-timeout demo."
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -38,10 +40,16 @@ async def main() -> None:
     execution = await service.create_execution(make_request(Algorithm.CHASE))
     prefix = make_client_order_prefix(execution.execution_id)
     simulator.script_create_timeout(prefix)
-    events = [log_event(clock, execution, "execution_created", extra={"armed_prefix": prefix})]
+    events = [
+        log_event(clock, execution, "execution_created", extra={"armed_prefix": prefix})
+    ]
 
     unknown = await service.run_once(execution.execution_id)
-    events.append(log_event(clock, unknown, "create_timeout_unknown", child=unknown.child_orders[-1]))
+    events.append(
+        log_event(
+            clock, unknown, "create_timeout_unknown", child=unknown.child_orders[-1]
+        )
+    )
 
     before_reconcile = await service.run_once(execution.execution_id)
     events.append(
@@ -54,8 +62,19 @@ async def main() -> None:
     )
 
     reconciled = await service.reconcile_execution(execution.execution_id)
-    events.append(log_event(clock, reconciled, "reconciled_original_open", child=reconciled.child_orders[-1]))
-    events.append(log_event(clock, reconciled, "result_summary", extra=summary_snapshot(reconciled)))
+    events.append(
+        log_event(
+            clock,
+            reconciled,
+            "reconciled_original_open",
+            child=reconciled.child_orders[-1],
+        )
+    )
+    events.append(
+        log_event(
+            clock, reconciled, "result_summary", extra=summary_snapshot(reconciled)
+        )
+    )
 
     print(f"execution_id={reconciled.execution_id}")
     print(f"status={reconciled.status}")

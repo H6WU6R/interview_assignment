@@ -5,10 +5,13 @@ import asyncio
 from contextlib import suppress
 from dataclasses import asdict, is_dataclass
 from decimal import Decimal, InvalidOperation
+import math
 from pathlib import Path
+import re
 from typing import Any, Iterable, Mapping
 
 from config import Settings, load_binance_usdm_credentials
+from exchanges.base import ExchangeRateLimited
 from exchanges.binance_usdm import BinanceUsdmAdapter
 from execution.ids import make_client_order_prefix
 from execution.models import (
@@ -21,6 +24,12 @@ from execution.models import (
 from execution.service import ExecutionService
 from observability.artifacts import write_execution_artifacts
 from observability.logging import to_jsonable
+
+
+_PRECREATE_RATE_LIMIT_MAX_BACKOFF_BUDGET_SECONDS = 5.0
+_PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS = 0.1
+_SANITIZED_REASON_MAX_CHARS = 200
+_SENSITIVE_REASON_VALUE_RE = re.compile(r"(?i)\b(api[-_ ]?key|secret|signature|token)=\S+")
 
 
 def parse_args(algorithm: Algorithm) -> argparse.Namespace:
@@ -107,7 +116,15 @@ async def run(algorithm: Algorithm) -> Path:
             deadline_policy=DeadlinePolicy.AGGRESSIVE_WITHIN_RANGE,
             parameters=ExecutionParameters(number_of_slices=args.number_of_slices),
         )
-        execution = await service.create_execution(request)
+        execution = await _create_execution_with_rate_limit_backoff(
+            service,
+            request,
+            adapter,
+            args=args,
+            events=events,
+            market_task=market_task,
+            user_task=user_task,
+        )
         active_execution["execution_id"] = execution.execution_id
         events.append(_runtime_event(adapter, "execution_created", execution=_record_summary(execution)))
 
@@ -178,6 +195,45 @@ async def run(algorithm: Algorithm) -> Path:
         return artifact_dir
     finally:
         await _stop_stream_tasks(user_task, market_task)
+
+
+async def _create_execution_with_rate_limit_backoff(
+    service: ExecutionService,
+    request: ExecutionRequest,
+    adapter: BinanceUsdmAdapter,
+    *,
+    args: argparse.Namespace,
+    events: list[dict[str, Any]],
+    market_task: asyncio.Task[Any] | None,
+    user_task: asyncio.Task[Any] | None,
+) -> Any:
+    loop = asyncio.get_running_loop()
+    backoff_seconds = max(float(args.poll_interval_seconds), _PRECREATE_RATE_LIMIT_MIN_BACKOFF_SECONDS)
+    backoff_budget_seconds = min(
+        max(float(args.max_runtime_seconds), 0.0),
+        _PRECREATE_RATE_LIMIT_MAX_BACKOFF_BUDGET_SECONDS,
+    )
+    backoff_deadline = loop.time() + backoff_budget_seconds
+    max_backoffs = max(0, math.floor((backoff_budget_seconds + 1e-9) / backoff_seconds))
+    backoff_count = 0
+
+    while True:
+        _raise_if_stream_task_failed(market_task, user_task)
+        try:
+            return await service.create_execution(request)
+        except ExchangeRateLimited as exc:
+            events.append(
+                _runtime_event(
+                    adapter,
+                    "precreate_rate_limit_backoff",
+                    reason=_sanitize_exchange_reason(exc),
+                    backoff_seconds=backoff_seconds,
+                )
+            )
+            if backoff_count >= max_backoffs or loop.time() + backoff_seconds > backoff_deadline + 1e-9:
+                raise
+            backoff_count += 1
+            await asyncio.sleep(backoff_seconds)
 
 
 async def _start_market_stream(
@@ -310,6 +366,15 @@ def _jsonable(value: Any) -> Any:
     if is_dataclass(value):
         return to_jsonable(asdict(value))
     return to_jsonable(value)
+
+
+def _sanitize_exchange_reason(exc: ExchangeRateLimited) -> str:
+    reason = str(getattr(exc, "reason", None) or str(exc) or ExchangeRateLimited.code)
+    reason = " ".join(reason.split())
+    reason = _SENSITIVE_REASON_VALUE_RE.sub(lambda match: f"{match.group(1)}=[redacted]", reason)
+    if len(reason) > _SANITIZED_REASON_MAX_CHARS:
+        reason = f"{reason[:_SANITIZED_REASON_MAX_CHARS]}..."
+    return reason or ExchangeRateLimited.code
 
 
 def _runtime_event(adapter: Any, event_name: str, **payload: Any) -> dict[str, Any]:

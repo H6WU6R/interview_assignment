@@ -1173,6 +1173,320 @@ async def test_testnet_runner_starts_and_stops_market_and_user_stream_tasks(
     assert adapter.user_closed.is_set()
 
 
+async def test_testnet_runner_backs_off_and_retries_precreate_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import importlib.util
+
+    class FakeRunnerAdapter:
+        def __init__(self, settings: Settings) -> None:
+            self.settings = settings
+            self.clock = ManualClock()
+            self.market_started = asyncio.Event()
+            self.user_started = asyncio.Event()
+            self.market_closed = asyncio.Event()
+            self.user_closed = asyncio.Event()
+            self.synchronized = False
+            self.submitted_orders: list[OrderRequest] = []
+            self.call_order: list[str] = []
+
+        def set_market_stream_symbol(self, _symbol: str) -> None:
+            pass
+
+        async def synchronize_server_time(self) -> int:
+            self.synchronized = True
+            self.call_order.append("synchronize_server_time")
+            return 0
+
+        def stream_market_data(self):
+            async def events():
+                self.market_started.set()
+                try:
+                    yield MarketSnapshot(
+                        symbol="BTCUSDT",
+                        bid=Decimal("100.00"),
+                        ask=Decimal("100.10"),
+                        last_market_event_time_exchange=1,
+                        last_market_event_time_local_monotonic=0.0,
+                    )
+                    await asyncio.Event().wait()
+                finally:
+                    self.market_closed.set()
+
+            return events()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_started.set()
+                try:
+                    yield {}
+                    await asyncio.Event().wait()
+                finally:
+                    self.user_closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.market_started.is_set() and self.user_started.is_set()
+
+        async def get_symbol_rules(self, _symbol: str) -> SymbolRules:
+            return rules()
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> None:
+            self.submitted_orders.append(order_request)
+            raise AssertionError("order submitted before create_execution succeeded")
+
+        async def reconcile_orders_and_fills(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(orders=[], fills=[], warnings=[])
+
+    class FakeExecutionService:
+        def __init__(self, adapter: FakeRunnerAdapter, **_kwargs: Any) -> None:
+            self.adapter = adapter
+            self.create_calls = 0
+
+        async def create_execution(self, _request: Any) -> Any:
+            self.create_calls += 1
+            self.adapter.call_order.append(f"create_execution:{self.create_calls}")
+            assert self.adapter.synchronized
+            if self.create_calls == 1:
+                raise ExchangeRateLimited("RATE_LIMIT_BACKOFF\napi-key=secret")
+            return SimpleNamespace(
+                execution_id="exec_1234567890abcdef",
+                status=ExecutionStatus.RUNNING,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+        async def run_once(self, _execution_id: str) -> Any:
+            self.adapter.call_order.append("run_once")
+            return SimpleNamespace(
+                execution_id="exec_1234567890abcdef",
+                status=ExecutionStatus.COMPLETED,
+                final_reason=None,
+                exposure={},
+                child_orders=[],
+            )
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter: FakeRunnerAdapter | None = None
+
+    def make_adapter(settings: Settings) -> FakeRunnerAdapter:
+        nonlocal adapter
+        adapter = FakeRunnerAdapter(settings)
+        return adapter
+
+    sleeps: list[float] = []
+    original_sleep = asyncio.sleep
+
+    async def capture_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        await original_sleep(0)
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda _algorithm: SimpleNamespace(
+            symbol="BTCUSDT",
+            confirm_send_orders=True,
+            target_position="0.100",
+            target_price_lower="90",
+            target_price_upper="110",
+            duration_seconds=60,
+            number_of_slices=1,
+            max_runtime_seconds=30.0,
+            poll_interval_seconds=0.0,
+            market_timeout_seconds=1.0,
+            output_dir=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_binance_usdm_credentials",
+        lambda: SimpleNamespace(is_configured=True, api_key="key", api_secret="secret"),
+    )
+    monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
+    monkeypatch.setattr(module, "ExecutionService", FakeExecutionService)
+    monkeypatch.setattr(module.asyncio, "sleep", capture_sleep)
+    artifact_call: dict[str, Any] = {}
+
+    def capture_artifacts(**kwargs: Any) -> Path:
+        artifact_call.update(kwargs)
+        return tmp_path / "artifacts"
+
+    monkeypatch.setattr(module, "write_execution_artifacts", capture_artifacts)
+
+    artifact_dir = await module.run(Algorithm.CHASE)
+
+    assert artifact_dir == tmp_path / "artifacts"
+    assert adapter is not None
+    assert adapter.call_order == [
+        "synchronize_server_time",
+        "create_execution:1",
+        "create_execution:2",
+        "run_once",
+    ]
+    assert adapter.submitted_orders == []
+    assert [delay for delay in sleeps if delay == 0.1] == [0.1]
+    backoff_events = [
+        event for event in artifact_call["log_events"] if event["event"] == "precreate_rate_limit_backoff"
+    ]
+    assert backoff_events == [
+        {
+            "event": "precreate_rate_limit_backoff",
+            "utc_timestamp": backoff_events[0]["utc_timestamp"],
+            "monotonic_time": backoff_events[0]["monotonic_time"],
+            "reason": "RATE_LIMIT_BACKOFF api-key=[redacted]",
+            "backoff_seconds": 0.1,
+        }
+    ]
+
+
+async def test_testnet_runner_exits_when_precreate_rate_limit_budget_exhausts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    class FakeRunnerAdapter:
+        def __init__(self, settings: Settings) -> None:
+            self.settings = settings
+            self.clock = ManualClock()
+            self.market_started = asyncio.Event()
+            self.user_started = asyncio.Event()
+            self.market_closed = asyncio.Event()
+            self.user_closed = asyncio.Event()
+            self.synchronized = False
+            self.submitted_orders: list[OrderRequest] = []
+            self.call_order: list[str] = []
+
+        def set_market_stream_symbol(self, _symbol: str) -> None:
+            pass
+
+        async def synchronize_server_time(self) -> int:
+            self.synchronized = True
+            self.call_order.append("synchronize_server_time")
+            return 0
+
+        def stream_market_data(self):
+            async def events():
+                self.market_started.set()
+                try:
+                    yield MarketSnapshot(
+                        symbol="BTCUSDT",
+                        bid=Decimal("100.00"),
+                        ask=Decimal("100.10"),
+                        last_market_event_time_exchange=1,
+                        last_market_event_time_local_monotonic=0.0,
+                    )
+                    await asyncio.Event().wait()
+                finally:
+                    self.market_closed.set()
+
+            return events()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_started.set()
+                try:
+                    yield {}
+                    await asyncio.Event().wait()
+                finally:
+                    self.user_closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.market_started.is_set() and self.user_started.is_set()
+
+        async def get_symbol_rules(self, _symbol: str) -> SymbolRules:
+            return rules()
+
+        async def submit_limit_order(self, order_request: OrderRequest) -> None:
+            self.submitted_orders.append(order_request)
+            raise AssertionError("order submitted before create_execution succeeded")
+
+    class FakeExecutionService:
+        def __init__(self, adapter: FakeRunnerAdapter, **_kwargs: Any) -> None:
+            self.adapter = adapter
+            self.create_calls = 0
+
+        async def create_execution(self, _request: Any) -> Any:
+            self.create_calls += 1
+            self.adapter.call_order.append(f"create_execution:{self.create_calls}")
+            assert self.adapter.synchronized
+            raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
+
+        async def run_once(self, _execution_id: str) -> Any:
+            raise AssertionError("runner reached order flow without an execution")
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter: FakeRunnerAdapter | None = None
+
+    def make_adapter(settings: Settings) -> FakeRunnerAdapter:
+        nonlocal adapter
+        adapter = FakeRunnerAdapter(settings)
+        return adapter
+
+    sleeps: list[float] = []
+    original_sleep = asyncio.sleep
+
+    async def capture_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        await original_sleep(0)
+
+    monkeypatch.setattr(
+        module,
+        "parse_args",
+        lambda _algorithm: SimpleNamespace(
+            symbol="BTCUSDT",
+            confirm_send_orders=True,
+            target_position="0.100",
+            target_price_lower="90",
+            target_price_upper="110",
+            duration_seconds=60,
+            number_of_slices=1,
+            max_runtime_seconds=0.2,
+            poll_interval_seconds=0.0,
+            market_timeout_seconds=1.0,
+            output_dir=Path("/tmp"),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_binance_usdm_credentials",
+        lambda: SimpleNamespace(is_configured=True, api_key="key", api_secret="secret"),
+    )
+    monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
+    monkeypatch.setattr(module, "ExecutionService", FakeExecutionService)
+    monkeypatch.setattr(module.asyncio, "sleep", capture_sleep)
+
+    with pytest.raises(ExchangeRateLimited, match="RATE_LIMIT_BACKOFF"):
+        await module.run(Algorithm.CHASE)
+
+    assert adapter is not None
+    assert adapter.call_order == [
+        "synchronize_server_time",
+        "create_execution:1",
+        "create_execution:2",
+        "create_execution:3",
+    ]
+    assert adapter.submitted_orders == []
+    assert [delay for delay in sleeps if delay == 0.1] == [0.1, 0.1]
+    assert adapter.market_closed.is_set()
+    assert adapter.user_closed.is_set()
+
+
 async def test_testnet_runner_stops_before_service_flow_when_server_time_sync_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

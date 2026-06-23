@@ -244,7 +244,7 @@ uv run pytest -q tests/integration
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
 These read-only contract tests validate connectivity and parsing only; they do not satisfy the required accepted-order Chase/TWAP Testnet evidence.
 
-Current verified non-live baseline before the final evidence cleanup plan: `489 passed` with `uv run pytest -q tests/unit tests/simulation`. A full credentialed local review can report `491 passed` only when the two Binance integration tests run successfully.
+Current verified non-live baseline after the final evidence cleanup plan: `506 passed` with `uv run pytest -q tests/unit tests/simulation`. Credentialed/network-enabled integration tests are separate and should only be reported when run with Binance Testnet credentials.
 
 ## Known Limitations
 

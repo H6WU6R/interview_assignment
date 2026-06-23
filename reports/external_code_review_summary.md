@@ -26,10 +26,10 @@ uv run python scripts/run_sim_create_timeout.py
 git diff --check
 ```
 
-Verified non-live baseline before the final evidence cleanup plan:
+Verified non-live baseline after the final evidence cleanup plan:
 
 ```text
-489 passed
+506 passed
 simulator Chase demo passed
 simulator TWAP demo passed
 simulator cancel/fill race demo passed
@@ -37,7 +37,7 @@ simulator create-timeout demo passed
 git diff --check clean
 ```
 
-Credentialed/network-enabled integration verification is separate: `uv run pytest -q tests/integration`. A full credentialed local review can report `491 passed` only when the two Binance integration tests run successfully.
+Credentialed/network-enabled integration verification is separate: `uv run pytest -q tests/integration`. Report those results only when the Binance integration tests run successfully with Testnet credentials.
 
 The committed simulator evidence directories are under `reports/evidence/simulation/` for normal Chase, TWAP, cancel/fill race, and create-timeout.
 

@@ -25,21 +25,21 @@ T10 & Cross-zero Position & Required-trade and account-position tests. \\
 \end{tabularx}
 \end{table}
 
-Current reproducible non-live baseline verification passed before the final evidence cleanup plan:
+Current reproducible non-live baseline verification passed after the final evidence cleanup plan:
 
 \begin{center}
-\code{uv run pytest -q tests/unit tests/simulation} \quad \(\rightarrow\) \quad \code{489 passed}
+\code{uv run pytest -q tests/unit tests/simulation} \quad \(\rightarrow\) \quad \code{506 passed}
 \end{center}
 
-Credentialed/network-enabled integration verification is separate: \code{uv run pytest -q tests/integration}. A full credentialed local review can report \code{491 passed} only when the two Binance integration tests run successfully.
+Credentialed/network-enabled integration verification is separate: \code{uv run pytest -q tests/integration}. Those results should be reported only for a full credentialed local review where the Binance integration tests run successfully.
 
 The four simulator scripts also ran successfully during this report build and wrote committed structured artifacts:
 
 \begin{itemize}[leftmargin=1.2em]
-  \item \code{reports/evidence/simulation/chase/exec\_d10652a300e544dc}
-  \item \code{reports/evidence/simulation/twap/exec\_1da27294d07f47af}
-  \item \code{reports/evidence/simulation/cancel-race/exec\_2d3534bffa694b40}
-  \item \code{reports/evidence/simulation/create-timeout/exec\_a03dec73abde450b}
+  \item \code{reports/evidence/simulation/chase/exec\_c8dc942476764355}
+  \item \code{reports/evidence/simulation/twap/exec\_61fadac604f4440a}
+  \item \code{reports/evidence/simulation/cancel-race/exec\_669d47a536a94682}
+  \item \code{reports/evidence/simulation/create-timeout/exec\_3ddb8a47995348d0}
 \end{itemize}
 
 The repository contains Binance Testnet runner scripts for Chase and TWAP. They require credentials and an explicit \code{--confirm-send-orders} flag and never fall back to simulation. Accepted sanitized Testnet artifacts are included at \code{reports/evidence/testnet/chase/exec\_3168600ee25b4193} and \code{reports/evidence/testnet/twap/exec\_85bef3985ea3431a}. The Chase manifest records exchange order ID \code{16277695886}. The TWAP manifest records exchange order IDs \code{16277882286} and \code{16277899689}. These accepted artifacts preserve order/trade evidence while redacting \code{ACCOUNT\_UPDATE} balance and position fields.

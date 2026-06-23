@@ -499,10 +499,10 @@ uv run python scripts/run_sim_cancel_race.py
 uv run python scripts/run_sim_create_timeout.py
 ```
 
-Verified non-live baseline before the final evidence cleanup plan:
+Verified non-live baseline after the final evidence cleanup plan:
 
 ```text
-489 passed
+506 passed
 ```
 
 Credentialed/network-enabled integration verification is separate:
@@ -511,7 +511,7 @@ Credentialed/network-enabled integration verification is separate:
 uv run pytest -q tests/integration
 ```
 
-The README and final PDF should report `491 passed` only for a full credentialed local review where the two Binance integration tests run successfully.
+The README and final PDF should report credentialed integration results only for a full credentialed local review where the Binance integration tests run successfully.
 
 ## Demo Checklist
 

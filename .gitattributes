@@ -1,0 +1,6 @@
+docs/superpowers/** export-ignore
+reports/external_code_review_summary.md export-ignore
+.agents/** export-ignore
+.codex/** export-ignore
+.DS_Store export-ignore
+__MACOSX/** export-ignore

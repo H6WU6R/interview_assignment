@@ -330,13 +330,19 @@ class ExecutionRuntime:
             except RuntimeUnavailableError as exc:
                 self._record_runtime_error(execution_id, exc)
                 if str(exc) == RATE_LIMIT_BACKOFF:
-                    await asyncio.sleep(self._stream_restart_delay_seconds)
+                    await self._sleep_background_interval(
+                        execution_id,
+                        self._stream_restart_delay_seconds,
+                    )
                     continue
                 return
             except Exception as exc:
                 if is_exchange_rate_limited(exc):
                     self._record_runtime_error(execution_id, exc)
-                    await asyncio.sleep(self._stream_restart_delay_seconds)
+                    await self._sleep_background_interval(
+                        execution_id,
+                        self._stream_restart_delay_seconds,
+                    )
                     continue
                 self._record_runtime_error(execution_id, exc)
                 try:
@@ -345,11 +351,29 @@ class ExecutionRuntime:
                     raise
                 except Exception as reconcile_exc:
                     self._record_runtime_error(execution_id, reconcile_exc)
-                await asyncio.sleep(self._background_tick_interval_seconds)
+                await self._sleep_background_interval(
+                    execution_id,
+                    self._background_tick_interval_seconds,
+                )
                 continue
             if record.status.is_terminal:
                 return
-            await asyncio.sleep(self._background_tick_interval_seconds)
+            await self._sleep_background_interval(
+                execution_id,
+                self._background_tick_interval_seconds,
+            )
+
+    async def _sleep_background_interval(self, execution_id: str, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+        self._advance_background_clock(execution_id, seconds)
+
+    def _advance_background_clock(self, execution_id: str, seconds: float) -> None:
+        environment = self._execution_environments.get(execution_id)
+        if environment is not Environment.SIMULATION:
+            return
+        clock = self._clocks.get(environment)
+        if isinstance(clock, ManualClock):
+            clock.advance(seconds)
 
     def _cancel_background_loop_if_terminal(self, record: ExecutionRecord) -> None:
         if not record.status.is_terminal:

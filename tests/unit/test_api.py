@@ -2009,6 +2009,53 @@ async def test_background_loop_advances_twap_without_external_run_once(
 
 
 @pytest.mark.asyncio
+async def test_default_simulation_background_loop_advances_manual_clock_to_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(background_tick_interval_seconds=0.25)
+    original_sleep = asyncio.sleep
+    background_sleeps = 0
+
+    async def yielding_sleep(delay: float) -> None:
+        nonlocal background_sleeps
+        if delay == app.state.runtime._background_tick_interval_seconds:
+            background_sleeps += 1
+        await original_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", yielding_sleep)
+    await app.state.runtime.start()
+    try:
+        await app.state.adapter.push_market_data(
+            SYMBOL,
+            Decimal("95000.00"),
+            Decimal("95001.00"),
+            1,
+        )
+        payload = execution_payload(target_duration_seconds=1)
+        payload["deadline_policy"] = "CANCEL_REMAINDER"
+
+        created_response = await post_json(app, "/executions", payload)
+        created = created_response.json()
+        body = created
+        for _ in range(20):
+            if body["status"] == "EXPIRED":
+                break
+            await original_sleep(0)
+            response = await get_json(app, f"/executions/{created['execution_id']}")
+            assert response.status_code == 200
+            body = response.json()
+
+        assert created_response.status_code == 200
+        assert background_sleeps > 0
+        assert app.state.clock.current >= 1
+        assert body["status"] == "EXPIRED"
+        assert body["final_reason"] == "DEADLINE_CANCEL_REMAINDER"
+        assert Decimal(body["summary_metrics"]["actual_duration_seconds"]) >= Decimal("1")
+    finally:
+        await app.state.runtime.stop()
+
+
+@pytest.mark.asyncio
 async def test_background_loop_reconciles_unknown_child_without_manual_reconcile() -> None:
     app = create_app(simulator_position="0", background_tick_interval_seconds=0.01)
     await app.state.runtime.start()

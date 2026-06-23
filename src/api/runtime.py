@@ -295,18 +295,6 @@ class ExecutionRuntime:
                     self._record_runtime_error(execution_id, reconcile_exc)
                 await asyncio.sleep(self._background_tick_interval_seconds)
                 continue
-            if (
-                not record.status.is_terminal
-                and record.exposure.unknown_order_quantity > Decimal("0")
-            ):
-                try:
-                    record = await self.reconcile_execution(execution_id)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    self._record_runtime_error(execution_id, exc)
-                    await asyncio.sleep(self._background_tick_interval_seconds)
-                    continue
             if record.status.is_terminal:
                 return
             await asyncio.sleep(self._background_tick_interval_seconds)

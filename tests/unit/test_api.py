@@ -748,7 +748,7 @@ async def test_background_loop_records_unexpected_failure_and_retries(
 
 
 @pytest.mark.asyncio
-async def test_background_loop_records_unknown_reconcile_failure_and_retries(
+async def test_background_loop_resolves_unknown_by_exact_lookup_without_broad_reconcile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = create_app(simulator_position="0", background_tick_interval_seconds=0.01)
@@ -758,31 +758,25 @@ async def test_background_loop_records_unknown_reconcile_failure_and_retries(
     app.state.adapter.script_create_timeout(prefix)
     await app.state.adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), 10)
 
-    original_reconcile = app.state.runtime.reconcile_execution
     calls = 0
 
-    async def flaky_reconcile(execution_id: str):
+    async def unexpected_reconcile(execution_id: str):
         nonlocal calls
         calls += 1
-        if calls == 1:
-            raise RuntimeError("unknown reconcile boom")
-        return await original_reconcile(execution_id)
+        raise AssertionError(f"unexpected broad reconcile for {execution_id}")
 
-    monkeypatch.setattr(app.state.runtime, "reconcile_execution", flaky_reconcile)
+    monkeypatch.setattr(app.state.runtime, "reconcile_execution", unexpected_reconcile)
     await app.state.runtime.start()
     try:
         reconciled = await wait_for_execution(
             app,
             created["execution_id"],
-            lambda body: calls >= 2
-            and bool(body["child_orders"])
-            and body["unknown_order_quantity"] == "0",
+            lambda body: bool(body["child_orders"]) and body["unknown_order_quantity"] == "0",
             timeout_seconds=1.0,
         )
 
         assert reconciled["child_orders"][0]["status"] == "OPEN"
-        assert calls >= 2
-        assert "unknown reconcile boom" in app.state.runtime.runtime_errors[created["execution_id"]][-1]
+        assert calls == 0
         assert app.state.runtime.background_task_count == 1
     finally:
         await app.state.runtime.stop()

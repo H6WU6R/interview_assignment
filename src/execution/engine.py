@@ -339,19 +339,19 @@ class ExecutionEngine:
                 return self._snapshot(record)
 
             if record.status is ExecutionStatus.CANCELLING:
-                await self._reconcile_locked(record)
+                await self._refresh_order_states_exact_locked(record)
                 self._terminalize_manual_cancel_if_clear_locked(record)
                 return self._snapshot(record)
 
             if record.exposure.unknown_order_quantity > Decimal("0"):
-                await self._reconcile_locked(record, exact_unknown_lookup=True)
+                await self._refresh_order_states_exact_locked(record)
                 if record.exposure.unknown_order_quantity > Decimal("0"):
                     if self._deadline_reached(record):
                         record.final_reason = CREATE_TIMEOUT_PENDING_RECONCILIATION
                     return self._snapshot(record)
                 return self._snapshot(record)
 
-            await self._reconcile_locked(record)
+            await self._refresh_order_states_exact_locked(record)
 
             if self._target_filled(record):
                 self._complete_locked(record, TARGET_QUANTITY_FILLED)
@@ -361,7 +361,7 @@ class ExecutionEngine:
             if self._deadline_reached(record) and not stream_healthy:
                 record.final_reason = STREAM_HEALTH_DEGRADED_RECONCILED
                 await self._cancel_active_children_locked(record)
-                await self._reconcile_locked(record, exact_unknown_lookup=True)
+                await self._refresh_order_states_exact_locked(record)
                 if self._target_filled(record):
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
                     return self._snapshot(record)
@@ -378,7 +378,7 @@ class ExecutionEngine:
 
             if self._should_terminalize_cancel_remainder_deadline(record):
                 await self._cancel_active_children_locked(record)
-                await self._reconcile_locked(record)
+                await self._refresh_order_states_exact_locked(record)
                 if self._target_filled(record):
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
                     return self._snapshot(record)
@@ -392,13 +392,13 @@ class ExecutionEngine:
 
             if self._should_cancel_for_aggressive_deadline(record):
                 await self._cancel_passive_children_for_aggressive_deadline_locked(record)
-                await self._reconcile_locked(record)
+                await self._refresh_order_states_exact_locked(record)
                 if self._target_filled(record):
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
                     return self._snapshot(record)
 
             if await self._cancel_timed_out_children_locked(record):
-                await self._reconcile_locked(record)
+                await self._refresh_order_states_exact_locked(record)
                 if self._target_filled(record):
                     self._complete_locked(record, TARGET_QUANTITY_FILLED)
                     return self._snapshot(record)
@@ -409,18 +409,18 @@ class ExecutionEngine:
             try:
                 if record.exposure.reserved_exposure > Decimal("0"):
                     if record.request.algorithm is Algorithm.CHASE:
-                        await self._maybe_reprice_chase_locked(record)
-                        await self._reconcile_locked(record)
+                        if await self._maybe_reprice_chase_locked(record):
+                            await self._refresh_order_states_exact_locked(record)
                     if record.exposure.reserved_exposure > Decimal("0"):
                         return self._snapshot(record)
 
                 demand = await self._build_child_demand_locked(record)
             except NoFreshMarketData:
                 record.final_reason = MARKET_DATA_STALE_RECONCILED
-                await self._reconcile_locked(record, exact_unknown_lookup=True)
+                await self._refresh_order_states_exact_locked(record)
                 if self._deadline_reached(record):
                     await self._cancel_active_children_locked(record)
-                    await self._reconcile_locked(record, exact_unknown_lookup=True)
+                    await self._refresh_order_states_exact_locked(record)
                     if self._target_filled(record):
                         self._complete_locked(record, TARGET_QUANTITY_FILLED)
                         return self._snapshot(record)
@@ -443,10 +443,10 @@ class ExecutionEngine:
                     )
                 except NoFreshMarketData:
                     record.final_reason = MARKET_DATA_STALE_RECONCILED
-                    await self._reconcile_locked(record, exact_unknown_lookup=True)
+                    await self._refresh_order_states_exact_locked(record)
                     if self._deadline_reached(record):
                         await self._cancel_active_children_locked(record)
-                        await self._reconcile_locked(record, exact_unknown_lookup=True)
+                        await self._refresh_order_states_exact_locked(record)
                         if self._target_filled(record):
                             self._complete_locked(record, TARGET_QUANTITY_FILLED)
                             return self._snapshot(record)
@@ -759,6 +759,47 @@ class ExecutionEngine:
             exact_unknown_lookup=exact_unknown_lookup,
         )
 
+    async def _refresh_order_states_exact_locked(self, record: ExecutionRecord) -> None:
+        tracker = record.exposure_tracker
+        if tracker is None:
+            return
+
+        for child in list(record.child_orders):
+            if child.status.is_terminal:
+                continue
+
+            exchange_child = await self._adapter.get_order_by_client_order_id(
+                record.request.symbol,
+                child.client_order_id,
+            )
+            if exchange_child is None:
+                if child.status is ChildOrderStatus.UNKNOWN:
+                    self._set_child_status(child, ChildOrderStatus.REJECTED)
+                    child.terminal_reason = CREATE_TIMEOUT_ORDER_NOT_FOUND
+                    record.final_reason = CREATE_TIMEOUT_ORDER_NOT_FOUND
+                    self._increment_metric(record, "unknown_orders_reconciled")
+                continue
+
+            was_unknown = child.status is ChildOrderStatus.UNKNOWN
+            exchange_filled_quantity = exchange_child.confirmed_filled_quantity
+            self._copy_exchange_child(child, exchange_child, include_filled=False)
+            self._set_child_status(child, getattr(exchange_child, "status", child.status))
+            if exchange_filled_quantity > Decimal("0"):
+                self._update_child_cumulative_fill_locked(
+                    record,
+                    child,
+                    exchange_filled_quantity,
+                    trade_id=None,
+                    fill_price=child.price,
+                    authoritative_trade=False,
+                )
+            if was_unknown and child.status is not ChildOrderStatus.UNKNOWN:
+                self._increment_metric(record, "unknown_orders_reconciled")
+                if self._reconciled_unknown_child_resets_retryable_reject_gate(child):
+                    self._reset_retryable_order_reject_gate_locked(record)
+
+        self._finish_reconciliation_refresh_locked(record)
+
     async def _apply_reconciliation_result_locked(
         self,
         record: ExecutionRecord,
@@ -857,6 +898,9 @@ class ExecutionEngine:
                     self._increment_metric(record, "unknown_orders_reconciled")
             tracker.clear_unknown_create()
 
+        self._finish_reconciliation_refresh_locked(record)
+
+    def _finish_reconciliation_refresh_locked(self, record: ExecutionRecord) -> None:
         self._refresh_reserved_exposure_locked(record)
         self._record_max_reserved_exposure(record)
         self._assert_exposure_invariant_locked(record)
@@ -904,10 +948,10 @@ class ExecutionEngine:
             if self._reconciled_unknown_child_resets_retryable_reject_gate(child):
                 self._reset_retryable_order_reject_gate_locked(record)
 
-    async def _maybe_reprice_chase_locked(self, record: ExecutionRecord) -> None:
+    async def _maybe_reprice_chase_locked(self, record: ExecutionRecord) -> bool:
         active_child = self._first_active_child(record)
         if active_child is None:
-            return
+            return False
 
         market = await self._adapter.get_best_bid_ask(record.request.symbol)
         rules = await self._adapter.get_symbol_rules(record.request.symbol)
@@ -926,6 +970,8 @@ class ExecutionEngine:
             record.last_reprice_monotonic = self._now_decimal()
             self._increment_metric(record, "reprices")
             await self._cancel_active_children_locked(record)
+            return True
+        return False
 
     async def _build_child_demand_locked(
         self,

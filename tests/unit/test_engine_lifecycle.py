@@ -714,7 +714,7 @@ async def test_exact_create_timeout_lookup_maps_found_order_to_live_open() -> No
     execution = await service.create_execution(execution_request())
 
     timed_out = await service.run_once(execution.execution_id)
-    reconciled = await service.reconcile_execution(execution.execution_id)
+    reconciled = await service.run_once(execution.execution_id)
 
     assert timed_out.child_orders[0].status is ChildOrderStatus.UNKNOWN
     assert adapter.lookup_client_order_ids == [timed_out.child_orders[0].client_order_id]
@@ -722,6 +722,96 @@ async def test_exact_create_timeout_lookup_maps_found_order_to_live_open() -> No
     assert reconciled.exposure.unknown_order_quantity == Decimal("0")
     assert reconciled.exposure.live_open_quantity == Decimal("0.010")
     assert reconciled.final_reason == "CREATE_TIMEOUT_RECONCILED"
+
+
+async def test_run_once_refreshes_known_open_child_by_exact_lookup_without_broad_reconciliation() -> None:
+    class ExactRefreshAdapter(DeterministicSimulator):
+        lookup_client_order_ids: list[str]
+        broad_reconciliation_calls: int
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.lookup_client_order_ids = []
+            self.broad_reconciliation_calls = 0
+
+        async def get_order_by_client_order_id(
+            self,
+            symbol: str,
+            client_order_id: str,
+        ) -> ChildOrder | None:
+            self.lookup_client_order_ids.append(client_order_id)
+            return await super().get_order_by_client_order_id(symbol, client_order_id)
+
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ReconciliationResult:
+            self.broad_reconciliation_calls += 1
+            if self.broad_reconciliation_calls > 1:
+                raise AssertionError("ordinary run_once should use exact order lookup")
+            return await super().reconcile_orders_and_fills(
+                symbol,
+                client_order_prefix=client_order_prefix,
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+            )
+
+    clock = ManualClock()
+    adapter = ExactRefreshAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    opened = await service.run_once(execution.execution_id)
+
+    adapter.lookup_client_order_ids.clear()
+    adapter.broad_reconciliation_calls = 0
+    refreshed = await service.run_once(execution.execution_id)
+
+    assert refreshed.child_orders[0].status is ChildOrderStatus.OPEN
+    assert adapter.lookup_client_order_ids == [opened.child_orders[0].client_order_id]
+    assert adapter.broad_reconciliation_calls == 0
+
+
+async def test_manual_reconcile_execution_preserves_broad_reconciliation_path() -> None:
+    class BroadRecoveryAdapter(DeterministicSimulator):
+        broad_reconciliation_calls: int
+
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)
+            self.broad_reconciliation_calls = 0
+
+        async def reconcile_orders_and_fills(
+            self,
+            symbol: str,
+            client_order_prefix: str | None = None,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ReconciliationResult:
+            self.broad_reconciliation_calls += 1
+            return await super().reconcile_orders_and_fills(
+                symbol,
+                client_order_prefix=client_order_prefix,
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+            )
+
+    clock = ManualClock()
+    adapter = BroadRecoveryAdapter(clock=clock)
+    await adapter.push_market_data(SYMBOL, Decimal("95000.00"), Decimal("95001.00"), exchange_event_time=10)
+    service = ExecutionService(adapter, clock=clock)
+    execution = await service.create_execution(execution_request())
+    await service.run_once(execution.execution_id)
+
+    adapter.broad_reconciliation_calls = 0
+    snapshot = await service.reconcile_execution(execution.execution_id)
+
+    assert snapshot.child_orders[0].status is ChildOrderStatus.OPEN
+    assert adapter.broad_reconciliation_calls == 1
 
 
 async def test_exact_create_timeout_lookup_not_found_clears_unknown_without_broad_warning() -> None:
@@ -757,7 +847,7 @@ async def test_exact_create_timeout_lookup_not_found_clears_unknown_without_broa
     execution = await service.create_execution(execution_request())
 
     timed_out = await service.run_once(execution.execution_id)
-    reconciled = await service.reconcile_execution(execution.execution_id)
+    reconciled = await service.run_once(execution.execution_id)
     retried = await service.run_once(execution.execution_id)
 
     assert timed_out.child_orders[0].status is ChildOrderStatus.UNKNOWN

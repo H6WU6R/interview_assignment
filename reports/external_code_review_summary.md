@@ -29,7 +29,7 @@ git diff --check
 Verified non-live baseline after the final evidence cleanup plan:
 
 ```text
-506 passed
+513 passed
 simulator Chase demo passed
 simulator TWAP demo passed
 simulator cancel/fill race demo passed
@@ -53,7 +53,7 @@ The committed simulator evidence directories are under `reports/evidence/simulat
 | Observability | `src/observability/logging.py`, `src/observability/artifacts.py`, `src/observability/summary.py` | Sanitization, JSONL/CSV artifacts, summary metrics. |
 | Scripts | `scripts/run_sim_*.py`, `scripts/run_testnet_*.py`, `scripts/testnet_runner.py`, `scripts/_sim_demo_common.py` | Reproducible simulator demos and credential-gated Binance Testnet demos. |
 | Tests | `tests/unit/`, `tests/simulation/`, `tests/integration/` | Unit and deterministic scenario coverage; Testnet contract tests skipped without credentials. |
-| Reports/docs | `README.md`, `AI_USAGE.md`, `reports/report_draft.md`, `reports/external_code_review_summary.md`, `reports/failure_case_log.md`, `reports/submission_manifest.md` | Human explanation, PDF source material, external review map, disclosure, submission packaging. |
+| Reports/docs | `README.md`, `AI_USAGE.md`, `reports/latex/report.pdf`, `reports/latex/`, `reports/external_code_review_summary.md`, `reports/failure_case_log.md`, `reports/submission_manifest.md` | Human explanation, PDF source material, external review map, disclosure, submission packaging. |
 | Packaging | `Dockerfile`, `.dockerignore` | Optional simulation API container packaging; credentials must be passed at runtime, not baked into the image. |
 
 ## Project Brief Summary
@@ -581,7 +581,7 @@ The accepted Testnet artifacts provide exchange order IDs and order/trade eviden
 
 1. Read `reports/external_code_review_summary.md`.
 2. Read `README.md`.
-3. Read `reports/report_draft.md` requirement matrix and limitations.
+3. Read `reports/latex/report.pdf` plus `reports/submission_manifest.md` for the final requirement matrix, limitations, and artifact map.
 4. Inspect `src/execution/engine.py` for exposure accounting and state transitions.
 5. Inspect `src/risk/validation.py` and `src/risk/decimal_math.py` for price/quantity safety.
 6. Inspect `src/algorithms/chase.py` and `src/algorithms/twap.py`.

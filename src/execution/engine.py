@@ -66,6 +66,7 @@ DEADLINE_AGGRESSIVE_ATTEMPTED = "DEADLINE_AGGRESSIVE_ATTEMPTED"
 POST_ONLY_CROSSES = "POST_ONLY_CROSSES"
 POST_ONLY_UNSUPPORTED = "POST_ONLY_UNSUPPORTED"
 ORDER_SAFETY_REJECTED = "ORDER_SAFETY_REJECTED"
+ORDER_SHAPE_TEMPORARILY_UNTRADEABLE = "ORDER_SHAPE_TEMPORARILY_UNTRADEABLE"
 TERMINAL_ORDER_REJECTED = "TERMINAL_ORDER_REJECTED"
 STREAM_HEALTH_DEGRADED_RECONCILED = "STREAM_HEALTH_DEGRADED_RECONCILED"
 MARKET_DATA_STALE_RECONCILED = "MARKET_DATA_STALE_RECONCILED"
@@ -385,11 +386,7 @@ class ExecutionEngine:
                 return self._snapshot(record)
 
             if self._should_terminalize_cancel_remainder_without_demand(record):
-                reason = (
-                    PRICE_OUTSIDE_RANGE
-                    if record.final_reason == WAITING_FOR_PRICE_RANGE
-                    else DEADLINE_CANCEL_REMAINDER
-                )
+                reason = self._deadline_without_demand_reason(record)
                 self._terminalize_deadline_locked(record, reason)
                 return self._snapshot(record)
 
@@ -980,13 +977,24 @@ class ExecutionEngine:
                         post_only=post_only,
                     )
                 except ValidationError as shape_exc:
-                    self._expire_for_validation_locked(record, shape_exc)
-                    return None
+                    if not self._is_temporary_order_shape_error(record, shape_exc):
+                        self._expire_for_validation_locked(record, shape_exc)
+                        return None
 
                 if self._deadline_reached(record):
                     self._expire_for_validation_locked(record, exc)
                 else:
                     record.final_reason = WAITING_FOR_PRICE_RANGE
+                return None
+
+            if self._is_temporary_order_shape_error(record, exc):
+                if self._deadline_reached(record):
+                    self._terminalize_deadline_locked(
+                        record,
+                        ORDER_SHAPE_TEMPORARILY_UNTRADEABLE,
+                    )
+                else:
+                    record.final_reason = ORDER_SHAPE_TEMPORARILY_UNTRADEABLE
                 return None
 
             self._expire_for_validation_locked(record, exc)
@@ -995,7 +1003,10 @@ class ExecutionEngine:
         if post_only and self._retryable_order_reject_gate_blocks(record, price, market.bid, market.ask):
             return None
 
-        if record.final_reason == WAITING_FOR_PRICE_RANGE:
+        if record.final_reason in {
+            WAITING_FOR_PRICE_RANGE,
+            ORDER_SHAPE_TEMPORARILY_UNTRADEABLE,
+        }:
             record.final_reason = None
         if record.final_reason in {
             RETRYABLE_ORDER_REJECT_BACKOFF,
@@ -1057,6 +1068,16 @@ class ExecutionEngine:
     def _is_price_outside_range_error(self, exc: ValidationError) -> bool:
         reason = str(exc)
         return "exceeds upper bound" in reason or "below lower bound" in reason
+
+    def _is_temporary_order_shape_error(self, record: ExecutionRecord, exc: ValidationError) -> bool:
+        return record.side is Side.SELL and "below min notional" in str(exc)
+
+    def _deadline_without_demand_reason(self, record: ExecutionRecord) -> str:
+        if record.final_reason == WAITING_FOR_PRICE_RANGE:
+            return PRICE_OUTSIDE_RANGE
+        if record.final_reason == ORDER_SHAPE_TEMPORARILY_UNTRADEABLE:
+            return ORDER_SHAPE_TEMPORARILY_UNTRADEABLE
+        return DEADLINE_CANCEL_REMAINDER
 
     def _use_aggressive_deadline_price(self, record: ExecutionRecord) -> bool:
         return (

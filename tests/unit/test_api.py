@@ -1762,6 +1762,86 @@ async def test_runtime_user_stream_disconnect_reconciles_bounded_stale_window() 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("final_reason", "status"),
+    [
+        ("RATE_LIMIT_BACKOFF", ExecutionStatus.RUNNING),
+        ("VENUE_BAN_HARD_STOP", ExecutionStatus.FAILED),
+    ],
+)
+async def test_runtime_stream_recovery_returned_unavailable_record_records_error_and_blocks_creates(
+    final_reason: str,
+    status: ExecutionStatus,
+) -> None:
+    import importlib
+
+    runtime_module = importlib.import_module("api.runtime")
+
+    request = ExecutionCreateRequest.model_validate(
+        execution_payload(environment="testnet", target_position="0.010")
+    ).to_domain()
+    record = ExecutionRecord(
+        execution_id=f"exec_user_recovery_{final_reason.lower()}",
+        request=request,
+        status=ExecutionStatus.RUNNING,
+        side=Side.BUY,
+        required_quantity=Decimal("0.010"),
+        raw_required_quantity=Decimal("0.010"),
+        initial_position=PositionSnapshot(symbol=SYMBOL, position=Decimal("0")),
+    )
+
+    class ReturnedUnavailableReconcileService:
+        def __init__(self) -> None:
+            self.windows: list[tuple[str, int | None, int | None]] = []
+
+        async def active_executions(self) -> list[ExecutionRecord]:
+            return [record]
+
+        async def reconcile_execution(
+            self,
+            execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ExecutionRecord:
+            self.windows.append((execution_id, start_time_ms, end_time_ms))
+            return ExecutionRecord(
+                execution_id=execution_id,
+                request=request,
+                status=status,
+                side=Side.BUY,
+                required_quantity=Decimal("0.010"),
+                raw_required_quantity=Decimal("0.010"),
+                initial_position=PositionSnapshot(symbol=SYMBOL, position=Decimal("0")),
+                final_reason=final_reason,
+            )
+
+        async def active_execution_for(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("unavailable runtime should reject before service create")
+
+        async def create_execution(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("unavailable runtime should reject before service create")
+
+    runtime = runtime_module.ExecutionRuntime()
+    service = ReturnedUnavailableReconcileService()
+    runtime._services[Environment.TESTNET] = service
+    runtime._remember_execution(record)
+
+    await runtime._reconcile_active_executions_for_environment(
+        Environment.TESTNET,
+        start_time_ms=183_000,
+        end_time_ms=243_000,
+    )
+
+    assert service.windows == [(record.execution_id, 183_000, 243_000)]
+    assert runtime.runtime_errors[record.execution_id] == [
+        f"RuntimeUnavailableError: {final_reason}",
+    ]
+    with pytest.raises(runtime_module.RuntimeUnavailableError, match=final_reason):
+        await runtime.create_execution(request)
+
+
+@pytest.mark.asyncio
 async def test_user_stream_event_reconciles_active_execution_with_event_time_bounds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

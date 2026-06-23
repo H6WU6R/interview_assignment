@@ -40,6 +40,10 @@ _USER_EVENT_RECONCILIATION_LOOKBACK_MS = 60_000
 _USER_STREAM_RETRYABLE_FAILURE_MAX_ATTEMPTS = 3
 _USER_STREAM_RETRYABLE_FAILURE_BACKOFF_SECONDS = 0.1
 _LISTEN_KEY_VENUE_BAN_HARD_STOP = "LISTEN_KEY_VENUE_BAN_HARD_STOP"
+_USER_STREAM_RECONCILIATION_HARD_STOP_REASONS = {
+    ExchangeRateLimited.code,
+    VenueBanHardStop.code,
+}
 
 
 class _UserStreamReconciliationHardStop(Exception):
@@ -687,7 +691,7 @@ async def _reconcile_execution_for_user_stream_recovery(
         "end_time_ms": end_time_ms,
     }
     try:
-        return await service.reconcile_execution(
+        updated = await service.reconcile_execution(
             execution_id,
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms,
@@ -703,6 +707,19 @@ async def _reconcile_execution_for_user_stream_recovery(
             )
         )
         raise _UserStreamReconciliationHardStop(reason) from exc
+    final_reason = getattr(updated, "final_reason", None)
+    if final_reason in _USER_STREAM_RECONCILIATION_HARD_STOP_REASONS:
+        reason = str(final_reason)
+        events.append(
+            _runtime_event(
+                adapter,
+                failure_event_name,
+                reconciliation_window=reconciliation_window,
+                reason=reason,
+            )
+        )
+        raise _UserStreamReconciliationHardStop(reason)
+    return updated
 
 
 def _is_retryable_listen_key_stream_failure(exc: BaseException) -> bool:

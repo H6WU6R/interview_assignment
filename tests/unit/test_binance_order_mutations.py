@@ -37,6 +37,7 @@ from exchanges.binance_usdm import (
 )
 from exchanges.simulator import DeterministicSimulator
 from execution.clock import ManualClock
+from execution.engine import ExecutionRecord
 from execution.models import (
     Algorithm,
     ChildOrder,
@@ -51,6 +52,19 @@ from execution.models import (
     SymbolRules,
     TimeInForce,
 )
+
+
+def runner_execution_record(execution_id: str, *, final_reason: str | None) -> ExecutionRecord:
+    return ExecutionRecord(
+        execution_id=execution_id,
+        request=SimpleNamespace(environment=Environment.TESTNET, symbol="BTCUSDT"),
+        status=ExecutionStatus.RUNNING,
+        side=Side.BUY,
+        required_quantity=Decimal("0.100"),
+        raw_required_quantity=Decimal("0.100"),
+        initial_position=SimpleNamespace(symbol="BTCUSDT", position=Decimal("0")),
+        final_reason=final_reason,
+    )
 
 
 class FakeResponse:
@@ -2382,6 +2396,82 @@ async def test_testnet_runner_listen_key_expired_reconciliation_rate_limit_exits
     }
 
 
+async def test_testnet_runner_listen_key_expired_returned_rate_limit_record_exits_cleanly() -> None:
+    import importlib.util
+
+    execution_id = "exec_listen_key_expired_returned_rate_limit"
+
+    class FakeUserAdapter:
+        def __init__(self) -> None:
+            self.clock = ManualClock(current=10.0)
+            self.user_stream_healthy = False
+            self.closed = asyncio.Event()
+
+        def stream_user_events(self):
+            async def events():
+                self.user_stream_healthy = True
+                try:
+                    self.clock.advance(5.0)
+                    yield {"event_type": "listenKeyExpired"}
+                    await asyncio.Event().wait()
+                finally:
+                    self.user_stream_healthy = False
+                    self.closed.set()
+
+            return events()
+
+        async def health_check_streams(self) -> bool:
+            return self.user_stream_healthy
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.reconciliation_calls: list[tuple[str, int | None, int | None]] = []
+
+        async def reconcile_execution(
+            self,
+            reconciled_execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ExecutionRecord:
+            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            return runner_execution_record(
+                reconciled_execution_id,
+                final_reason=ExchangeRateLimited.code,
+            )
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter = FakeUserAdapter()
+    service = FakeService()
+    events: list[dict[str, Any]] = []
+
+    with pytest.raises(SystemExit, match="RATE_LIMIT_BACKOFF"):
+        await module._start_user_stream(
+            adapter,
+            service,
+            events,
+            {"execution_id": execution_id},
+            timeout_seconds=1.0,
+        )
+
+    assert adapter.closed.is_set()
+    assert service.reconciliation_calls == [(execution_id, 10_000, 15_000)]
+    assert [event["event"] for event in events] == [
+        "user_stream_event",
+        "user_stream_listen_key_expired_reconciliation_failed",
+    ]
+    assert events[1]["reason"] == "RATE_LIMIT_BACKOFF"
+    assert events[1]["reconciliation_window"] == {
+        "start_time_ms": 10_000,
+        "end_time_ms": 15_000,
+    }
+
+
 async def test_testnet_runner_recovers_unexpected_user_stream_exit_with_bounded_reconcile() -> None:
     import importlib.util
 
@@ -2522,6 +2612,57 @@ async def test_testnet_runner_user_stream_disconnect_reconciliation_hard_stops_e
     assert service.reconciliation_calls == [(execution_id, 65_000, 125_000)]
     assert [event["event"] for event in events] == ["user_stream_disconnect_reconciliation_failed"]
     assert events[0]["reason"] == expected_reason
+    assert events[0]["reconciliation_window"] == {
+        "start_time_ms": 65_000,
+        "end_time_ms": 125_000,
+    }
+
+
+async def test_testnet_runner_user_stream_disconnect_returned_hard_stop_record_exits_cleanly() -> None:
+    import importlib.util
+
+    execution_id = "exec_disconnect_returned_hard_stop"
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.reconciliation_calls: list[tuple[str, int | None, int | None]] = []
+
+        async def reconcile_execution(
+            self,
+            reconciled_execution_id: str,
+            *,
+            start_time_ms: int | None = None,
+            end_time_ms: int | None = None,
+        ) -> ExecutionRecord:
+            self.reconciliation_calls.append((reconciled_execution_id, start_time_ms, end_time_ms))
+            record = runner_execution_record(
+                reconciled_execution_id,
+                final_reason=VenueBanHardStop.code,
+            )
+            record.status = ExecutionStatus.FAILED
+            return record
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    adapter = SimpleNamespace(clock=ManualClock(current=125.0))
+    service = FakeService()
+    events: list[dict[str, Any]] = []
+
+    with pytest.raises(SystemExit, match="VENUE_BAN_HARD_STOP"):
+        await module._reconcile_user_stream_disconnect(
+            adapter,
+            service,
+            events,
+            {"execution_id": execution_id, "user_stream_started_ms": "10000"},
+        )
+
+    assert service.reconciliation_calls == [(execution_id, 65_000, 125_000)]
+    assert [event["event"] for event in events] == ["user_stream_disconnect_reconciliation_failed"]
+    assert events[0]["reason"] == "VENUE_BAN_HARD_STOP"
     assert events[0]["reconciliation_window"] == {
         "start_time_ms": 65_000,
         "end_time_ms": 125_000,

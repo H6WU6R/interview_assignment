@@ -42,6 +42,10 @@ class RuntimeUnavailableError(RuntimeError):
 
 USER_EVENT_RECONCILIATION_LOOKBACK_MS = 60_000
 LISTEN_KEY_RETRYABLE_FAILURE_MAX_ATTEMPTS = 3
+UNAVAILABLE_RECONCILIATION_FINAL_REASONS = {
+    RATE_LIMIT_BACKOFF,
+    VenueBanHardStop.code,
+}
 
 
 class ExecutionRuntime:
@@ -740,10 +744,26 @@ class ExecutionRuntime:
                     start_time_ms=start_time_ms,
                     end_time_ms=end_time_ms,
                 )
+                if self._record_returned_unavailable_reconciliation(environment, reconciled):
+                    continue
                 self._remember_execution(reconciled)
                 self._cancel_background_loop_if_terminal(reconciled)
             except Exception as exc:
                 self._record_runtime_error(record.execution_id, exc)
+
+    def _record_returned_unavailable_reconciliation(
+        self,
+        environment: Environment,
+        record: ExecutionRecord,
+    ) -> bool:
+        reason = record.final_reason
+        if reason not in UNAVAILABLE_RECONCILIATION_FINAL_REASONS:
+            return False
+        self._remember_execution(record)
+        self._cancel_background_loop_if_terminal(record)
+        self._unavailable_environments[environment] = reason
+        self._record_runtime_error(record.execution_id, RuntimeUnavailableError(reason))
+        return True
 
     def _clock_wall_ms(self, environment: Environment) -> int:
         clock = self._clocks.get(environment)

@@ -9,7 +9,11 @@ from typing import Any
 
 from config import Settings, load_allow_mainnet_trading, load_binance_usdm_credentials
 from exchanges.base import VenueBanHardStop, is_exchange_rate_limited
-from exchanges.binance_usdm import BinanceUsdmAdapter, StreamHealthFailure
+from exchanges.binance_usdm import (
+    BinanceUsdmAdapter,
+    ServerTimeSynchronizationFailure,
+    StreamHealthFailure,
+)
 from exchanges.simulator import DeterministicSimulator
 from execution import ids
 from execution.clock import ManualClock, SystemClock
@@ -244,7 +248,12 @@ class ExecutionRuntime:
             binance_api_secret=credentials.api_secret,
         )
         adapter = BinanceUsdmAdapter(settings=settings, clock=clock)
-        await adapter.synchronize_server_time()
+        try:
+            await adapter.synchronize_server_time()
+        except ServerTimeSynchronizationFailure as exc:
+            raise RuntimeConfigurationError(
+                f"Binance server-time synchronization failed: {exc}"
+            ) from exc
         service = ExecutionService(adapter, clock=clock)
         self._register(environment, adapter=adapter, clock=clock, service=service)
         return service

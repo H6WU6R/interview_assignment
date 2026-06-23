@@ -495,6 +495,9 @@ class ExecutionEngine:
         record, actor = self._lookup_execution(execution_id)
 
         async def reconcile() -> ExecutionRecord:
+            if self._rate_limit_backoff_blocks(record):
+                return self._snapshot(record)
+
             await self._reconcile_locked(
                 record,
                 start_time_ms=start_time_ms,
@@ -817,11 +820,17 @@ class ExecutionEngine:
             reconciliation_kwargs["start_time_ms"] = start_time_ms
         if end_time_ms is not None:
             reconciliation_kwargs["end_time_ms"] = end_time_ms
-        result = await self._adapter.reconcile_orders_and_fills(
-            record.request.symbol,
-            client_order_prefix=prefix,
-            **reconciliation_kwargs,
-        )
+        try:
+            result = await self._adapter.reconcile_orders_and_fills(
+                record.request.symbol,
+                client_order_prefix=prefix,
+                **reconciliation_kwargs,
+            )
+        except Exception as exc:
+            if is_exchange_rate_limited(exc):
+                self._record_rate_limit_backoff_locked(record, str(exc))
+                return
+            raise
         await self._apply_reconciliation_result_locked(
             record,
             result,
@@ -837,10 +846,17 @@ class ExecutionEngine:
             if child.status.is_terminal:
                 continue
 
-            exchange_child = await self._adapter.get_order_by_client_order_id(
-                record.request.symbol,
-                child.client_order_id,
-            )
+            try:
+                exchange_child = await self._adapter.get_order_by_client_order_id(
+                    record.request.symbol,
+                    child.client_order_id,
+                )
+            except Exception as exc:
+                if is_exchange_rate_limited(exc):
+                    self._record_rate_limit_backoff_locked(record, str(exc))
+                    self._finish_reconciliation_refresh_locked(record)
+                    return
+                raise
             if exchange_child is None:
                 if child.status is ChildOrderStatus.UNKNOWN:
                     self._set_child_status(child, ChildOrderStatus.REJECTED)
@@ -990,10 +1006,16 @@ class ExecutionEngine:
             if child.status is not ChildOrderStatus.UNKNOWN:
                 continue
 
-            exchange_child = await self._adapter.get_order_by_client_order_id(
-                record.request.symbol,
-                child.client_order_id,
-            )
+            try:
+                exchange_child = await self._adapter.get_order_by_client_order_id(
+                    record.request.symbol,
+                    child.client_order_id,
+                )
+            except Exception as exc:
+                if is_exchange_rate_limited(exc):
+                    self._record_rate_limit_backoff_locked(record, str(exc))
+                    return
+                raise
             if exchange_child is None:
                 self._set_child_status(child, ChildOrderStatus.REJECTED)
                 child.terminal_reason = CREATE_TIMEOUT_ORDER_NOT_FOUND

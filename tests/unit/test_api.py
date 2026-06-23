@@ -10,7 +10,7 @@ import pytest
 from api.app import create_app
 from api.schemas import ExecutionCreateRequest
 from exchanges.base import ExchangeRateLimited, VenueBanHardStop
-from exchanges.binance_usdm import StreamHealthFailure
+from exchanges.binance_usdm import ServerTimeSynchronizationFailure, StreamHealthFailure
 from exchanges.simulator import DeterministicSimulator
 from execution import ids
 from execution.clock import ManualClock
@@ -188,6 +188,43 @@ async def test_testnet_request_constructs_binance_adapter_with_system_clock_and_
     assert adapter.settings.binance_api_secret == "test-secret"
     assert adapter.synchronized is True
     assert response.json()["request"]["environment"] == "testnet"
+
+
+@pytest.mark.asyncio
+async def test_testnet_request_maps_server_time_sync_failure_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+
+    from config import BinanceUsdmCredentials
+
+    runtime_module = importlib.import_module("api.runtime")
+
+    class FailingSyncBinanceAdapter(DeterministicSimulator):
+        def __init__(self, *, settings: Any, clock: Any) -> None:
+            super().__init__(clock=clock, position=Decimal("0.010"))
+
+        async def synchronize_server_time(self) -> int:
+            raise ServerTimeSynchronizationFailure("clock drift too large")
+
+    monkeypatch.setattr(
+        runtime_module,
+        "load_binance_usdm_credentials",
+        lambda: BinanceUsdmCredentials(api_key="test-key", api_secret="test-secret"),
+    )
+    monkeypatch.setattr(runtime_module, "BinanceUsdmAdapter", FailingSyncBinanceAdapter)
+    app = create_app()
+
+    response = await post_json(
+        app,
+        "/executions",
+        execution_payload(environment="testnet", target_position="0.010"),
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Binance server-time synchronization failed: clock drift too large"
+    )
 
 
 @pytest.mark.asyncio

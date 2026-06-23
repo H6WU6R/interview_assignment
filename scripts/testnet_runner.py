@@ -787,13 +787,10 @@ async def _stop_stream_tasks(*tasks: asyncio.Task[Any] | None) -> None:
     if not active_tasks:
         return
 
-    results = await asyncio.gather(
+    await asyncio.gather(
         *(_stop_stream_task(task) for task in active_tasks),
         return_exceptions=True,
     )
-    for result in results:
-        if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
-            raise result
 
 
 def _raise_if_stream_task_failed(*tasks: asyncio.Task[Any] | None) -> None:

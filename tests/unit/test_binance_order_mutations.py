@@ -109,6 +109,14 @@ class RecordingClient:
             raise self.exception
         return self.response
 
+    async def get(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.calls.append({"method": "GET", "url": url, **kwargs})
+        if self.timeout:
+            raise httpx.TimeoutException("timed out")
+        if self.exception is not None:
+            raise self.exception
+        return self.response
+
 
 class FakeWebSocket:
     def __init__(self, messages: list[str]) -> None:
@@ -140,6 +148,27 @@ def rules(*, tif: frozenset[str] = frozenset({"GTC", "GTX"})) -> SymbolRules:
         status="TRADING",
         supported_time_in_force=tif,
     )
+
+
+def exchange_info_payload() -> dict[str, Any]:
+    return {
+        "symbols": [
+            {
+                "symbol": "BTCUSDT",
+                "status": "TRADING",
+                "timeInForce": ["GTC", "GTX"],
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "tickSize": "0.10"},
+                    {"filterType": "LOT_SIZE", "stepSize": "0.001", "minQty": "0.001"},
+                    {"filterType": "MIN_NOTIONAL", "notional": "100.00"},
+                ],
+            }
+        ],
+        "rateLimits": [
+            {"rateLimitType": "REQUEST_WEIGHT", "limit": 2400},
+            {"rateLimitType": "ORDERS", "limit": 1200},
+        ],
+    }
 
 
 def order_request(
@@ -334,6 +363,73 @@ async def test_signed_request_invalid_json_after_http_success_maps_conservativel
             ORDER_QUERY_PATH,
             {},
         )
+
+
+async def test_get_symbol_rules_success_preserves_parsing_and_rate_limits() -> None:
+    client = RecordingClient(FakeResponse(200, exchange_info_payload()))
+    adapter = BinanceUsdmAdapter(settings=Settings(environment=Environment.TESTNET), client=client)
+
+    symbol_rules = await adapter.get_symbol_rules("BTCUSDT")
+
+    assert symbol_rules == SymbolRules(
+        symbol="BTCUSDT",
+        tick_size=Decimal("0.10"),
+        quantity_step=Decimal("0.001"),
+        min_quantity=Decimal("0.001"),
+        min_notional=Decimal("100.00"),
+        status="TRADING",
+        supported_time_in_force=frozenset({"GTC", "GTX"}),
+    )
+    assert adapter.rate_limits == {"REQUEST_WEIGHT": 2400, "ORDERS": 1200}
+    assert client.calls[0]["method"] == "GET"
+    assert client.calls[0]["url"].endswith("/fapi/v1/exchangeInfo")
+    assert "params" not in client.calls[0]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_exc", "match"),
+    [
+        (429, ExchangeRateLimited, "RATE_LIMIT_BACKOFF"),
+        (418, VenueBanHardStop, "VENUE_BAN_HARD_STOP"),
+    ],
+)
+async def test_get_symbol_rules_public_hard_stop_statuses_map_to_exchange_taxonomy(
+    status_code: int,
+    expected_exc: type[Exception],
+    match: str,
+) -> None:
+    response = FakeResponse(status_code, "", json_error=ValueError("invalid json"))
+    adapter = BinanceUsdmAdapter(
+        settings=Settings(environment=Environment.TESTNET),
+        client=RecordingClient(response),
+    )
+
+    with pytest.raises(expected_exc, match=match) as exc_info:
+        await adapter.get_symbol_rules("BTCUSDT")
+
+    assert not isinstance(exc_info.value, httpx.HTTPStatusError)
+
+
+async def test_get_symbol_rules_public_5xx_maps_to_retryable_read_failure() -> None:
+    response = FakeResponse(503, "", json_error=ValueError("invalid json"))
+    adapter = BinanceUsdmAdapter(
+        settings=Settings(environment=Environment.TESTNET),
+        client=RecordingClient(response),
+    )
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE"):
+        await adapter.get_symbol_rules("BTCUSDT")
+
+
+async def test_get_symbol_rules_malformed_success_json_maps_to_retryable_read_failure() -> None:
+    response = FakeResponse(200, "", json_error=ValueError("invalid json"))
+    adapter = BinanceUsdmAdapter(
+        settings=Settings(environment=Environment.TESTNET),
+        client=RecordingClient(response),
+    )
+
+    with pytest.raises(RetryableReadFailure, match="RETRYABLE_READ_FAILURE"):
+        await adapter.get_symbol_rules("BTCUSDT")
 
 
 async def test_signed_request_malformed_error_json_maps_conservatively_by_operation(
@@ -3449,7 +3545,7 @@ async def test_testnet_runner_stops_before_next_tick_when_stream_task_fails(
     assert adapter.user_closed.is_set()
 
 
-async def test_testnet_runner_cleanup_stops_market_when_user_task_already_failed(
+async def test_testnet_runner_cleanup_stops_market_without_masking_primary_exception_when_user_task_already_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import importlib.util
@@ -3561,7 +3657,7 @@ async def test_testnet_runner_cleanup_stops_market_when_user_task_already_failed
     monkeypatch.setattr(module, "BinanceUsdmAdapter", make_adapter)
     monkeypatch.setattr(module, "ExecutionService", FakeExecutionService)
 
-    with pytest.raises(StreamFailed, match="user stream failed"):
+    with pytest.raises(AssertionError, match="runner reached execution creation"):
         await module.run(Algorithm.CHASE)
 
     assert adapter is not None
@@ -3572,6 +3668,28 @@ async def test_testnet_runner_cleanup_stops_market_when_user_task_already_failed
             adapter.allow_market_exit.set()
             await asyncio.wait_for(adapter.market_closed.wait(), timeout=1.0)
     assert adapter.user_closed.is_set()
+
+
+async def test_testnet_runner_shutdown_consumes_already_observed_stream_task_failure() -> None:
+    import importlib.util
+
+    class StreamFailed(RuntimeError):
+        pass
+
+    async def failed_stream_task() -> None:
+        raise StreamFailed("unsanitized stream failure api-key=secret")
+
+    spec = importlib.util.spec_from_file_location("testnet_runner", Path("scripts/testnet_runner.py"))
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    user_task = asyncio.create_task(failed_stream_task())
+    with pytest.raises(StreamFailed):
+        await user_task
+
+    await module._stop_stream_tasks(user_task)
 
 
 def test_testnet_scripts_refuse_without_credentials_and_never_fallback_to_simulator() -> None:

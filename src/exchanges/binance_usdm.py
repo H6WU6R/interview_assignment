@@ -494,14 +494,32 @@ class BinanceUsdmAdapter(ExchangeAdapter):
         url = f"{self.base_url}/fapi/v1/exchangeInfo"
         timeout = httpx.Timeout(5.0)
 
-        if self.client is None:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(url)
-        else:
-            response = await self.client.get(url, timeout=timeout)
+        try:
+            if self.client is None:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.get(url)
+            else:
+                response = await self.client.get(url, timeout=timeout)
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            raise RetryableReadFailure("RETRYABLE_READ_FAILURE") from exc
 
-        response.raise_for_status()
-        data = response.json()
+        status_code = getattr(response, "status_code", 200)
+        if status_code == 429:
+            raise ExchangeRateLimited("RATE_LIMIT_BACKOFF")
+        if status_code == 418:
+            raise VenueBanHardStop()
+        if 500 <= status_code <= 599:
+            raise RetryableReadFailure("RETRYABLE_READ_FAILURE")
+        if status_code != 200:
+            error_payload = _json_payload_or_retryable_read_failure(response)
+            raise ExchangeTerminalReject(_terminal_reject_reason(status_code, error_payload))
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RetryableReadFailure("RETRYABLE_READ_FAILURE") from exc
+        if not isinstance(data, Mapping):
+            raise RetryableReadFailure("RETRYABLE_READ_FAILURE")
         self.rate_limits = parse_exchange_info_rate_limits(data)
         return parse_symbol_rules_from_exchange_info(data, symbol)
 

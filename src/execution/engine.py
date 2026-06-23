@@ -51,7 +51,7 @@ from execution.state_machine import (
     transition_child,
     transition_execution,
 )
-from observability.summary import execution_vwap, summary_metrics
+from observability.summary import decimal_string, execution_vwap, summary_metrics
 from risk.decimal_math import floor_to_step, round_price
 from risk.validation import (
     ValidationError,
@@ -1924,6 +1924,14 @@ class ExecutionEngine:
         if actual_duration < Decimal("0"):
             actual_duration = Decimal("0")
 
+        requested_duration = Decimal(str(record.request.target_duration_seconds))
+        decision_deadline_elapsed = min(actual_duration, requested_duration)
+        terminal_cleanup_duration = actual_duration - decision_deadline_elapsed
+        post_deadline_submission_counts = self._post_deadline_submission_counts(
+            record,
+            requested_duration=requested_duration,
+        )
+
         metrics = summary_metrics(
             final_status=record.status,
             side=record.side,
@@ -1983,6 +1991,14 @@ class ExecutionEngine:
                     "rate_limit_backoff_blocks",
                     0,
                 ),
+                "decision_deadline_elapsed_seconds": decimal_string(
+                    decision_deadline_elapsed
+                ),
+                "terminal_cleanup_duration_seconds": decimal_string(
+                    terminal_cleanup_duration
+                ),
+                "total_lifecycle_duration_seconds": decimal_string(actual_duration),
+                **post_deadline_submission_counts,
                 "twap_slice_ledger": self._twap_slice_ledger(record),
             }
         )
@@ -1997,6 +2013,36 @@ class ExecutionEngine:
             for child in record.child_orders
             if child.confirmed_filled_quantity > Decimal("0")
         ]
+
+    def _post_deadline_submission_counts(
+        self,
+        record: ExecutionRecord,
+        *,
+        requested_duration: Decimal,
+    ) -> dict[str, int]:
+        deadline_monotonic = record.started_monotonic + requested_duration
+        orders_after_deadline = 0
+        scheduled_after_deadline = 0
+        deadline_aggressive_after_deadline = 0
+
+        for child in record.child_orders:
+            submitted_at = record.child_submitted_monotonic.get(child.client_order_id)
+            if submitted_at is None or submitted_at <= deadline_monotonic:
+                continue
+
+            orders_after_deadline += 1
+            if child.client_order_id in record.aggressive_child_client_order_ids:
+                deadline_aggressive_after_deadline += 1
+            else:
+                scheduled_after_deadline += 1
+
+        return {
+            "orders_submitted_after_deadline": orders_after_deadline,
+            "scheduled_orders_submitted_after_deadline": scheduled_after_deadline,
+            "deadline_aggressive_orders_submitted_after_deadline": (
+                deadline_aggressive_after_deadline
+            ),
+        }
 
     def _summary_vwap_inputs(
         self, record: ExecutionRecord

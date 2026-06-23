@@ -151,8 +151,8 @@ All four scripts print deterministic simulator state and write structured artifa
 
 - Chase: `reports/evidence/simulation/chase/exec_c8dc942476764355`
 - TWAP: `reports/evidence/simulation/twap/exec_61fadac604f4440a`
-- Cancel/fill race: `reports/evidence/simulation/cancel-race/exec_669d47a536a94682`
-- Create timeout: `reports/evidence/simulation/create-timeout/exec_3ddb8a47995348d0`
+- Cancel/fill race: `reports/evidence/simulation/cancel-race/exec_6106c8ca78fa4659`
+- Create timeout: `reports/evidence/simulation/create-timeout/exec_048f48e8d58c4d2b`
 
 Pass `--output-dir` to write fresh bundles elsewhere; otherwise scripts use their documented local defaults.
 
@@ -161,6 +161,7 @@ Artifacts contain:
 - `request_snapshot.json`
 - `execution_log.jsonl`
 - `execution_summary.json`
+- optional `execution_snapshot.json` for intermediate race/reconciliation proof states
 - `child_orders.csv`
 - `fills.csv`
 - `timeline.csv`
@@ -214,7 +215,7 @@ Accepted Binance Testnet evidence for submission means both:
 - at least one Chase run whose `evidence_manifest.json` has `accepted_exchange_order_evidence: true` and at least one non-empty `exchange_order_id`;
 - at least one TWAP run whose `evidence_manifest.json` has `accepted_exchange_order_evidence: true` and at least one non-empty `exchange_order_id`.
 
-Accepted sanitized Binance Testnet evidence is included in:
+Accepted sanitized Binance Testnet evidence is included in this repository:
 
 - `reports/evidence/testnet/chase/exec_3168600ee25b4193`
 - `reports/evidence/testnet/twap/exec_85bef3985ea3431a`
@@ -248,14 +249,14 @@ uv run pytest -q tests/integration
 Optional Testnet contract tests run only when `BINANCE_USDM_API_KEY` and `BINANCE_USDM_API_SECRET` are set. Without those variables, pytest skips them.
 These read-only contract tests validate connectivity and parsing only; they do not satisfy the required accepted-order Chase/TWAP Testnet evidence.
 
-Current verified non-live baseline: `511 passed` with `uv run pytest -q tests/unit tests/simulation`. Credentialed/network-enabled integration tests are separate and should only be reported when run with Binance Testnet credentials.
+Current verified non-live baseline for this working tree: `513 passed` with `uv run pytest -q tests/unit tests/simulation`. Verification environment: repository HEAD `60fa71e`, Python 3.12.12, macOS 26.5 build 25F71, checked on 2026-06-24 +08. Credentialed/network-enabled integration tests are separate and should only be reported when run with Binance Testnet credentials.
 
 ## Known Limitations
 
 - Persistence is in-memory; process restart loses execution state.
 - Runtime stream supervision is compact and Testnet-focused; it is not a production operations system with durable recovery, alerting, or multi-process coordination.
 - Binance Testnet scripts are credential-gated and require explicit send confirmation.
-- Accepted Testnet order evidence requires a Testnet account that can pass Binance margin/risk checks.
+- Regenerating new accepted Testnet order evidence requires a Testnet account that can pass Binance margin/risk checks; accepted sanitized Chase/TWAP evidence is already included under `reports/evidence/testnet`.
 - Mainnet is configuration-compatible but hard-disabled by default.
 - The implementation targets BTCUSDT and One-way Mode.
 - Deterministic simulator tests prove race conditions that Testnet may not reproduce reliably.

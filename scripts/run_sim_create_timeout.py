@@ -70,24 +70,42 @@ async def main() -> None:
             child=reconciled.child_orders[-1],
         )
     )
+    reconciled_snapshot = summary_snapshot(reconciled)
+
+    recovered_child = reconciled.child_orders[-1]
+    await simulator.push_fill(
+        recovered_child.client_order_id,
+        recovered_child.submitted_quantity,
+        recovered_child.price,
+    )
+    completed = await service.reconcile_execution(reconciled.execution_id)
     events.append(
         log_event(
-            clock, reconciled, "result_summary", extra=summary_snapshot(reconciled)
+            clock,
+            completed,
+            "recovered_child_filled_terminal",
+            child=completed.child_orders[-1],
+        )
+    )
+    events.append(
+        log_event(
+            clock, completed, "result_summary", extra=summary_snapshot(completed)
         )
     )
 
-    print(f"execution_id={reconciled.execution_id}")
-    print(f"status={reconciled.status}")
-    print(f"client_order_ids={client_order_ids(reconciled)}")
+    print(f"execution_id={completed.execution_id}")
+    print(f"status={completed.status}")
+    print(f"client_order_ids={client_order_ids(completed)}")
     print(f"unknown_before_reconcile={unknown.exposure.unknown_order_quantity}")
     print(f"unknown_after_reconcile={reconciled.exposure.unknown_order_quantity}")
     print(f"live_open_after_reconcile={reconciled.exposure.live_open_quantity}")
 
     artifact_dir = write_artifacts(
         args.output_dir,
-        reconciled,
+        completed,
         log_events=events,
         fills=simulator._fills,
+        extra_json_artifacts={"execution_snapshot.json": reconciled_snapshot},
     )
     print(f"artifact_dir={artifact_dir}")
 

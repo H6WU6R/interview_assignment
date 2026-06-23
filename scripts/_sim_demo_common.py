@@ -210,6 +210,7 @@ def write_artifacts(
     *,
     log_events: Iterable[Mapping[str, Any]],
     fills: Iterable[Fill],
+    extra_json_artifacts: Mapping[str, Any] | None = None,
 ) -> Path:
     log_events = list(log_events)
     twap_slice_ledger = []
@@ -225,6 +226,7 @@ def write_artifacts(
         fills=fill_rows(fills),
         timeline=timeline_rows(log_events),
         twap_slice_ledger=twap_slice_ledger,
+        extra_json_artifacts=extra_json_artifacts,
     )
 
 

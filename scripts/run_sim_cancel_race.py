@@ -69,6 +69,23 @@ async def main() -> None:
             extra={"filled_during_cancel_quantity": Decimal("0.004")},
         )
     )
+    race_snapshot = summary_snapshot(execution)
+
+    replacement_child = execution.child_orders[-1]
+    await simulator.push_fill(
+        replacement_child.client_order_id,
+        replacement_child.submitted_quantity,
+        replacement_child.price,
+    )
+    execution = await service.reconcile_execution(execution.execution_id)
+    events.append(
+        log_event(
+            clock,
+            execution,
+            "replacement_child_filled_terminal",
+            child=execution.child_orders[-1],
+        )
+    )
     events.append(
         log_event(clock, execution, "result_summary", extra=summary_snapshot(execution))
     )
@@ -78,6 +95,7 @@ async def main() -> None:
         execution,
         log_events=events,
         fills=simulator._fills,
+        extra_json_artifacts={"execution_snapshot.json": race_snapshot},
     )
 
     print(f"execution_id={execution.execution_id}")

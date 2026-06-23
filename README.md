@@ -143,14 +143,14 @@ uv run python scripts/run_sim_cancel_race.py
 uv run python scripts/run_sim_create_timeout.py
 ```
 
-All four scripts print deterministic simulator state and write structured artifacts by default:
+All four scripts print deterministic simulator state and write structured artifacts. The committed simulator evidence for this submission is:
 
-- `scripts/run_sim_chase.py`: `/tmp/calais-sim-chase`
-- `scripts/run_sim_twap.py`: `/tmp/calais-sim-twap`
-- `scripts/run_sim_cancel_race.py`: `/tmp/calais-sim-cancel-race`
-- `scripts/run_sim_create_timeout.py`: `/tmp/calais-sim-create-timeout`
+- Chase: `reports/evidence/simulation/chase/exec_d10652a300e544dc`
+- TWAP: `reports/evidence/simulation/twap/exec_1da27294d07f47af`
+- Cancel/fill race: `reports/evidence/simulation/cancel-race/exec_2d3534bffa694b40`
+- Create timeout: `reports/evidence/simulation/create-timeout/exec_a03dec73abde450b`
 
-Pass `--output-dir` to write the bundles elsewhere. The committed simulator evidence for this submission is under `reports/evidence/simulation/`.
+Pass `--output-dir` to write fresh bundles elsewhere; otherwise scripts use their documented local defaults.
 
 Artifacts contain:
 

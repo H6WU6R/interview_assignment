@@ -371,6 +371,7 @@ class ExecutionRuntime:
     ) -> None:
         while self._started and self._adapters.get(environment) is adapter:
             stream_started_ms = self._clock_wall_ms(environment)
+            stop_stream = False
             try:
                 async for event in stream_factory():
                     if not self._started:
@@ -384,6 +385,10 @@ class ExecutionRuntime:
                 raise
             except Exception as exc:
                 self._record_runtime_error(f"{environment.value}.{name}_stream", exc)
+                stop_stream = name == "user" and self._is_listen_key_hard_stop(exc)
+
+            if stop_stream:
+                break
 
             if self._started and self._adapters.get(environment) is adapter:
                 if name == "user":
@@ -411,6 +416,29 @@ class ExecutionRuntime:
                 raise
             except Exception as exc:
                 self._record_runtime_error(f"{environment.value}.listen_key_keepalive", exc)
+                if self._is_listen_key_hard_stop(exc):
+                    await self._stop_user_stream(environment)
+                    break
+                if self._is_listen_key_invalidated(exc):
+                    await self._restart_user_stream(environment, adapter)
+
+    async def _stop_user_stream(self, environment: Environment) -> None:
+        key = (environment, "user")
+        task = self._stream_tasks.pop(key, None)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _restart_user_stream(self, environment: Environment, adapter: object) -> None:
+        await self._stop_user_stream(environment)
+        if not self._started or self._adapters.get(environment) is not adapter:
+            return
+
+        user_stream = getattr(adapter, "stream_user_events", None)
+        if callable(user_stream):
+            self._stream_tasks[(environment, "user")] = asyncio.create_task(
+                self._supervise_adapter_stream(environment, "user", adapter, user_stream)
+            )
 
     async def _cancel_and_reconcile_active_executions(self) -> None:
         for service in list(self._services.values()):
@@ -599,3 +627,11 @@ class ExecutionRuntime:
 
     def _record_runtime_error(self, key: str, exc: BaseException) -> None:
         self._runtime_errors.setdefault(key, []).append(f"{type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _is_listen_key_hard_stop(exc: BaseException) -> bool:
+        return str(exc).startswith("LISTEN_KEY_VENUE_BAN_HARD_STOP")
+
+    @staticmethod
+    def _is_listen_key_invalidated(exc: BaseException) -> bool:
+        return str(exc).startswith("LISTEN_KEY_EXPIRED")
